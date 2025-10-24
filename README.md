@@ -24,6 +24,12 @@ A complete **Getting Things Done (GTD)** system for Neovim, integrated with Zett
 - Fast fuzzy finding with fzf/telescope
 - No external dependencies beyond Neovim
 
+## 📚 Documentation
+
+- **[WORKFLOW.md](WORKFLOW.md)** - Complete guide to using GTD-Nvim (START HERE!)
+- **[DEPENDENCIES.md](DEPENDENCIES.md)** - Detailed dependency guide and installation options
+- **[DEVELOPMENT.md](DEVELOPMENT.md)** - Contributing and development workflow
+
 ## Installation
 
 ### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
