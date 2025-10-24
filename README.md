@@ -237,9 +237,20 @@ This plugin implements David Allen's GTD methodology:
 
 ## Requirements
 
-- Neovim >= 0.9.0
-- [plenary.nvim](https://github.com/nvim-lua/plenary.nvim)
-- [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) OR [fzf-lua](https://github.com/ibhagwan/fzf-lua)
+### Essential
+- **Neovim >= 0.9.0**
+- **Fuzzy Finder** (choose one):
+  - [fzf-lua](https://github.com/ibhagwan/fzf-lua) - **Recommended** (104 integrations)
+  - [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) - Alternative (22 integrations)
+
+### Recommended
+- [which-key.nvim](https://github.com/folke/which-key.nvim) - Keybinding hints
+- [plenary.nvim](https://github.com/nvim-lua/plenary.nvim) - Utility functions
+
+### System Tools
+- `fzf`, `ripgrep`, `fd` - For optimal search performance
+
+📖 **See [DEPENDENCIES.md](DEPENDENCIES.md) for complete installation guide with all optional enhancements**
 
 ## Philosophy
 
