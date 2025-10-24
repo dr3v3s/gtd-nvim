@@ -273,3 +273,40 @@ Contributions welcome! Please feel free to submit a Pull Request.
 If you find this plugin useful, please ⭐️ star the repository!
 
 For issues, feature requests, or questions, please open an issue on GitHub.
+
+
+### Link Management
+
+The plugin includes powerful link utilities for managing connections between notes:
+
+#### Insert Links
+
+```lua
+vim.keymap.set("n", "<leader>li", function()
+  require("gtd-nvim.utils.link_insert").insert_link()
+end, { desc = "Insert Link" })
+```
+
+Supports:
+- File links (with fuzzy finding)
+- URLs
+- Email (mailto) links
+- Tags
+- Date stamps
+
+Works with both **Markdown** and **Org-mode** formats!
+
+#### Open Links
+
+```lua
+vim.keymap.set("n", "gx", function()
+  require("gtd-nvim.utils.link_open").open_link()
+end, { desc = "Open Link" })
+```
+
+Opens:
+- URLs in your browser
+- File links in Neovim
+- Mailto links in your email client
+- Supports macOS and Linux
+
