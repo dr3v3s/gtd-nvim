@@ -1,0 +1,18 @@
+# Neovim
+*.sw?
+*~
+.DS_Store
+
+# Lua
+luac.out
+
+# Testing
+test/
+*.test.lua
+
+# Personal configs (examples only)
+my-config.lua
+
+# Backup files
+*.bak
+*-
