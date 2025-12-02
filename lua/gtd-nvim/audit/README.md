@@ -1,0 +1,30 @@
+-- GTD Audit Module Usage
+--
+-- Add to your init.lua or a plugin config file:
+--
+-- require('utils.gtd-audit').setup()
+--
+-- Commands available:
+--   :GtdAudit        - Audit current org file
+--   :GtdAuditAll     - Audit all GTD files
+--   :GtdSuggest      - Show org-mode feature suggestions
+--   :GtdQuickFix     - Quick fix common issues (WIP)
+--
+-- Keybindings (suggested):
+--   vim.keymap.set('n', '<leader>ga', '<cmd>GtdAudit<cr>', { desc = 'GTD Audit' })
+--   vim.keymap.set('n', '<leader>gA', '<cmd>GtdAuditAll<cr>', { desc = 'GTD Audit All' })
+--   vim.keymap.set('n', '<leader>gs', '<cmd>GtdSuggest<cr>', { desc = 'GTD Suggest' })
+--
+-- What it checks:
+--   ✓ Duplicate SCHEDULED/DEADLINE entries
+--   ✓ Multiple PROPERTIES drawers
+--   ✓ SCHEDULED/DEADLINE in wrong location (inside properties)
+--   ✓ Invalid TODO keywords
+--   ✓ PROJECT items missing progress trackers
+--   ✓ NEXT items without scheduling
+--   ✓ WAIT items without follow-up
+--   ✓ RECURRING items without repeater patterns
+--   ✓ Malformed tags
+--   ✓ Orphaned ID links
+--
+-- Results appear in quickfix list for easy navigation.

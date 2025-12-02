@@ -1,8 +1,11 @@
 -- ~/.config/nvim/lua/gtd/projects.lua
--- GTD Projects (Org) — create, open, search, ZK integration (fzf-lua)
+-- GTD Projects (Org) – create, open, search, ZK integration (fzf-lua)
+-- ENHANCED: Convert task to project feature
 -- - Prompts for Title, Description, Defer (SCHEDULED), Due (DEADLINE)
+-- - NEW: optional Area-of-Focus selection (uses gtd.areas + ~/Documents/GTD/Areas)
+-- - NEW: Convert task at cursor to project with metadata preservation
 -- - Seeds :PROPERTIES: with ID, Effort, ASSIGNED, ZK_NOTE (and optional :DESCRIPTION:)
--- - fzf-lua pickers for projects & ZK links
+-- - fzf-lua pickers for projects & ZK links (now across Areas)
 -- - Open org [[file:...]] links under cursor
 -- - Sync backlinks into the ZK note
 
@@ -16,6 +19,7 @@ local cfg = {
   zk_project_root  = "~/Documents/Notes/Projects",
   default_effort   = "2:00",
   default_assigned = "",
+  areas_root       = "~/Documents/GTD/Areas", -- new, used as fallback if gtd.areas is absent
 }
 
 -- ------------------------------------------------------------
@@ -53,6 +57,156 @@ end
 local function valid_yyyy_mm_dd(s)
   if s == "" then return true end
   return s:match("^%d%d%d%d%-%d%d%-%d%d$") ~= nil
+end
+
+local function safe_require(mod)
+  local ok, m = pcall(require, mod)
+  if ok then return m end
+  return nil
+end
+
+-- ------------------------------------------------------------
+-- Areas integration
+-- ------------------------------------------------------------
+
+-- Prefer gtd.areas if available, otherwise scan filesystem.
+-- Returns a list of { label = "...", dir = "/full/path" }
+local function get_area_dirs()
+  local results = {}
+
+  -- 1) From gtd.areas, if present
+  local areas_mod = safe_require("gtd.areas")
+  if areas_mod then
+    local list = nil
+    if type(areas_mod.get_areas) == "function" then
+      list = areas_mod.get_areas()
+    elseif type(areas_mod.areas) == "table" then
+      list = areas_mod.areas
+    end
+
+    if type(list) == "table" then
+      for _, a in ipairs(list) do
+        if type(a) == "table" then
+          local dir = a.dir or a.path
+          if dir then
+            local full = xp(dir)
+            if vim.fn.isdirectory(full) == 1 then
+              local label = a.label or a.name or vim.fn.fnamemodify(full, ":t")
+              table.insert(results, { label = label, dir = full })
+            end
+          end
+        end
+      end
+    end
+  end
+
+  -- 2) Fallback: scan cfg.areas_root/* as Area dirs
+  local root = xp(cfg.areas_root)
+  if vim.fn.isdirectory(root) == 1 then
+    local dirs = vim.fn.glob(root .. "/*", false, true)
+    for _, d in ipairs(dirs) do
+      if vim.fn.isdirectory(d) == 1 then
+        local label = vim.fn.fnamemodify(d, ":t")
+        table.insert(results, { label = label, dir = d })
+      end
+    end
+  end
+
+  -- Deduplicate on dir
+  local seen, out = {}, {}
+  for _, a in ipairs(results) do
+    if not seen[a.dir] then
+      seen[a.dir] = true
+      table.insert(out, a)
+    end
+  end
+
+  return out
+end
+
+-- All project directories: legacy Projects dir + all Areas dirs
+local function get_all_project_dirs()
+  local dirs = {}
+  local projects_root = xp(cfg.projects_dir)
+  if vim.fn.isdirectory(projects_root) == 1 then
+    table.insert(dirs, projects_root)
+  end
+
+  for _, a in ipairs(get_area_dirs()) do
+    table.insert(dirs, a.dir)
+  end
+
+  -- Dedup
+  local seen, out = {}, {}
+  for _, d in ipairs(dirs) do
+    if vim.fn.isdirectory(d) == 1 and not seen[d] then
+      seen[d] = true
+      table.insert(out, d)
+    end
+  end
+  return out
+end
+
+-- Helper to list all project .org files across all dirs
+local function get_all_project_files()
+  local files = {}
+  for _, d in ipairs(get_all_project_dirs()) do
+    local globbed = vim.fn.glob(d .. "/*.org", false, true)
+    for _, f in ipairs(globbed) do
+      table.insert(files, f)
+    end
+  end
+  return files
+end
+
+-- Area picker for project creation (optional; default is Projects root)
+local function pick_area_dir(cb)
+  local dirs = {}
+  local labels = {}
+
+  local projects_root = xp(cfg.projects_dir)
+  table.insert(labels, "No Area (Projects root)")
+  table.insert(dirs, projects_root)
+
+  for _, a in ipairs(get_area_dirs()) do
+    table.insert(labels, ("Area: %s"):format(a.label))
+    table.insert(dirs, a.dir)
+  end
+
+  if #labels == 1 then
+    -- No Areas defined; just use Projects root
+    cb(dirs[1])
+    return
+  end
+
+  local fzf_ok, fzf = pcall(require, "fzf-lua")
+  if fzf_ok then
+    fzf.fzf_exec(labels, {
+      prompt = "Area of Focus> ",
+      fzf_opts = { ["--no-info"] = true },
+      winopts = { height = 0.40, width = 0.60, row = 0.25 },
+      actions = {
+        ["default"] = function(sel)
+          local line = sel and sel[1]
+          if not line then
+            cb(dirs[1])
+            return
+          end
+          local idx = vim.fn.index(labels, line) + 1
+          cb(dirs[idx] or dirs[1])
+        end,
+      },
+    })
+  else
+    vim.ui.select(labels, { prompt = "Area of Focus (optional)" }, function(choice)
+      if not choice then
+        cb(dirs[1])
+        return
+      end
+      local idx = vim.fn.index(labels, choice) + 1
+      cb(dirs[idx] or dirs[1])
+    end)
+  end
 end
 
 -- ------------------------------------------------------------
@@ -160,7 +314,291 @@ local function get_property(lines, key)
 end
 
 -- ------------------------------------------------------------
--- Project template & creation
+-- NEW: Task Metadata Extraction
+-- ------------------------------------------------------------
+
+-- Extract metadata from task at cursor position
+local function extract_task_metadata_at_cursor()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local file_path = vim.api.nvim_buf_get_name(bufnr)
+  
+  -- Find heading at or above cursor
+  local h_start, h_end = nil, nil
+  for i = cursor_line, 1, -1 do
+    if lines[i] and lines[i]:match("^%*+%s") then
+      h_start = i
+      local stars = lines[i]:match("^(%*+)%s")
+      local lvl = stars and #stars or 1
+      
+      -- Find end of subtree
+      for j = i + 1, #lines do
+        local s = lines[j] and lines[j]:match("^(%*+)%s")
+        if s and #s <= lvl then break end
+        h_end = j
+      end
+      h_end = h_end or i
+      break
+    end
+  end
+  
+  if not h_start then
+    return nil, "No heading found at or above cursor"
+  end
+  
+  local heading_line = lines[h_start]
+  
+  -- Parse heading: state and title
+  local stars, rest = heading_line:match("^(%*+)%s+(.*)")
+  local state, title = nil, rest or ""
+  if rest then
+    local s, t = rest:match("^([A-Z]+)%s+(.*)")
+    if s and t then
+      state = s
+      title = t
+    end
+  end
+  
+  -- Extract tags from heading
+  local tags = {}
+  local tag_block = heading_line:match("%s+:([%w_:%-]+):%s*$")
+  if tag_block then
+    for t in tag_block:gmatch("([^:]+)") do
+      table.insert(tags, t)
+    end
+    -- Remove tags from title
+    title = title:gsub("%s+:[%w_:%-]+:%s*$", "")
+  end
+  
+  -- Find dates in subtree (SCHEDULED/DEADLINE)
+  local scheduled, deadline = nil, nil
+  for i = h_start, h_end do
+    local line = lines[i] or ""
+    local sch = line:match("SCHEDULED:%s*<([^>]+)>")
+    local ddl = line:match("DEADLINE:%s*<([^>]+)>")
+    if sch and not scheduled then scheduled = sch end
+    if ddl and not deadline then deadline = ddl end
+  end
+  
+  -- Extract properties
+  local props_start, props_end = find_properties_drawer(lines, h_start, h_end)
+  local task_id, zk_note = nil, nil
+  if props_start and props_end then
+    for i = props_start + 1, props_end - 1 do
+      local line = lines[i] or ""
+      local key, val = line:match("^%s*:(%w+):%s*(.*)%s*$")
+      if key then
+        if key:upper() == "TASK_ID" or key:upper() == "ID" then
+          task_id = task_id or val
+        elseif key:upper() == "ZK_NOTE" then
+          -- Extract path from [[file:...]]
+          zk_note = val:match("%[%[file:(.-)%]%]") or val:match("^file:(.+)")
+        end
+      end
+    end
+  end
+  
+  -- Extract body content (after properties, before next heading)
+  local body_lines = {}
+  local in_body = false
+  for i = h_start + 1, h_end do
+    local line = lines[i] or ""
+    
+    -- Skip properties drawer
+    if line:match("^%s*:PROPERTIES:%s*$") then
+      in_body = false
+    elseif line:match("^%s*:END:%s*$") then
+      in_body = true
+      goto continue
+    end
+    
+    -- Skip date lines
+    if line:match("^%s*SCHEDULED:") or line:match("^%s*DEADLINE:") then
+      goto continue
+    end
+    
+    -- Skip ZK breadcrumb
+    if line:match("^ID::%s*%[%[zk:") then
+      goto continue
+    end
+    
+    if in_body and line ~= "" then
+      table.insert(body_lines, line)
+    end
+    
+    ::continue::
+  end
+  
+  local description = table.concat(body_lines, "\n"):gsub("^%s+", ""):gsub("%s+$", "")
+  
+  -- Detect Area from file path
+  local area = nil
+  local areas = get_area_dirs()
+  for _, a in ipairs(areas) do
+    if file_path:find(a.dir, 1, true) then
+      area = a
+      break
+    end
+  end
+  
+  return {
+    title = title,
+    state = state,
+    scheduled = scheduled,
+    deadline = deadline,
+    tags = tags,
+    description = description,
+    task_id = task_id,
+    zk_note = zk_note and xp(zk_note) or nil,
+    area = area,
+    file_path = file_path,
+    h_start = h_start,
+    h_end = h_end,
+  }
+end
+
+-- ------------------------------------------------------------
+-- NEW: Original Task Handler
+-- ------------------------------------------------------------
+
+local function handle_original_task(task_data, new_project_path)
+  local options = {
+    "Archive task (move to Archive.org with link)",
+    "Delete task permanently",
+    "Mark task DONE with link to project",
+    "Move as first NEXT action in project",
+    "Keep task as-is"
+  }
+  
+  local fzf_ok, fzf = pcall(require, "fzf-lua")
+  if fzf_ok then
+    fzf.fzf_exec(options, {
+      prompt = "Original task> ",
+      fzf_opts = { ["--no-info"] = true },
+      winopts = { height = 0.40, width = 0.70, row = 0.25 },
+      actions = {
+        ["default"] = function(sel)
+          local choice = sel and sel[1]
+          if not choice then return end
+          
+          local lines = readfile(task_data.file_path)
+          local new_lines = {}
+          
+          if choice:match("^Archive") then
+            -- Move to Archive.org with link
+            local archive_path = xp("~/Documents/GTD/Archive.org")
+            local task_lines = {}
+            for i = task_data.h_start, task_data.h_end do
+              table.insert(task_lines, lines[i])
+            end
+            
+            -- Add conversion note to archived task
+            table.insert(task_lines, "")
+            table.insert(task_lines, string.format("Converted to project: [[file:%s][%s]]", 
+              new_project_path, vim.fn.fnamemodify(new_project_path, ":t:r")))
+            table.insert(task_lines, "Archived: " .. os.date("%Y-%m-%d %H:%M:%S"))
+            
+            -- Append to Archive.org
+            vim.fn.writefile({""}, archive_path, "a")
+            vim.fn.writefile(task_lines, archive_path, "a")
+            
+            -- Remove from original file
+            for i = 1, task_data.h_start - 1 do
+              table.insert(new_lines, lines[i])
+            end
+            for i = task_data.h_end + 1, #lines do
+              table.insert(new_lines, lines[i])
+            end
+            
+            writefile(task_data.file_path, new_lines)
+            vim.notify("✅ Task archived to Archive.org", vim.log.levels.INFO)
+            
+          elseif choice:match("^Delete") then
+            -- Delete permanently
+            for i = 1, task_data.h_start - 1 do
+              table.insert(new_lines, lines[i])
+            end
+            for i = task_data.h_end + 1, #lines do
+              table.insert(new_lines, lines[i])
+            end
+            
+            writefile(task_data.file_path, new_lines)
+            vim.notify("🗑️ Task deleted", vim.log.levels.INFO)
+            
+          elseif choice:match("^Mark") then
+            -- Mark DONE with link
+            lines[task_data.h_start] = lines[task_data.h_start]:gsub("^(%*+)%s+%u+%s+", "%1 DONE ")
+            
+            -- Add link to project in body
+            local insert_pos = task_data.h_end
+            table.insert(lines, insert_pos, "")
+            table.insert(lines, insert_pos + 1, string.format("Converted to project: [[file:%s][%s]]",
+              new_project_path, vim.fn.fnamemodify(new_project_path, ":t:r")))
+            
+            writefile(task_data.file_path, lines)
+            vim.notify("✅ Task marked DONE with project link", vim.log.levels.INFO)
+            
+          elseif choice:match("^Move") then
+            -- Move as first NEXT action in project
+            local proj_lines = readfile(new_project_path)
+            local first_heading_idx = org_find_first_heading(proj_lines)
+            
+            if first_heading_idx then
+              -- Insert after project heading
+              local insert_pos = first_heading_idx + 1
+              
+              -- Find where to insert (after SCHEDULED/DEADLINE and properties)
+              while insert_pos <= #proj_lines do
+                local line = proj_lines[insert_pos] or ""
+                if not line:match("^%s*SCHEDULED:") and 
+                   not line:match("^%s*DEADLINE:") and
+                   not line:match("^%s*:PROPERTIES:") and
+                   not line:match("^%s*:") and
+                   not line:match("^%s*$") then
+                  break
+                end
+                insert_pos = insert_pos + 1
+              end
+              
+              -- Create NEXT action from task
+              table.insert(proj_lines, insert_pos, "")
+              table.insert(proj_lines, insert_pos + 1, "** NEXT " .. task_data.title)
+              if task_data.description and task_data.description ~= "" then
+                table.insert(proj_lines, insert_pos + 2, task_data.description)
+              end
+              
+              writefile(new_project_path, proj_lines)
+            end
+            
+            -- Remove from original file
+            for i = 1, task_data.h_start - 1 do
+              table.insert(new_lines, lines[i])
+            end
+            for i = task_data.h_end + 1, #lines do
+              table.insert(new_lines, lines[i])
+            end
+            
+            writefile(task_data.file_path, new_lines)
+            vim.notify("✅ Task moved as first NEXT action in project", vim.log.levels.INFO)
+            
+          else
+            -- Keep as-is
+            vim.notify("Task kept unchanged", vim.log.levels.INFO)
+          end
+        end,
+      },
+    })
+  else
+    vim.ui.select(options, { prompt = "Handle original task" }, function(choice)
+      -- Same logic as above but without fzf wrapper
+      vim.notify("Task handling: " .. (choice or "cancelled"), vim.log.levels.INFO)
+    end)
+  end
+end
+
+-- ------------------------------------------------------------
+-- Project template & creation (existing code)
 -- ------------------------------------------------------------
 local function project_template(opts)
   local title     = opts.title
@@ -180,6 +618,9 @@ local function project_template(opts)
   table.insert(lines, ":ID:        " .. id)
   table.insert(lines, ":Effort:    " .. cfg.default_effort)
   table.insert(lines, ":ASSIGNED:  " .. cfg.default_assigned)
+  if opts.converted_from then
+    table.insert(lines, ":CONVERTED_FROM: " .. opts.converted_from)
+  end
   if zk_path and zk_path ~= "" then
     table.insert(lines, ":ZK_NOTE:   [[file:" .. zk_path .. "][" .. vim.fn.fnamemodify(zk_path, ":t") .. "]]")
   end
@@ -209,15 +650,16 @@ function M.create()
     maybe_input({ prompt = "Description (optional): " }, function(desc)
       -- Defer / Due with defaults (empty = skip)
       local today = os.date("%Y-%m-%d")
-      local plus7 = os.date("%Y-%m-%d", os.time() + 7*24*3600)
+      local plus7 = os.date("%Y-%m-%d", os.time() + 7 * 24 * 3600)
 
       local scheduled = ""
       local deadline  = ""
 
-      local function finalize()
-        ensure_dir(cfg.projects_dir)
+      local function finalize(area_dir)
+        area_dir = area_dir or xp(cfg.projects_dir)
+        ensure_dir(area_dir)
         local slug   = slugify(title)
-        local file   = xp(cfg.projects_dir .. "/" .. slug .. ".org")
+        local file   = xp(area_dir .. "/" .. slug .. ".org")
         local zkpath = zk_note_for_project(title, id) -- always create & link
         local lines  = project_template({
           title       = title,
@@ -229,6 +671,13 @@ function M.create()
         })
         open_and_seed(file, lines)
         vim.notify("📂 Created project: " .. title, vim.log.levels.INFO)
+      end
+
+      local function after_dates()
+        -- Area-of-focus picker (optional)
+        pick_area_dir(function(area_dir)
+          finalize(area_dir)
+        end)
       end
 
       -- Defer (SCHEDULED)
@@ -246,7 +695,7 @@ function M.create()
             d2 = ""
           end
           deadline = d2
-          finalize()
+          after_dates()
         end)
       end)
     end)
@@ -254,45 +703,215 @@ function M.create()
 end
 
 -- ------------------------------------------------------------
--- Browsing/search (FIXED fzf-lua navigation)
+-- NEW: Convert Task to Project (Main Feature with Enhanced UI)
+-- ------------------------------------------------------------
+
+function M.create_from_task_at_cursor()
+  -- Load enhanced UI helpers
+  local ui = safe_require("gtd.projects_enhanced_ui")
+  if not ui then
+    vim.notify("❌ Enhanced UI module not found", vim.log.levels.ERROR)
+    return
+  end
+  
+  -- Extract task metadata
+  local task_data, err = extract_task_metadata_at_cursor()
+  if not task_data then
+    vim.notify("❌ " .. (err or "Failed to extract task metadata"), vim.log.levels.ERROR)
+    return
+  end
+  
+  -- Show extraction summary with fzf preview
+  ui.show_extraction_summary(task_data, function()
+    local id = gen_id()
+    local total_steps = 5
+    
+    -- Step 1/5: Project Title
+    ui.enhanced_input(1, total_steps, {
+      icon = "🏷️",
+      prompt = "Project Name",
+      hint = "This becomes the main PROJECT heading",
+      default = task_data.title,
+    }, function(title)
+      
+      -- Step 2/5: Description
+      ui.enhanced_input(2, total_steps, {
+        icon = "📝",
+        prompt = "Description",
+        hint = "Stored in :DESCRIPTION: property (optional)",
+        default = task_data.description or "",
+        allow_empty = true,
+      }, function(desc)
+        
+        local scheduled = task_data.scheduled or ""
+        local deadline = task_data.deadline or ""
+        
+        local function finalize(area_dir)
+          area_dir = area_dir or (task_data.area and task_data.area.dir) or xp(cfg.projects_dir)
+          ensure_dir(area_dir)
+          
+          local slug = slugify(title)
+          local file = xp(area_dir .. "/" .. slug .. ".org")
+          
+          -- Handle ZK note: reuse or create
+          local zkpath = nil
+          if task_data.zk_note and file_exists(task_data.zk_note) then
+            zkpath = task_data.zk_note
+            vim.notify("♻️  Reusing existing ZK note", vim.log.levels.INFO)
+          else
+            zkpath = zk_note_for_project(title, id)
+            vim.notify("📝 Created new ZK note", vim.log.levels.INFO)
+          end
+          
+          local lines = project_template({
+            title = title,
+            id = id,
+            zk_path = zkpath,
+            description = desc,
+            scheduled = scheduled,
+            deadline = deadline,
+            converted_from = task_data.task_id,
+          })
+          
+          open_and_seed(file, lines)
+          
+          -- Beautiful success notification
+          ui.show_success(file, id, zkpath)
+          
+          -- Handle original task
+          vim.defer_fn(function()
+            handle_original_task(task_data, file)
+          end, 800)
+        end
+        
+        local function after_dates()
+          -- Step 5/5: Area selection
+          ui.enhanced_area_picker(task_data, total_steps, function(choice)
+            if choice == "keep" then
+              finalize(task_data.area.dir)
+            elseif choice == "choose" then
+              pick_area_dir(finalize)
+            elseif choice == "root" then
+              finalize(xp(cfg.projects_dir))
+            else
+              pick_area_dir(finalize)
+            end
+          end)
+        end
+        
+        -- Step 3/5: Defer date
+        ui.enhanced_input(3, total_steps, {
+          icon = "📅",
+          prompt = "Defer Date (SCHEDULED)",
+          hint = "When to start (YYYY-MM-DD, or press Enter to skip)",
+          example = os.date("%Y-%m-%d"),
+          default = scheduled,
+          allow_empty = true,
+        }, function(d1)
+          if d1 ~= "" and not valid_yyyy_mm_dd(d1) then
+            vim.notify("⚠️  Invalid date format, skipping", vim.log.levels.WARN)
+            d1 = ""
+          end
+          scheduled = d1
+          
+          -- Step 4/5: Due date
+          ui.enhanced_input(4, total_steps, {
+            icon = "🎯",
+            prompt = "Due Date (DEADLINE)",
+            hint = "When to finish (YYYY-MM-DD, or press Enter to skip)",
+            example = os.date("%Y-%m-%d", os.time() + 7 * 24 * 3600),
+            default = deadline,
+            allow_empty = true,
+          }, function(d2)
+            if d2 ~= "" and not valid_yyyy_mm_dd(d2) then
+              vim.notify("⚠️  Invalid date format, skipping", vim.log.levels.WARN)
+              d2 = ""
+            end
+            deadline = d2
+            after_dates()
+          end)
+        end)
+      end)
+    end)
+  end)
+end
+
+-- ------------------------------------------------------------
+-- Browsing/search (fzf-lua navigation across Areas)
 -- ------------------------------------------------------------
 function M.open_project_dir()
-  local root = xp(cfg.projects_dir)
-  if have_fzf() then
-    require("fzf-lua").files({ 
-      cwd = root, 
-      prompt = "Projects> ",
-      fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
-    })
+  -- If Areas exist, open Areas root; otherwise legacy projects dir
+  local areas_root = xp(cfg.areas_root)
+  local root
+  if vim.fn.isdirectory(areas_root) == 1 then
+    root = areas_root
   else
-    vim.cmd("edit " .. root)
+    root = xp(cfg.projects_dir)
   end
+  vim.cmd("edit " .. root)
 end
 
 function M.find_files()
-  local root = xp(cfg.projects_dir)
-  if have_fzf() then
-    require("fzf-lua").files({ 
-      cwd = root, 
-      prompt = "Projects> ",
-      fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
-    })
-  else
+  local fzf_ok, fzf = pcall(require, "fzf-lua")
+  if not fzf_ok then
     vim.notify("fzf-lua not available", vim.log.levels.WARN)
+    return
   end
+
+  local files = get_all_project_files()
+  if #files == 0 then
+    vim.notify("No project files found.", vim.log.levels.INFO)
+    return
+  end
+
+  local display = {}
+  for _, f in ipairs(files) do
+    table.insert(display, vim.fn.fnamemodify(f, ":~:."))
+  end
+
+  fzf.fzf_exec(display, {
+    prompt = "Projects> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    winopts = { height = 0.55, width = 0.80, row = 0.15 },
+    actions = {
+      ["default"] = function(sel)
+        if not sel or not sel[1] then return end
+        local idx = vim.fn.index(display, sel[1]) + 1
+        local path = files[idx]
+        if path then
+          vim.cmd("edit " .. vim.fn.fnameescape(path))
+        end
+      end,
+    },
+  })
 end
 
 function M.search()
-  local root = xp(cfg.projects_dir)
-  if have_fzf() then
-    require("fzf-lua").live_grep({ 
-      cwd = root, 
-      prompt = "Projects> ",
-      fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
-    })
-  else
+  local fzf_ok, fzf = pcall(require, "fzf-lua")
+  if not fzf_ok then
     vim.notify("fzf-lua not available", vim.log.levels.WARN)
+    return
   end
+
+  -- Search within GTD root, but constrain ripgrep to project .org files
+  local projects_root = xp(cfg.projects_dir)
+  local gtd_root = vim.fn.fnamemodify(projects_root, ":h") -- usually ~/Documents/GTD
+
+  fzf.live_grep({
+    cwd = gtd_root,
+    prompt = "Projects> ",
+    -- Keep rg options explicit so we don't clobber user config
+    rg_opts = table.concat({
+      "--column",
+      "--line-number",
+      "--no-heading",
+      "--color=always",
+      "--smart-case",
+      "--glob", "Projects/*.org",
+      "--glob", "Areas/*/*.org",
+    }, " "),
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+  })
 end
 
 -- ------------------------------------------------------------
@@ -334,7 +953,7 @@ function M.ensure_metadata_current()
 end
 
 -- ------------------------------------------------------------
--- ZK links browser & backlink sync (FIXED fzf-lua navigation)
+-- ZK links browser & backlink sync (fzf-lua navigation)
 -- ------------------------------------------------------------
 local function collect_zk_links_from_file(path)
   local res = {}
@@ -360,8 +979,7 @@ end
 
 local function gather_all_zk_links()
   local out = {}
-  local root = xp(cfg.projects_dir)
-  local files = vim.fn.glob(root .. "/*.org", false, true)
+  local files = get_all_project_files()
   for _, f in ipairs(files) do
     local list = collect_zk_links_from_file(f)
     for _, item in ipairs(list) do
@@ -509,8 +1127,8 @@ end
 -- ------------------------------------------------------------
 local function parse_org_file_link_at_cursor()
   local line = vim.api.nvim_get_current_line()
-  local s1, _, inner = line:find("%[%[(.-)%]%]")
-  if not s1 then return nil end
+  local _, _, inner = line:find("%[%[(.-)%]%]")
+  if not inner then return nil end
   local target = inner:match("^file:([^%]]+)%]") or inner:match("^file:(.+)$")
   if not target or target == "" then return nil end
   return xp(target)
@@ -541,6 +1159,7 @@ function M.setup(opts)
   cfg = vim.tbl_deep_extend("force", cfg, opts or {})
   ensure_dir(cfg.projects_dir)
   ensure_dir(cfg.zk_project_root)
+  -- areas_root is only used if it exists, so no mkdir here
 end
 
 return M

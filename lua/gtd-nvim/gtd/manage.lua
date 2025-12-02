@@ -6,6 +6,7 @@
 -- - Archive entries shown separately with clear indicators
 -- - Persistent pickers that refresh after mutations
 -- - Full integration with clarify, organize, and ZK systems
+-- - Aware of Areas/… project files (in addition to Projects/…)
 
 local M = {}
 
@@ -13,13 +14,14 @@ local M = {}
 M.cfg = {
   gtd_root            = "~/Documents/GTD",
   projects_dir        = "Projects",       -- under gtd_root
+  areas_dir           = "Areas",          -- under gtd_root (new: Areas support)
   inbox_file          = "Inbox.org",      -- under gtd_root
   archive_file        = "Archive.org",    -- under gtd_root
   archive_deleted_dir = "ArchiveDeleted", -- under gtd_root
-  
+
   zk_root             = "~/Documents/Notes",
   zk_archive_dir      = "Archive",        -- under zk_root
-  
+
   -- Display options
   show_archive_tasks  = true,             -- include archived tasks in listings
   max_title_length    = 60,               -- truncate long titles
@@ -35,16 +37,17 @@ local function safe_require(name)
   return ok and mod or nil
 end
 
+local org_dates = safe_require("gtd.utils.org_dates")  -- ✅ Added
 local clarify = safe_require("gtd.clarify")
 local organize = safe_require("gtd.organize")
 
 -- ------------------------ Helpers ------------------------
 local function xp(p) return vim.fn.expand(p) end
-local function j(a,b) return (a:gsub("/+$","")).."/"..(b:gsub("^/+","")) end
+local function j(a, b) return (a:gsub("/+$", "")) .. "/" .. (b:gsub("^/+", "")) end
 local function ensure_dir(path) vim.fn.mkdir(vim.fn.fnamemodify(path, ":p:h"), "p"); return path end
-local function readf(path) if vim.fn.filereadable(path)==1 then return vim.fn.readfile(path) else return {} end end
+local function readf(path) if vim.fn.filereadable(path) == 1 then return vim.fn.readfile(path) else return {} end end
 local function writef(path, L) ensure_dir(path); return vim.fn.writefile(L, path) == 0 end
-local function appendf(path, L) ensure_dir(path); vim.fn.writefile({""}, path, "a"); return vim.fn.writefile(L, path, "a") == 0 end
+local function appendf(path, L) ensure_dir(path); vim.fn.writefile({ "" }, path, "a"); return vim.fn.writefile(L, path, "a") == 0 end
 local function now() return os.date(M.cfg.date_format) end
 local function have_fzf() return pcall(require, "fzf-lua") end
 
@@ -56,20 +59,22 @@ end
 
 local function paths()
   local root = xp(M.cfg.gtd_root)
+  local zk_root = xp(M.cfg.zk_root)
   return {
-    root     = root,
-    inbox    = j(root, M.cfg.inbox_file),
-    archive  = j(root, M.cfg.archive_file),
-    projdir  = j(root, M.cfg.projects_dir),
-    deldir   = j(root, M.cfg.archive_deleted_dir),
-    zk_root  = xp(M.cfg.zk_root),
-    zk_arch  = j(xp(M.cfg.zk_root), M.cfg.zk_archive_dir),
+    root       = root,
+    inbox      = j(root, M.cfg.inbox_file),
+    archive    = j(root, M.cfg.archive_file),
+    projdir    = j(root, M.cfg.projects_dir),
+    areas_root = j(root, M.cfg.areas_dir),
+    deldir     = j(root, M.cfg.archive_deleted_dir),
+    zk_root    = zk_root,
+    zk_arch    = j(zk_root, M.cfg.zk_archive_dir),
   }
 end
 
 -- ------------------------ Org Helpers ------------------------
 local function is_heading(ln) return ln:match("^%*+%s") ~= nil end
-local function heading_level(ln) local s=ln:match("^(%*+)%s"); return s and #s or nil end
+local function heading_level(ln) local s = ln:match("^(%*+)%s"); return s and #s or nil end
 
 local function subtree_range(lines, hstart)
   local head = lines[hstart]; if not head then return nil end
@@ -80,7 +85,7 @@ local function subtree_range(lines, hstart)
     if lv2 and lv2 <= lvl then break end
     i = i + 1
   end
-  return hstart, i-1
+  return hstart, i - 1
 end
 
 local function parse_state_title(ln)
@@ -134,18 +139,16 @@ local function zk_path_in_subtree(lines, hstart, hend)
     local p = zk_prop:match("%[%[file:(.-)%]%]") or zk_prop:match("^file:(.+)")
     if p then return xp(p) end
   end
-  
+
   -- Look for body links
   for i = hstart, hend do
     local p = (lines[i] or ""):match("^%s*Notes:%s*%[%[file:(.-)%]%]")
     if p and p ~= "" then return xp(p) end
-    
+
     -- Also check for ZK ID links
     local zkid = (lines[i] or ""):match("ID::%s*%[%[zk:(%w+)%]%]")
     if zkid then
-      -- This is a ZK ID link, could potentially resolve to file path
-      -- For now, we'll note that it exists but can't directly open
-      -- TODO: Could integrate with ZK system to resolve ID to path
+      -- Exists, but resolution is left to ZK tooling
     end
   end
   return nil
@@ -155,80 +158,114 @@ end
 local function scan_all_tasks()
   local P = paths()
   local files = vim.fn.globpath(P.root, "**/*.org", false, true)
+  if type(files) == "string" then files = { files } end
   table.sort(files)
   local items = {}
-  
+
   for _, path in ipairs(files) do
-    local lines = readf(path)
-    for i, ln in ipairs(lines) do
-      if is_heading(ln) then
-        local hstart, hend = subtree_range(lines, i)
-        if not hstart or not hend then goto continue end
-        
-        local state, title = parse_state_title(ln)
-        local level = heading_level(ln) or 1
-        local is_project = ln:match("^%*+%s+PROJECT%s") ~= nil
-        local kind = is_project and "project" or "task"
-        
-        -- Enhanced metadata extraction
-        local zk = zk_path_in_subtree(lines, hstart, hend)
-        local task_id_val = get_property(lines, hstart, hend, "TASK_ID")
-        local scheduled, deadline = find_dates_in_subtree(lines, hstart, hend)
-        local effort = get_property(lines, hstart, hend, "Effort")
-        local assigned = get_property(lines, hstart, hend, "ASSIGNED")
-        
-        -- Parse tags from heading
-        local tags = {}
-        local tag_block = ln:match("%s+:([%w_:%-]+):%s*$")
-        if tag_block then
-          for t in tag_block:gmatch("([^:]+)") do
-            table.insert(tags, t)
+    local filename = vim.fn.fnamemodify(path, ":t")
+    local dirname  = vim.fn.fnamemodify(path, ":h:t")
+
+    -- Skip deleted/archived-deleted project files entirely
+    if dirname ~= M.cfg.archive_deleted_dir then
+      local lines = readf(path)
+      for i, ln in ipairs(lines) do
+        if is_heading(ln) then
+          local hstart, hend = subtree_range(lines, i)
+          if not hstart or not hend then goto continue_heading end
+
+          local state, title = parse_state_title(ln)
+          local level = heading_level(ln) or 1
+          local is_project = ln:match("^%*+%s+PROJECT%s") ~= nil
+          local kind = is_project and "project" or "task"
+
+          -- Enhanced metadata extraction
+          local zk = zk_path_in_subtree(lines, hstart, hend)
+          local task_id_val = get_property(lines, hstart, hend, "TASK_ID")
+          local scheduled, deadline = find_dates_in_subtree(lines, hstart, hend)
+          local effort = get_property(lines, hstart, hend, "Effort")
+          local assigned = get_property(lines, hstart, hend, "ASSIGNED")
+
+          -- Parse tags from heading
+          local tags = {}
+          local tag_block = ln:match("%s+:([%w_:%-]+):%s*$")
+          if tag_block then
+            for t in tag_block:gmatch("([^:]+)") do
+              table.insert(tags, t)
+            end
           end
+
+          local from_archive = (filename == M.cfg.archive_file)
+
+          table.insert(items, {
+            kind = kind,
+            path = path,
+            lnum = i,
+            hstart = hstart,
+            hend = hend,
+            line = ln,
+            level = level,
+            state = state,
+            title = title,
+            zk_path = zk,
+            task_id = task_id_val,
+            scheduled = scheduled,
+            deadline = deadline,
+            effort = effort,
+            assigned = assigned,
+            tags = tags,
+            from_archive = from_archive, -- kept for backward compatibility
+          })
+
+          ::continue_heading::
         end
-        
-        local from_archive = (vim.fn.fnamemodify(path, ":t") == M.cfg.archive_file)
-        
-        table.insert(items, {
-          kind = kind,
-          path = path,
-          lnum = i,
-          hstart = hstart, 
-          hend = hend,
-          line = ln,
-          level = level,
-          state = state, 
-          title = title,
-          zk_path = zk,
-          task_id = task_id_val,
-          scheduled = scheduled,
-          deadline = deadline,
-          effort = effort,
-          assigned = assigned,
-          tags = tags,
-          -- Keep from_archive for backward compatibility but use file-based priority
-          from_archive = from_archive,
-        })
-        
-        ::continue::
       end
     end
   end
+
   return items
 end
 
 local function list_project_files()
   local P = paths()
-  local files = vim.fn.globpath(P.projdir, "*.org", false, true)
+  local files = {}
+
+  -- Classic Projects/ dir (existing behavior)
+  local proj_files = vim.fn.globpath(P.projdir, "*.org", false, true)
+  if type(proj_files) == "string" then proj_files = { proj_files } end
+  for _, p in ipairs(proj_files) do
+    table.insert(files, p)
+  end
+
+  -- New: Areas/… project files
+  if vim.fn.isdirectory(P.areas_root) == 1 then
+    local area_files = vim.fn.globpath(P.areas_root, "**/*.org", false, true)
+    if type(area_files) == "string" then area_files = { area_files } end
+    for _, p in ipairs(area_files) do
+      table.insert(files, p)
+    end
+  end
+
+  -- Deduplicate (just in case)
+  local seen = {}
+  local unique = {}
+  for _, p in ipairs(files) do
+    if not seen[p] then
+      seen[p] = true
+      table.insert(unique, p)
+    end
+  end
+  files = unique
   table.sort(files)
-  
+
   -- Enhanced project file metadata with detailed task analysis
   local enhanced = {}
   for _, path in ipairs(files) do
     local lines = readf(path)
     local first_heading = nil
-    local project_info = { 
-      path = path, 
-      headings = 0, 
+    local project_info = {
+      path = path,
+      headings = 0,
       tasks = 0,
       next_actions = 0,
       todo_tasks = 0,
@@ -238,7 +275,7 @@ local function list_project_files()
       earliest_deadline = nil,
       last_modified = vim.fn.getftime(path),
     }
-    
+
     for i, ln in ipairs(lines) do
       if is_heading(ln) then
         project_info.headings = project_info.headings + 1
@@ -247,7 +284,7 @@ local function list_project_files()
           local _, title = parse_state_title(ln)
           project_info.title = title
         end
-        
+
         -- Analyze task states and dates
         local hstart, hend = subtree_range(lines, i)
         if hstart and hend then
@@ -264,7 +301,7 @@ local function list_project_files()
           elseif state == "DONE" then
             project_info.done_tasks = project_info.done_tasks + 1
           end
-          
+
           -- Check for deadlines
           local _, deadline = find_dates_in_subtree(lines, hstart, hend)
           if deadline then
@@ -276,10 +313,10 @@ local function list_project_files()
         end
       end
     end
-    
+
     table.insert(enhanced, project_info)
   end
-  
+
   return enhanced
 end
 
@@ -290,32 +327,32 @@ local function sort_projects_gtd_workflow(projects)
     if a.next_actions ~= b.next_actions then
       return a.next_actions > b.next_actions
     end
-    
+
     -- Projects with deadlines come before those without
     if a.has_deadlines ~= b.has_deadlines then
       return a.has_deadlines
     end
-    
+
     -- Among projects with deadlines, sort by earliest deadline
     if a.earliest_deadline and b.earliest_deadline then
       return a.earliest_deadline < b.earliest_deadline
     end
-    
+
     -- Projects with more active tasks (TODO) come first
     if a.todo_tasks ~= b.todo_tasks then
       return a.todo_tasks > b.todo_tasks
     end
-    
+
     -- Projects with any active tasks come before inactive ones
     if a.tasks ~= b.tasks then
       return a.tasks > b.tasks
     end
-    
+
     -- Recently modified projects first
     if a.last_modified ~= b.last_modified then
       return a.last_modified > b.last_modified
     end
-    
+
     -- Finally, alphabetical by title
     local title_a = a.title or vim.fn.fnamemodify(a.path, ":t:r")
     local title_b = b.title or vim.fn.fnamemodify(b.path, ":t:r")
@@ -332,54 +369,55 @@ local state_priority = {
   DONE = 5,
 }
 
-local function get_state_priority(state) 
-  return state_priority[state or ""] or 6 
+local function get_state_priority(state)
+  return state_priority[state or ""] or 6
 end
 
 local function get_file_priority(item)
   local filename = vim.fn.fnamemodify(item.path, ":t")
-  local dirname = vim.fn.fnamemodify(item.path, ":h:t")
-  
+  local dirname  = vim.fn.fnamemodify(item.path, ":h:t")
+  local grand    = vim.fn.fnamemodify(item.path, ":h:h:t")
+
   -- Inbox gets highest priority
   if filename == M.cfg.inbox_file then
     return 1
   end
-  
-  -- Projects directory gets second priority
-  if dirname == M.cfg.projects_dir then
+
+  -- Projects dir or Areas hierarchy → second priority
+  if dirname == M.cfg.projects_dir or grand == M.cfg.areas_dir then
     return 2
   end
-  
-  -- Archive gets lowest priority
+
+  -- Archive file → lowest priority
   if filename == M.cfg.archive_file then
     return 4
   end
-  
-  -- Everything else gets middle priority
+
+  -- Everything else in the middle
   return 3
 end
 
 local function sort_items_gtd_workflow(items)
   table.sort(items, function(a, b)
-    -- First by file/location priority (Inbox → Projects → Others → Archive)
+    -- First by file/location priority (Inbox → Projects/Areas → Others → Archive)
     local file_pa, file_pb = get_file_priority(a), get_file_priority(b)
     if file_pa ~= file_pb then return file_pa < file_pb end
-    
+
     -- Then by state priority within same file type
     local state_pa, state_pb = get_state_priority(a.state), get_state_priority(b.state)
     if state_pa ~= state_pb then return state_pa < state_pb end
-    
+
     -- Then by deadline (sooner first)
     if a.deadline and b.deadline then
       return a.deadline < b.deadline
     elseif a.deadline then return true
     elseif b.deadline then return false
     end
-    
+
     -- Then by title
     local ta, tb = a.title or "", b.title or ""
     if ta ~= tb then return ta < tb end
-    
+
     -- Finally by line number within same file
     return (a.lnum or 0) < (b.lnum or 0)
   end)
@@ -387,23 +425,22 @@ end
 
 -- ------------------------ Enhanced Display Formatting ------------------------
 local function format_task_display(item)
-  local parts = {}
-  
   -- File indicator with clear priority
   local filename = vim.fn.fnamemodify(item.path, ":t")
-  local dirname = vim.fn.fnamemodify(item.path, ":h:t")
+  local dirname  = vim.fn.fnamemodify(item.path, ":h:t")
+  local grand    = vim.fn.fnamemodify(item.path, ":h:h:t")
   local file_indicator = ""
-  
+
   if filename == M.cfg.inbox_file then
     file_indicator = "📥 Inbox"
-  elseif dirname == M.cfg.projects_dir then
+  elseif dirname == M.cfg.projects_dir or grand == M.cfg.areas_dir then
     file_indicator = "📂 " .. vim.fn.fnamemodify(item.path, ":t:r")
   elseif filename == M.cfg.archive_file then
     file_indicator = "📦 Archive"
   else
     file_indicator = "📄 " .. vim.fn.fnamemodify(item.path, ":t:r")
   end
-  
+
   -- State indicator
   local state_icon = ""
   if item.state == "NEXT" then state_icon = "⚡"
@@ -412,10 +449,10 @@ local function format_task_display(item)
   elseif item.state == "SOMEDAY" then state_icon = "💭"
   elseif item.state == "DONE" then state_icon = "✅"
   end
-  
+
   -- Title with truncation
   local title = truncate_title(item.title or item.line or "")
-  
+
   -- Date indicators
   local date_info = ""
   if item.deadline then
@@ -423,16 +460,16 @@ local function format_task_display(item)
   elseif item.scheduled then
     date_info = " 📅" .. item.scheduled
   end
-  
+
   -- ZK indicator
   local zk_indicator = item.zk_path and " 🧠" or ""
-  
+
   -- Tags
   local tag_display = ""
   if item.tags and #item.tags > 0 then
     tag_display = " :" .. table.concat(item.tags, ":") .. ":"
   end
-  
+
   return string.format("%s %s %s%s%s%s",
     file_indicator, state_icon, title, date_info, zk_indicator, tag_display)
 end
@@ -446,7 +483,7 @@ local function move_or_delete_file(p, do_delete, archive_dir)
     ensure_dir(j(archive_dir, "dummy"))
     local base = vim.fn.fnamemodify(p, ":t")
     local dst = j(archive_dir, base)
-    
+
     -- Handle collisions
     local counter = 1
     while vim.fn.filereadable(dst) == 1 or vim.fn.isdirectory(dst) == 1 do
@@ -457,7 +494,7 @@ local function move_or_delete_file(p, do_delete, archive_dir)
       dst = j(archive_dir, base)
       counter = counter + 1
     end
-    
+
     return vim.fn.rename(p, dst) == 0, dst
   end
 end
@@ -475,7 +512,7 @@ local function archive_subtree_to_file(path, hstart, hend, dest_archive, tag)
   local chunk = {}
   local head = L[hstart] or "*"
   local title = head:gsub("^%*+%s+", "")
-  
+
   -- Enhanced archive header with more metadata
   local header_lines = {
     string.format("* %s (%s)", title, tag or "archived"),
@@ -485,24 +522,24 @@ local function archive_subtree_to_file(path, hstart, hend, dest_archive, tag)
     string.format(":ARCHIVED_FROM_LINE: %d", hstart),
     ":END:",
   }
-  
+
   for _, line in ipairs(header_lines) do
     table.insert(chunk, line)
   end
-  
+
   -- Add original subtree
-  for i = hstart, hend do 
-    table.insert(chunk, L[i]) 
+  for i = hstart, hend do
+    table.insert(chunk, L[i])
   end
-  
+
   table.insert(chunk, "") -- Add separator
-  
+
   return appendf(dest_archive, chunk)
 end
 
 local function archive_or_delete_zk(zk_path, action)
   if not zk_path or zk_path == "" then return true end
-  
+
   local P = paths()
   if action == "delete" then
     local success = os.remove(zk_path)
@@ -512,14 +549,14 @@ local function archive_or_delete_zk(zk_path, action)
     end
     return true
   end
-  
+
   -- Move to Notes/Archive with collision handling
   ensure_dir(j(P.zk_arch, "dummy"))
   local base = vim.fn.fnamemodify(zk_path, ":t")
   local stem = vim.fn.fnamemodify(base, ":r")
   local ext = vim.fn.fnamemodify(base, ":e")
   local dst = j(P.zk_arch, base)
-  
+
   -- Handle filename collisions
   local counter = 1
   while vim.fn.filereadable(dst) == 1 do
@@ -528,7 +565,7 @@ local function archive_or_delete_zk(zk_path, action)
     dst = j(P.zk_arch, new_base)
     counter = counter + 1
   end
-  
+
   local success = vim.fn.rename(zk_path, dst) == 0
   if not success then
     vim.notify("⚠️  Failed to move ZK note to archive", vim.log.levels.WARN)
@@ -542,25 +579,23 @@ local function task_actions_menu(item, on_done)
     vim.notify("fzf-lua is required for task management", vim.log.levels.WARN)
     return
   end
-  
+
   local fzf = require("fzf-lua")
   local actions = { "Open", "Clarify", "Archive", "Delete", "Refile", "Open ZK", "Cancel" }
-  
+
   -- Remove actions that don't apply
   if not item.zk_path then
     actions = vim.tbl_filter(function(a) return a ~= "Open ZK" end, actions)
   end
-  
+
   if not clarify then
     actions = vim.tbl_filter(function(a) return a ~= "Clarify" end, actions)
   end
-  
+
   if not organize then
     actions = vim.tbl_filter(function(a) return a ~= "Refile" end, actions)
   end
-  
-  local title_display = format_task_display(item)
-  
+
   fzf.fzf_exec(actions, {
     prompt = "Task Action> ",
     fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
@@ -569,16 +604,16 @@ local function task_actions_menu(item, on_done)
       ["default"] = function(sel)
         local action = sel and sel[1]
         if not action then return end
-        
+
         if action == "Open" then
           vim.cmd("edit " .. vim.fn.fnameescape(item.path))
           vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-          
+
         elseif action == "Clarify" and clarify then
           vim.cmd("edit " .. vim.fn.fnameescape(item.path))
           vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
           clarify.clarify({})
-          
+
         elseif action == "Archive" then
           local P = paths()
           if archive_subtree_to_file(item.path, item.hstart, item.hend, P.archive, "task") then
@@ -589,10 +624,10 @@ local function task_actions_menu(item, on_done)
             vim.notify("❌ Failed to archive task", vim.log.levels.ERROR)
           end
           if on_done then on_done() end
-          
+
         elseif action == "Delete" then
-          ui.select({"Yes, delete permanently", "Cancel"}, 
-            { prompt = "⚠️  Really delete this task?" }, 
+          ui.select({ "Yes, delete permanently", "Cancel" },
+            { prompt = "⚠️  Really delete this task?" },
             function(choice)
               if choice and choice:match("Yes") then
                 if remove_subtree_from_file(item.path, item.hstart, item.hend) then
@@ -604,12 +639,17 @@ local function task_actions_menu(item, on_done)
                 if on_done then on_done() end
               end
             end)
-            
+
         elseif action == "Refile" and organize then
           vim.cmd("edit " .. vim.fn.fnameescape(item.path))
           vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-          organize.refile_at_cursor({})
-          
+          -- organize.refile_at_cursor may be an alias to refile_to_project in your organize.lua
+          if organize.refile_at_cursor then
+            organize.refile_at_cursor({})
+          else
+            organize.refile_to_project({})
+          end
+
         elseif action == "Open ZK" then
           if item.zk_path then
             vim.cmd("edit " .. vim.fn.fnameescape(item.zk_path))
@@ -617,7 +657,7 @@ local function task_actions_menu(item, on_done)
             vim.notify("No ZK note linked to this task", vim.log.levels.INFO)
             if on_done then on_done() end
           end
-          
+
         else
           if on_done then on_done() end
         end
@@ -631,19 +671,19 @@ local function project_actions_menu(proj_info, on_done)
     vim.notify("fzf-lua is required for project management", vim.log.levels.WARN)
     return
   end
-  
+
   local fzf = require("fzf-lua")
   local actions = { "Open", "Archive", "Delete", "Open ZK", "Stats", "Cancel" }
   local title = proj_info.title or vim.fn.fnamemodify(proj_info.path, ":t")
-  
+
   fzf.fzf_exec(actions, {
     prompt = "Project Action> ",
     fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
-    winopts = { 
-      height = 0.30, 
-      width = 0.50, 
+    winopts = {
+      height = 0.30,
+      width = 0.50,
       row = 0.10,
-      title = string.format("%s (%d⚡ %d📋 %d⏳)", 
+      title = string.format("%s (%d⚡ %d📋 %d⏳)",
         title, proj_info.next_actions, proj_info.todo_tasks, proj_info.waiting_tasks),
       title_pos = "center",
     },
@@ -651,12 +691,12 @@ local function project_actions_menu(proj_info, on_done)
       ["default"] = function(sel)
         local action = sel and sel[1]
         if not action then return end
-        
+
         if action == "Open" then
           vim.cmd("edit " .. vim.fn.fnameescape(proj_info.path))
-          
+
         elseif action == "Archive" then
-          ui.select({"Yes, archive project", "Cancel"}, 
+          ui.select({ "Yes, archive project", "Cancel" },
             { prompt = "Archive this entire project?" },
             function(choice)
               if choice and choice:match("Yes") then
@@ -668,9 +708,9 @@ local function project_actions_menu(proj_info, on_done)
                 if on_done then on_done() end
               end
             end)
-            
+
         elseif action == "Delete" then
-          ui.select({"Yes, delete permanently", "Cancel"}, 
+          ui.select({ "Yes, delete permanently", "Cancel" },
             { prompt = "⚠️  Really delete this project file?" },
             function(choice)
               if choice and choice:match("Yes") then
@@ -684,40 +724,40 @@ local function project_actions_menu(proj_info, on_done)
                 if on_done then on_done() end
               end
             end)
-            
+
         elseif action == "Open ZK" then
           local L = readf(proj_info.path)
           for _, ln in ipairs(L) do
-            local zk = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or 
+            local zk = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or
                       ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
-            if zk then 
+            if zk then
               vim.cmd("edit " .. vim.fn.fnameescape(xp(zk)))
-              return 
+              return
             end
           end
           vim.notify("No ZK note found in project", vim.log.levels.INFO)
           if on_done then on_done() end
-          
+
         elseif action == "Stats" then
           local stats = {
             string.format("📂 Project: %s", proj_info.title or vim.fn.fnamemodify(proj_info.path, ":t:r")),
             string.format("📊 Headings: %d", proj_info.headings),
             string.format("⚡ Next Actions: %d", proj_info.next_actions),
-            string.format("📋 TODO Tasks: %d", proj_info.todo_tasks), 
+            string.format("📋 TODO Tasks: %d", proj_info.todo_tasks),
             string.format("⏳ Waiting Tasks: %d", proj_info.waiting_tasks),
             string.format("✅ Done Tasks: %d", proj_info.done_tasks),
           }
-          
+
           if proj_info.earliest_deadline then
             table.insert(stats, string.format("🎯 Earliest Deadline: %s", proj_info.earliest_deadline))
           end
-          
+
           table.insert(stats, string.format("📁 File: %s", vim.fn.fnamemodify(proj_info.path, ":~:.")))
           table.insert(stats, string.format("📅 Modified: %s", os.date("%Y-%m-%d %H:%M", proj_info.last_modified)))
-          
+
           vim.notify(table.concat(stats, "\n"), vim.log.levels.INFO, { title = "Project Stats" })
           if on_done then on_done() end
-          
+
         else
           if on_done then on_done() end
         end
@@ -732,38 +772,38 @@ local function manage_tasks_picker()
     vim.notify("fzf-lua is required for task management", vim.log.levels.WARN)
     return
   end
-  
+
   local fzf = require("fzf-lua")
   local all_items = scan_all_tasks()
-  
+
   -- Filter tasks vs projects
   local tasks = {}
-  for _, item in ipairs(all_items) do 
-    if item.kind == "task" then 
-      table.insert(tasks, item) 
-    end 
+  for _, item in ipairs(all_items) do
+    if item.kind == "task" then
+      table.insert(tasks, item)
+    end
   end
-  
-  if #tasks == 0 then 
-    vim.notify("No tasks found in GTD system", vim.log.levels.INFO) 
-    return 
+
+  if #tasks == 0 then
+    vim.notify("No tasks found in GTD system", vim.log.levels.INFO)
+    return
   end
-  
-  -- Apply archive filter if configured
+
+  -- Apply archive filter if configured (only Archive.org; ArchiveDeleted is already skipped)
   if not M.cfg.show_archive_tasks then
-    tasks = vim.tbl_filter(function(t) 
+    tasks = vim.tbl_filter(function(t)
       local filename = vim.fn.fnamemodify(t.path, ":t")
       return filename ~= M.cfg.archive_file
     end, tasks)
   end
-  
+
   sort_items_gtd_workflow(tasks)
-  
+
   local display = {}
   for _, item in ipairs(tasks) do
     table.insert(display, format_task_display(item))
   end
-  
+
   fzf.fzf_exec(display, {
     prompt = "Manage Tasks> ",
     fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
@@ -775,7 +815,7 @@ local function manage_tasks_picker()
         local idx = vim.fn.index(display, choice) + 1
         local item = tasks[idx]
         if not item then return end
-        
+
         task_actions_menu(item, function()
           vim.schedule(function() manage_tasks_picker() end)
         end)
@@ -786,20 +826,20 @@ local function manage_tasks_picker()
         local idx = vim.fn.index(display, choice) + 1
         local item = tasks[idx]
         if not item then return end
-        
+
         -- Quick edit mode - open file and return to picker on exit
         vim.cmd("edit " .. vim.fn.fnameescape(item.path))
         vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-        
+
         -- Set up autocmd to return to tasks picker when buffer is closed
         local group = vim.api.nvim_create_augroup("GtdQuickEdit", { clear = false })
-        vim.api.nvim_create_autocmd({"BufWinLeave", "BufDelete"}, {
+        vim.api.nvim_create_autocmd({ "BufWinLeave", "BufDelete" }, {
           group = group,
           buffer = vim.api.nvim_get_current_buf(),
           once = true,
           callback = function()
-            vim.schedule(function() 
-              manage_tasks_picker() 
+            vim.schedule(function()
+              manage_tasks_picker()
             end)
           end,
         })
@@ -813,23 +853,23 @@ local function manage_projects_picker()
     vim.notify("fzf-lua is required for project management", vim.log.levels.WARN)
     return
   end
-  
+
   local fzf = require("fzf-lua")
   local projects = list_project_files()
-  
-  if #projects == 0 then 
-    vim.notify("No project files found", vim.log.levels.INFO) 
-    return 
+
+  if #projects == 0 then
+    vim.notify("No project files found", vim.log.levels.INFO)
+    return
   end
-  
+
   -- Apply GTD workflow sorting
   sort_projects_gtd_workflow(projects)
-  
+
   local display = {}
   for _, proj in ipairs(projects) do
     local name = proj.title or vim.fn.fnamemodify(proj.path, ":t:r")
     local status_parts = {}
-    
+
     -- Priority indicator based on activity
     local priority_icon = "🟢" -- Default: inactive
     if proj.next_actions > 0 then
@@ -839,7 +879,7 @@ local function manage_projects_picker()
     elseif proj.tasks > 0 then
       priority_icon = "🟠" -- Low: has waiting/someday
     end
-    
+
     -- Build status info
     if proj.next_actions > 0 then
       table.insert(status_parts, proj.next_actions .. "⚡")
@@ -850,16 +890,24 @@ local function manage_projects_picker()
     if proj.waiting_tasks > 0 then
       table.insert(status_parts, proj.waiting_tasks .. "⏳")
     end
-    
+
     local status_info = #status_parts > 0 and (" [" .. table.concat(status_parts, " ") .. "]") or ""
-    
+
     -- Deadline indicator
     local deadline_info = proj.earliest_deadline and (" 🎯" .. proj.earliest_deadline) or ""
-    
-    table.insert(display, string.format("%s 📂 %s%s%s", 
-      priority_icon, name, status_info, deadline_info))
+
+    -- Show area context for files under Areas/… (without breaking old behavior)
+    local dirname  = vim.fn.fnamemodify(proj.path, ":h:t")
+    local grand    = vim.fn.fnamemodify(proj.path, ":h:h:t")
+    local label_name = name
+    if grand == M.cfg.areas_dir then
+      label_name = string.format("%s › %s", dirname, name)
+    end
+
+    table.insert(display, string.format("%s 📂 %s%s%s",
+      priority_icon, label_name, status_info, deadline_info))
   end
-  
+
   fzf.fzf_exec(display, {
     prompt = "Manage Projects> ",
     fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
@@ -871,7 +919,7 @@ local function manage_projects_picker()
         local idx = vim.fn.index(display, choice) + 1
         local proj = projects[idx]
         if not proj then return end
-        
+
         project_actions_menu(proj, function()
           vim.schedule(function() manage_projects_picker() end)
         end)
@@ -882,19 +930,19 @@ local function manage_projects_picker()
         local idx = vim.fn.index(display, choice) + 1
         local proj = projects[idx]
         if not proj then return end
-        
+
         -- Quick edit mode - open project file and return to picker on exit
         vim.cmd("edit " .. vim.fn.fnameescape(proj.path))
-        
+
         -- Set up autocmd to return to projects picker when buffer is closed
         local group = vim.api.nvim_create_augroup("GtdQuickEditProject", { clear = false })
-        vim.api.nvim_create_autocmd({"BufWinLeave", "BufDelete"}, {
+        vim.api.nvim_create_autocmd({ "BufWinLeave", "BufDelete" }, {
           group = group,
           buffer = vim.api.nvim_get_current_buf(),
           once = true,
           callback = function()
-            vim.schedule(function() 
-              manage_projects_picker() 
+            vim.schedule(function()
+              manage_projects_picker()
             end)
           end,
         })
@@ -909,7 +957,7 @@ local function archive_whole_project_file(proj_path, opts)
   local P = paths()
   local L = readf(proj_path)
   if #L == 0 then return false end
-  
+
   -- Create archive entry with enhanced metadata
   local proj_title = L[1]:match("^%*+%s+(.*)") or vim.fn.fnamemodify(proj_path, ":t:r")
   local chunk = {
@@ -921,41 +969,41 @@ local function archive_whole_project_file(proj_path, opts)
     ":END:",
     "",
   }
-  
+
   -- Add original content
-  for _, ln in ipairs(L) do 
-    table.insert(chunk, ln) 
+  for _, ln in ipairs(L) do
+    table.insert(chunk, ln)
   end
   table.insert(chunk, "")
-  
+
   if not appendf(P.archive, chunk) then
     return false
   end
-  
+
   -- Handle ZK notes
   local zk_files = {}
   for _, ln in ipairs(L) do
-    local p = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or 
+    local p = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or
              ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
     if p then zk_files[xp(p)] = true end
   end
-  
+
   for zk, _ in pairs(zk_files) do
     archive_or_delete_zk(zk, opts.zk_action or "move")
   end
-  
-  -- Move project file to archive directory
-  local ok, dst = move_or_delete_file(proj_path, opts.delete, P.deldir)
+
+  -- Move project file to archive-deleted directory (ArchiveDeleted)
+  local ok, _ = move_or_delete_file(proj_path, opts.delete, P.deldir)
   return ok
 end
 
 -- ------------------------ Public API ------------------------
-function M.manage_tasks() 
-  manage_tasks_picker() 
+function M.manage_tasks()
+  manage_tasks_picker()
 end
 
-function M.manage_projects() 
-  manage_projects_picker() 
+function M.manage_projects()
+  manage_projects_picker()
 end
 
 -- Convenience functions for specific actions
@@ -963,15 +1011,14 @@ function M.archive_task_at_cursor(opts)
   opts = opts or {}
   local path = vim.api.nvim_buf_get_name(0)
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
-  
+
   if not path:match("%.org$") then
     vim.notify("Not in an org file", vim.log.levels.WARN)
     return
   end
-  
-  local lines = readf(path)
+
   local items = scan_all_tasks()
-  
+
   -- Find task at cursor
   for _, item in ipairs(items) do
     if item.path == path and item.lnum <= lnum and lnum <= item.hend then
@@ -986,7 +1033,7 @@ function M.archive_task_at_cursor(opts)
       return
     end
   end
-  
+
   vim.notify("No task found at cursor position", vim.log.levels.WARN)
 end
 
@@ -994,18 +1041,18 @@ function M.delete_task_at_cursor(opts)
   opts = opts or {}
   local path = vim.api.nvim_buf_get_name(0)
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
-  
+
   if not path:match("%.org$") then
     vim.notify("Not in an org file", vim.log.levels.WARN)
     return
   end
-  
+
   local items = scan_all_tasks()
-  
+
   -- Find task at cursor
   for _, item in ipairs(items) do
     if item.path == path and item.lnum <= lnum and lnum <= item.hend then
-      ui.select({"Yes, delete permanently", "Cancel"}, 
+      ui.select({ "Yes, delete permanently", "Cancel" },
         { prompt = "⚠️  Really delete this task permanently?" },
         function(choice)
           if choice and choice:match("Yes") then
@@ -1020,7 +1067,7 @@ function M.delete_task_at_cursor(opts)
       return
     end
   end
-  
+
   vim.notify("No task found at cursor position", vim.log.levels.WARN)
 end
 
@@ -1030,16 +1077,16 @@ function M.help_menu()
     vim.notify("fzf-lua is required", vim.log.levels.WARN)
     return
   end
-  
+
   local fzf = require("fzf-lua")
   local help_items = {
     "📋 Manage Tasks - Browse and manage all tasks",
-    "📂 Manage Projects - Browse and manage project files", 
+    "📂 Manage Projects - Browse and manage project files",
     "📦 Archive Task at Cursor - Archive the task under cursor",
     "🗑️  Delete Task at Cursor - Delete the task under cursor",
     "❌ Cancel",
   }
-  
+
   fzf.fzf_exec(help_items, {
     prompt = "GTD Management> ",
     fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
@@ -1048,7 +1095,7 @@ function M.help_menu()
       ["default"] = function(sel)
         local choice = sel and sel[1]
         if not choice then return end
-        
+
         if choice:match("Manage Tasks") then
           M.manage_tasks()
         elseif choice:match("Manage Projects") then
@@ -1065,36 +1112,36 @@ end
 
 -- ------------------------ Setup & Commands ------------------------
 function M.setup(user_cfg)
-  if user_cfg then 
+  if user_cfg then
     M.cfg = vim.tbl_deep_extend("force", M.cfg, user_cfg)
   end
-  
+
   local P = paths()
-  
+
   -- Ensure required directories exist
   ensure_dir(P.archive)
   ensure_dir(j(P.deldir, "dummy"))
   ensure_dir(j(P.zk_arch, "dummy"))
-  
+
   -- Create user commands
-  vim.api.nvim_create_user_command("GtdManage", function() 
-    M.help_menu() 
+  vim.api.nvim_create_user_command("GtdManage", function()
+    M.help_menu()
   end, { desc = "GTD Management menu" })
-  
-  vim.api.nvim_create_user_command("GtdManageTasks", function() 
-    M.manage_tasks() 
+
+  vim.api.nvim_create_user_command("GtdManageTasks", function()
+    M.manage_tasks()
   end, { desc = "Manage GTD tasks" })
-  
-  vim.api.nvim_create_user_command("GtdManageProjects", function() 
-    M.manage_projects() 
+
+  vim.api.nvim_create_user_command("GtdManageProjects", function()
+    M.manage_projects()
   end, { desc = "Manage GTD projects" })
-  
-  vim.api.nvim_create_user_command("GtdArchiveTask", function() 
-    M.archive_task_at_cursor({}) 
+
+  vim.api.nvim_create_user_command("GtdArchiveTask", function()
+    M.archive_task_at_cursor({})
   end, { desc = "Archive task at cursor" })
-  
-  vim.api.nvim_create_user_command("GtdDeleteTask", function() 
-    M.delete_task_at_cursor({}) 
+
+  vim.api.nvim_create_user_command("GtdDeleteTask", function()
+    M.delete_task_at_cursor({})
   end, { desc = "Delete task at cursor" })
 end
 

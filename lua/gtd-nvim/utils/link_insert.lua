@@ -24,7 +24,8 @@ M.config = {
     }
   },
   extensions = { "md", "org", "txt", "markdown" },
-  exclude_patterns = { "%.git", "%.DS_Store", "node_modules", "^#.*#$", "%.gpg$" },
+  -- FIXED: Added .continuity to exclude patterns
+  exclude_patterns = { "%.git", "%.DS_Store", "node_modules", "^#.*#$", "%.gpg$", "%.continuity" },
 }
 
 -- Setup function  
@@ -46,6 +47,16 @@ local function expand_path(path)
   return vim.fn.expand(path)
 end
 
+-- Helper to build fd exclude options (matching zettelkasten.lua approach)
+local function build_fd_exclude_opts()
+  local exclude_opts = {}
+  for _, pat in ipairs(M.config.exclude_patterns) do
+    table.insert(exclude_opts, "--exclude")
+    table.insert(exclude_opts, pat)
+  end
+  return exclude_opts
+end
+
 local function get_notes_files()
   local notes_dir = expand_path(M.config.notes_dir)
   local files = {}
@@ -61,8 +72,9 @@ local function get_notes_files()
   end
   
   local escaped_dir = vim.fn.shellescape(notes_dir)
+  -- FIXED: Removed head -200 limit - no limits!
   local find_cmd = string.format(
-    'find %s -type f \\( %s \\) | head -200',
+    'find %s -type f \\( %s \\)',
     escaped_dir,
     table.concat(name_patterns, " -o ")
   )
@@ -289,10 +301,14 @@ function M.insert_person_link()
     end)
   end
   
+  -- FIXED: Added fd_opts with exclusions
+  local exclude_opts = build_fd_exclude_opts()
+  
   fzf_lua.files({
     cwd = people_dir,
     prompt = "People> ",
     file_icons = true,
+    fd_opts = table.concat({ "--type", "f", "--hidden", unpack(exclude_opts) }, " "),
     actions = {
       ['default'] = function(selected)
         local file_path = selected[1]
@@ -337,10 +353,14 @@ function M.insert_project_link()
     end)
   end
   
+  -- FIXED: Added fd_opts with exclusions
+  local exclude_opts = build_fd_exclude_opts()
+  
   fzf_lua.files({
     cwd = projects_dir,
     prompt = "Projects> ",
     file_icons = true,
+    fd_opts = table.concat({ "--type", "f", "--hidden", unpack(exclude_opts) }, " "),
     actions = {
       ['default'] = function(selected)
         local file_path = selected[1]

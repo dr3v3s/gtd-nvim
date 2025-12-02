@@ -30,6 +30,9 @@ local function hlevel(ln) local s=ln:match("^(%*+)%s"); return s and #s or nil e
 local function trim(s) return (s or ""):gsub("^%s+",""):gsub("%s+$","") end
 local function safe_require(name) local ok, m = pcall(require, name); return ok and m or nil end
 
+-- ✅ Load GTD v2.0 utilities
+local task_id = safe_require("gtd.utils.task_id")
+local org_dates = safe_require("gtd.utils.org_dates")
 local clarify = safe_require("gtd.clarify")
 
 -- Date helpers for WAITING support

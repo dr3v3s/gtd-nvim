@@ -1,5 +1,7 @@
 -- ~/.config/nvim/lua/gtd/init.lua
--- GTD glue: capture / clarify / organize / projects / manage / lists (no keymaps here)
+-- GTD glue: delegates to capture / clarify / organize / projects.
+-- Keeps config minimal and stable. Safe requires; friendly health checks.
+-- ENHANCED: Added convert task to project command
 
 local M = {}
 
@@ -23,10 +25,9 @@ local function ensure_dir(p)
   vim.fn.mkdir(vim.fn.fnamemodify(p, ":h"), "p")
 end
 local function readf(p)
-  return vim.fn.filereadable(p) == 1 and vim.fn.readfile(p) or {}
+  return vim.fn.readfile(p)
 end
 local function writef(p, L)
-  ensure_dir(p)
   return vim.fn.writefile(L, p) == 0
 end
 
@@ -40,6 +41,7 @@ local function projects_note_dir()
   return j(xp(M.cfg.zk_root), M.cfg.zk_projects)
 end
 
+-- Safe require (don't explode on startup)
 local function safe_require(name)
   local ok, mod = pcall(require, name)
   if not ok then
@@ -52,11 +54,9 @@ end
 -- Backing modules (namespace style)
 local task_id = safe_require "gtd.utils.task_id"
 local capture = safe_require "gtd.capture"
-local clarifyM = safe_require "gtd.clarify"
+local clarify = safe_require "gtd.clarify"
 local organize = safe_require "gtd.organize"
 local projects = safe_require "gtd.projects"
-local manage = safe_require "gtd.manage"
-local lists = safe_require "gtd.lists"
 
 -- ------------------------ Health ------------------------
 function M.health()
@@ -68,7 +68,7 @@ function M.health()
   if not capture then
     table.insert(issues, "Missing gtd.capture")
   end
-  if not clarifyM then
+  if not clarify then
     table.insert(issues, "Missing gtd.clarify")
   end
   if not organize then
@@ -77,15 +77,10 @@ function M.health()
   if not projects then
     table.insert(issues, "Missing gtd.projects")
   end
-  if not manage then
-    table.insert(issues, "Missing gtd.manage")
-  end
-  if not lists then
-    table.insert(issues, "Missing gtd.lists")
-  end
 
   local gtd = xp(M.cfg.gtd_root)
   local zk = xp(M.cfg.zk_root)
+
   if vim.fn.isdirectory(gtd) == 0 then
     table.insert(issues, "GTD root not found: " .. gtd)
   end
@@ -108,9 +103,7 @@ function M.health()
     writef(inb, { "#+TITLE: Inbox", "" })
   end
 
-  if #issues == 0 then
-    vim.notify("GTD health: OK", vim.log.levels.INFO)
-  else
+  if #issues > 0 then
     for _, e in ipairs(issues) do
       vim.notify("GTD health: " .. e, vim.log.levels.WARN)
     end
@@ -120,133 +113,54 @@ end
 
 -- ------------------------ Public API ------------------------
 function M.capture(opts)
-  if capture and capture.capture_quick then
-    return capture.capture_quick(opts or {})
+  if not capture then
+    return
   end
-  vim.notify("gtd.capture not available", vim.log.levels.WARN)
+  return capture.capture_quick(opts or {})
 end
 
--- Clarify on current heading (promote-if-needed behavior lives in clarify.lua).
 function M.clarify(opts)
-  if clarifyM and clarifyM.at_cursor then
-    return clarifyM.at_cursor(opts or {})
-  end
-  vim.notify("gtd.clarify not available", vim.log.levels.WARN)
-end
-
--- Clarify: pick any task in GTD (fzf) then run same flow at that task.
-function M.clarify_pick_any(opts)
-  opts = opts or {}
-  local ok_fzf, fzf = pcall(require, "fzf-lua")
-  if not ok_fzf then
-    vim.notify("fzf-lua not available for task picker", vim.log.levels.WARN)
+  if not clarify then
     return
   end
-
-  local root = xp(M.cfg.gtd_root)
-  local files = vim.fn.globpath(root, "**/*.org", false, true)
-  table.sort(files)
-
-  local items, meta = {}, {}
-  for _, path in ipairs(files) do
-    local lines = readf(path)
-    for i, line in ipairs(lines) do
-      if line:match "^%*+%s+" then
-        local display = ("%s:%d: %s"):format(vim.fn.fnamemodify(path, ":."), i, line)
-        table.insert(items, display)
-        table.insert(meta, { path = path, lnum = i })
-      end
-    end
-  end
-
-  if #items == 0 then
-    vim.notify("No org headings found under " .. root, vim.log.levels.WARN)
-    return
-  end
-
-  fzf.fzf_exec(items, {
-    prompt = "Clarify task> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
-    winopts = { height = 0.55, width = 0.85, row = 0.08 },
-    actions = {
-      ["default"] = function(sel)
-        local choice = sel and sel[1]
-        if not choice then
-          return
-        end
-        local idx = vim.fn.index(items, choice) + 1
-        local m = meta[idx]
-        if not m then
-          return
-        end
-        vim.cmd("edit " .. m.path)
-        vim.api.nvim_win_set_cursor(0, { m.lnum, 0 })
-        if clarifyM and clarifyM.at_cursor then
-          clarifyM.at_cursor(opts)
-        end
-      end,
-    },
-  })
+  return clarify.at_cursor(opts or {})
 end
 
 function M.refile_to_project(opts)
-  if organize and organize.refile_at_cursor then
-    return organize.refile_at_cursor(opts or {})
+  if not organize then
+    return
   end
-  vim.notify("gtd.organize not available", vim.log.levels.WARN)
+  if organize.refile_to_project then
+    return organize.refile_to_project(opts or {})
+  else
+    vim.notify("gtd.organize.refile_to_project() not found", vim.log.levels.ERROR)
+  end
 end
 
 function M.project_new(opts)
-  if projects and projects.create then
-    return projects.create(opts or {})
+  if not projects then
+    return
   end
-  if projects and projects.new_project then
-    return projects.new_project(opts or {})
+  return projects.create(opts or {})
+end
+
+function M.convert_task_to_project(opts)
+  if not projects then
+    vim.notify("gtd.projects not loaded", vim.log.levels.ERROR)
+    return
   end
-  vim.notify("gtd.projects not available", vim.log.levels.WARN)
+  if not projects.create_from_task_at_cursor then
+    vim.notify("gtd.projects.create_from_task_at_cursor() not found", vim.log.levels.ERROR)
+    return
+  end
+  return projects.create_from_task_at_cursor(opts or {})
 end
 
 function M.link_task_to_project(opts)
-  if projects and projects.link_task_to_project_at_cursor then
-    return projects.link_task_to_project_at_cursor(opts or {})
+  if not projects then
+    return
   end
-  vim.notify("gtd.projects link helper not available", vim.log.levels.WARN)
-end
-
--- Lists API wrappers
-function M.next_actions()
-  if lists and lists.next_actions then
-    return lists.next_actions()
-  end
-  vim.notify("gtd.lists not available", vim.log.levels.WARN)
-end
-
-function M.projects_list()
-  if lists and lists.projects then
-    return lists.projects()
-  end
-  vim.notify("gtd.lists not available", vim.log.levels.WARN)
-end
-
-function M.waiting_list()
-  if lists and lists.waiting then
-    return lists.waiting()
-  end
-  vim.notify("gtd.lists not available", vim.log.levels.WARN)
-end
-
-function M.someday_maybe()
-  if lists and lists.someday_maybe then
-    return lists.someday_maybe()
-  end
-  vim.notify("gtd.lists not available", vim.log.levels.WARN)
-end
-
-function M.lists_menu()
-  if lists and lists.menu then
-    return lists.menu()
-  end
-  vim.notify("gtd.lists not available", vim.log.levels.WARN)
+  return projects.link_task_to_project_at_cursor(opts or {})
 end
 
 -- ------------------------ Setup & Commands ------------------------
@@ -257,129 +171,60 @@ function M.setup(user_cfg)
     end
   end
 
-  -- Pass cfg to submodules that support setup
   pcall(function()
-    if clarifyM and clarifyM.setup then
-      clarifyM.setup {
-        gtd_root = M.cfg.gtd_root,
-        inbox_file = M.cfg.inbox_file,
-        projects_dir = M.cfg.projects_dir,
-      }
-    end
-  end)
-
-  pcall(function()
-    if projects and projects.setup then
-      projects.setup {
-        gtd_root = M.cfg.gtd_root,
-        projects_dir = M.cfg.projects_dir,
-        zk_root = M.cfg.zk_root,
-      }
-    end
-  end)
-
-  pcall(function()
-    if manage and manage.setup then
-      manage.setup {
-        gtd_root = M.cfg.gtd_root,
-        projects_dir = M.cfg.projects_dir,
-        zk_root = M.cfg.zk_root,
-      }
-    end
-  end)
-
-  -- Setup lists module (this is what was missing!)
-  pcall(function()
-    if lists and lists.setup then
-      lists.setup {
-        gtd_root = M.cfg.gtd_root,
-        inbox_file = M.cfg.inbox_file,
-        projects_dir = M.cfg.projects_dir,
-        archive_file = "Archive.org",
-        zk_root = M.cfg.zk_root,
-      }
+    if clarify and clarify.setup then
+      clarify.setup { gtd_root = M.cfg.gtd_root, inbox_file = M.cfg.inbox_file, projects_dir = M.cfg.projects_dir }
     end
   end)
 
   M.health()
 
-  -- Core GTD
   vim.api.nvim_create_user_command("GtdCapture", function()
     M.capture {}
-  end, {})
-  vim.api.nvim_create_user_command("GtdClarify", function(o)
-    M.clarify { status = (o.args ~= "" and o.args or nil) }
-  end, { nargs = "?" })
-  vim.api.nvim_create_user_command("GtdClarifyPick", function()
-    M.clarify_pick_any {}
-  end, {})
+  end, { desc = "Capture new task to Inbox" })
+
+  vim.api.nvim_create_user_command("GtdClarify", function(opts)
+    local status = opts.args ~= "" and opts.args or nil
+    M.clarify { status = status }
+  end, { nargs = "?", desc = "Clarify task at cursor" })
+
+  vim.api.nvim_create_user_command("GtdClarifyPromote", function(opts)
+    local status = opts.args ~= "" and opts.args or nil
+    M.clarify { status = status, promote_if_needed = true }
+  end, { nargs = "?", desc = "Clarify and promote line to task" })
+
   vim.api.nvim_create_user_command("GtdRefile", function()
     M.refile_to_project {}
-  end, {})
+  end, { desc = "Refile task to project" })
+
   vim.api.nvim_create_user_command("GtdProjectNew", function()
     M.project_new {}
-  end, {})
+  end, { desc = "Create new project" })
+
+  vim.api.nvim_create_user_command("GtdConvertToProject", function()
+    M.convert_task_to_project {}
+  end, { desc = "Convert task at cursor to project" })
+
   vim.api.nvim_create_user_command("GtdLinkToProject", function()
     M.link_task_to_project {}
-  end, {})
+  end, { desc = "Link task to project" })
+
   vim.api.nvim_create_user_command("GtdHealth", function()
     M.health()
-  end, {})
+  end, { desc = "Check GTD system health" })
+end
 
-  -- Lists (note: these will also be created by lists.setup(), but we can add convenience aliases here)
-  vim.api.nvim_create_user_command("GtdLists", function()
-    M.lists_menu()
-  end, {})
+local manage = safe_require "gtd.manage"
 
-  -- Manager (tasks/projects archive/delete & ZK handling)
-  if manage then
-    vim.api.nvim_create_user_command("GtdManage", function()
-      manage.help_menu()
-    end, {})
-    vim.api.nvim_create_user_command("GtdManageTasks", function()
-      manage.manage_tasks()
-    end, {})
-    vim.api.nvim_create_user_command("GtdManageProjects", function()
-      manage.manage_projects()
-    end, {})
-    vim.api.nvim_create_user_command("GtdArchiveTask", function()
-      manage.archive_task_at_cursor {}
-    end, {})
-    vim.api.nvim_create_user_command("GtdDeleteTask", function()
-      manage.delete_task_at_cursor {}
-    end, {})
+pcall(function()
+  if manage and manage.setup then
+    manage.setup {
+      gtd_root = M.cfg.gtd_root,
+      zk_root = M.cfg.zk_root,
+      projects_dir = M.cfg.projects_dir,
+      inbox_file = M.cfg.inbox_file,
+    }
   end
-end
-
--- In ~/.config/nvim/lua/gtd/init.lua
-local reminders = safe_require "gtd.reminders"
-
--- Add to your setup function:
-function M.setup(user_cfg)
-  -- ... existing setup code ...
-
-  -- Setup reminders integration
-  pcall(function()
-    if reminders and reminders.setup then
-      reminders.setup {
-        gtd_root = M.cfg.gtd_root,
-        inbox_file = M.cfg.inbox_file,
-        projects_dir = M.cfg.projects_dir,
-      }
-    end
-  end)
-
-  -- Add commands
-  vim.api.nvim_create_user_command("GtdImportReminders", function()
-    if reminders then
-      reminders.import_all()
-    end
-  end, {})
-  vim.api.nvim_create_user_command("GtdImportRemindersList", function()
-    if reminders then
-      reminders.import_from_list()
-    end
-  end, {})
-end
+end)
 
 return M

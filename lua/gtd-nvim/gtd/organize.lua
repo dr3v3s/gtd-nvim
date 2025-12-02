@@ -1,9 +1,10 @@
--- ~/.config/nvim/lua/gtd/clarify.lua
--- FIXED: Enhanced Clarify workflow for GTD Org tasks with proper filtering
--- ✅ NO archived files or DONE tasks
--- ✅ Clean display with context icons
--- ✅ GTD-focused sorting prioritizing actionable items
-
+-- ~/.config/nvim/lua/gtd/organize.lua
+-- Clarify & Refile GTD org-mode tasks:
+--  - Clarify at cursor / from global list (fzf-lua)
+--  - Smart sorting by GTD context + dates
+--  - Skips archived / DONE / deleted
+--  - Refile task at cursor → any .org (including Areas)
+--  - Refile any task via fzf picker
 local M = {}
 
 -- ---------- tiny helpers ----------
@@ -14,6 +15,7 @@ local function safe_require(name) local ok, m = pcall(require, name); return ok 
 local function notify(msg, lvl, t) vim.notify(msg, lvl or vim.log.levels.INFO, t) end
 
 local task_id  = safe_require("gtd.utils.task_id")
+local org_dates = safe_require("gtd.utils.org_dates")  -- ✅ Added
 local projects = safe_require("gtd.projects")
 local refile   = safe_require("gtd.refile")
 
@@ -43,7 +45,7 @@ local function calculate_date_priority(scheduled, deadline)
   local now = os.time()
   local today = os.time(os.date("*t", now))
   local priority_boost = 0
-  
+
   -- Overdue deadline = highest boost
   if deadline and deadline < today then
     priority_boost = -3  -- Negative = higher priority
@@ -54,7 +56,7 @@ local function calculate_date_priority(scheduled, deadline)
   elseif deadline and deadline <= (today + 7 * 86400) then
     priority_boost = -1
   end
-  
+
   -- Overdue scheduled items
   if scheduled and scheduled < today then
     priority_boost = math.min(priority_boost, -2)
@@ -62,7 +64,7 @@ local function calculate_date_priority(scheduled, deadline)
   elseif scheduled and scheduled <= today then
     priority_boost = math.min(priority_boost, -1)
   end
-  
+
   return priority_boost
 end
 
@@ -70,10 +72,10 @@ end
 local function classify_task_for_clarify(state, title, filename, scheduled, deadline)
   local is_inbox = filename and filename:lower():match("inbox")
   local is_someday = filename and filename:lower():match("someday")
-  
+
   local base_priority = 5  -- Default
   local context = "❓ OTHER"
-  
+
   -- High-priority actionable states (need clarification most)
   if state == "NEXT" then
     base_priority = 1
@@ -99,11 +101,11 @@ local function classify_task_for_clarify(state, title, filename, scheduled, dead
     base_priority = 3
     context = "❓ NO STATE"
   end
-  
+
   -- Apply date-based priority boost
   local date_boost = calculate_date_priority(scheduled, deadline)
   local final_priority = base_priority + date_boost
-  
+
   return final_priority, context
 end
 
@@ -111,11 +113,11 @@ end
 local function is_archived_file(path, filename)
   local path_lower = path:lower()
   local filename_lower = filename:lower()
-  
+
   -- Comprehensive archive detection
-  return filename_lower:match("archive") or 
-         path_lower:match("archive") or 
-         filename_lower:match("deleted") or 
+  return filename_lower:match("archive") or
+         path_lower:match("archive") or
+         filename_lower:match("deleted") or
          path_lower:match("deleted") or
          path_lower:match("/archive/") or
          path_lower:match("/deleted/")
@@ -124,8 +126,8 @@ end
 local function is_completed_task(state)
   if not state then return false end
   local state_upper = state:upper()
-  return state_upper == "DONE" or 
-         state_upper == "COMPLETED" or 
+  return state_upper == "DONE" or
+         state_upper == "COMPLETED" or
          state_upper == "CANCELLED" or
          state_upper == "CLOSED"
 end
@@ -136,12 +138,12 @@ local function scan_actionable_tasks(root)
   local files = vim.fn.globpath(root, "**/*.org", false, true)
   if type(files) == "string" then files = {files} end
   table.sort(files)
-  
+
   local actionable_tasks = {}
-  
+
   for _, path in ipairs(files) do
     local filename = vim.fn.fnamemodify(path, ":t")
-    
+
     -- STEP 1: Skip archived files entirely
     if is_archived_file(path, filename) then
       -- Skip this entire file
@@ -149,7 +151,7 @@ local function scan_actionable_tasks(root)
       -- STEP 2: Read file safely
       local file_ok, lines = pcall(vim.fn.readfile, path)
       if file_ok and lines then
-        
+
         -- STEP 3: Process each heading
         for i, line in ipairs(lines) do
           if line:match("^%*+%s+") then
@@ -157,7 +159,7 @@ local function scan_actionable_tasks(root)
             local stars, rest = line:match("^(%*+)%s+(.*)")
             local state = nil
             local title = rest or ""
-            
+
             -- Extract state if present
             if rest then
               local s, t = rest:match("^([A-Z]+)%s+(.*)")
@@ -169,13 +171,13 @@ local function scan_actionable_tasks(root)
                 title = "(No title)"
               end
             end
-            
+
             -- STEP 4: Skip completed tasks
             if is_completed_task(state) then
               -- Skip this task
             else
               -- STEP 5: This is an actionable task - extract details
-              
+
               -- Find subtree boundaries
               local h_start = i
               local h_end = i
@@ -185,13 +187,13 @@ local function scan_actionable_tasks(root)
                 if lv2 and lv2 <= lvl then break end
                 h_end = j
               end
-              
+
               -- Extract dates
               local scheduled, deadline = extract_dates_from_lines(lines, h_start, h_end)
-              
+
               -- Calculate priority and context
               local priority, context = classify_task_for_clarify(state, title, filename, scheduled, deadline)
-              
+
               -- Format date info
               local date_info = ""
               if deadline then
@@ -211,11 +213,11 @@ local function scan_actionable_tasks(root)
                   date_info = " [SCHED TODAY]"
                 end
               end
-              
+
               -- Clean title
               local clean_title = title:gsub("%s*:[%w_:%-]+:%s*$", ""):gsub("^%s+", ""):gsub("%s+$", "")
               if clean_title == "" then clean_title = "(No title)" end
-              
+
               table.insert(actionable_tasks, {
                 path = path,
                 lnum = i,
@@ -235,14 +237,14 @@ local function scan_actionable_tasks(root)
       end
     end
   end
-  
+
   -- Sort by GTD priority (actionable first, date-sensitive prioritized)
   table.sort(actionable_tasks, function(a, b)
     if a.priority ~= b.priority then return a.priority < b.priority end
     if a.filename ~= b.filename then return a.filename < b.filename end
     return a.title < b.title
   end)
-  
+
   return actionable_tasks
 end
 
@@ -460,7 +462,6 @@ local function post_actions_menu(ctx)
         elseif act == "Open ZK note" then
           local id = ctx.id
           if id then
-            -- try to find the zk link line we inserted
             local lines = buf_lines(0)
             for i = ctx.h_start, math.min(ctx.h_start + 15, #lines) do
               local lk = (lines[i] or ""):match("%[%[zk:" .. id .. "%]%]")
@@ -597,7 +598,7 @@ function M.clarify_pick_any(opts)
     notify("fzf-lua required for clarify_pick_any()", vim.log.levels.WARN)
     return
   end
-  
+
   local root = opts.root or vim.fn.expand("~/Documents/GTD")
   local actionable_tasks = scan_actionable_tasks(root)
 
@@ -611,9 +612,9 @@ function M.clarify_pick_any(opts)
   for _, task in ipairs(actionable_tasks) do
     local state_tag = task.state and ("[" .. task.state .. "] ") or "[NO STATE] "
     -- Clean format: CONTEXT [STATE] TITLE [DATE_INFO] (FILE)
-    local line = string.format("%s %s%s%s (%s)", 
-      task.context, 
-      state_tag, 
+    local line = string.format("%s %s%s%s (%s)",
+      task.context,
+      state_tag,
       task.title,
       task.date_info or "",
       task.filename
@@ -636,16 +637,16 @@ function M.clarify_pick_any(opts)
   local fzf = require("fzf-lua")
   fzf.fzf_exec(display, {
     prompt = "GTD Clarify> ",
-    winopts = { 
-      height = 0.80, 
+    winopts = {
+      height = 0.80,
       width = 0.95,
       title = " GTD Clarify - Actionable Tasks Only ",
       title_pos = "center"
     },
-    fzf_opts = { 
-      ["--no-info"] = true, 
+    fzf_opts = {
+      ["--no-info"] = true,
       ["--tiebreak"] = "index",
-      ["--header"] = string.format("Actionable: %d high, %d medium, %d low priority • No archived/done items", 
+      ["--header"] = string.format("Actionable: %d high, %d medium, %d low priority • No archived/done items",
         counts.high, counts.medium, counts.low),
       ["--header-lines"] = "0"
     },
@@ -658,6 +659,183 @@ function M.clarify_pick_any(opts)
         pcall(vim.api.nvim_win_set_cursor, 0, { task.lnum, 0 })
         -- run the full wizard at that location
         vim.schedule(function() M.clarify({}) end)
+      end
+    }
+  })
+end
+
+-- ---------- Refile helpers & public API ----------
+
+-- List possible refile targets (all non-archived .org files under ~/Documents/GTD)
+local function list_target_files()
+  local root = vim.fn.expand("~/Documents/GTD")
+  local files = vim.fn.globpath(root, "**/*.org", false, true)
+  if type(files) == "string" then files = { files } end
+
+  local out = {}
+  for _, f in ipairs(files) do
+    local name = vim.fn.fnamemodify(f, ":t")
+    if not is_archived_file(f, name) then
+      table.insert(out, f)
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+-- Extract the heading subtree around cursor (reuses heading_level)
+local function extract_subtree(bufnr)
+  local cursor = vim.api.nvim_win_get_cursor(0)[1]
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+  local start, finish = nil, nil
+  local lvl = 0
+
+  for i = cursor, 1, -1 do
+    local l = lines[i]
+    local hl = heading_level(l or "")
+    if hl then
+      start = i
+      lvl = hl
+      break
+    end
+  end
+  if not start then
+    return nil, nil, nil
+  end
+
+  finish = start
+  for i = start + 1, #lines do
+    local l = lines[i]
+    local lv2 = heading_level(l or "")
+    if lv2 and lv2 <= lvl then break end
+    finish = i
+  end
+
+  return start, finish, lvl
+end
+
+-- Move subtree (cut from current buffer + append to dest file)
+local function move_subtree(bufnr, start, finish, destfile)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local subtree = {}
+
+  for i = start, finish do
+    table.insert(subtree, lines[i])
+  end
+
+  for i = finish, start, -1 do
+    table.remove(lines, i)
+  end
+
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+
+  local ok, dest_lines = pcall(vim.fn.readfile, destfile)
+  if not ok or not dest_lines then dest_lines = {} end
+
+  table.insert(dest_lines, "")
+  for _, l in ipairs(subtree) do
+    table.insert(dest_lines, l)
+  end
+
+  vim.fn.writefile(dest_lines, destfile)
+  notify("Refiled task → " .. vim.fn.fnamemodify(destfile, ":."), vim.log.levels.INFO)
+end
+
+-- Public: Refile task at cursor
+function M.refile_to_project()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local start, finish = extract_subtree(bufnr)
+  if not start then
+    notify("No task heading found to refile", vim.log.levels.WARN)
+    return
+  end
+
+  local targets = list_target_files()
+  if #targets == 0 then
+    notify("No target project/area files found", vim.log.levels.ERROR)
+    return
+  end
+
+  local fzf = safe_require("fzf-lua")
+  if not fzf then
+    vim.ui.select(targets, { prompt = "Refile to:" }, function(choice)
+      if choice then move_subtree(bufnr, start, finish, choice) end
+    end)
+    return
+  end
+
+  local display = {}
+  for _, f in ipairs(targets) do
+    table.insert(display, vim.fn.fnamemodify(f, ":."))
+  end
+
+  fzf.fzf_exec(display, {
+    prompt = "Refile → ",
+    actions = {
+      ["default"] = function(sel)
+        local choice = sel and sel[1]
+        if not choice then return end
+        local idx = vim.fn.index(display, choice) + 1
+        local dest = targets[idx]
+        if dest then move_subtree(bufnr, start, finish, dest) end
+      end
+    }
+  })
+end
+
+-- Public: Pick ANY task via fzf and then refile it
+function M.refile_pick_any(opts)
+  opts = opts or {}
+  if not have_fzf() then
+    notify("fzf-lua required for refile_pick_any()", vim.log.levels.WARN)
+    return
+  end
+
+  local root = opts.root or vim.fn.expand("~/Documents/GTD")
+  local actionable_tasks = scan_actionable_tasks(root)
+
+  if #actionable_tasks == 0 then
+    notify("No actionable tasks found to refile", vim.log.levels.INFO)
+    return
+  end
+
+  local display = {}
+  for _, task in ipairs(actionable_tasks) do
+    local state_tag = task.state and ("[" .. task.state .. "] ") or "[NO STATE] "
+    local line = string.format("%s %s%s%s (%s)",
+      task.context,
+      state_tag,
+      task.title,
+      task.date_info or "",
+      task.filename
+    )
+    table.insert(display, line)
+  end
+
+  local fzf = require("fzf-lua")
+  fzf.fzf_exec(display, {
+    prompt = "GTD Refile> ",
+    winopts = {
+      height = 0.80,
+      width = 0.95,
+      title = " GTD Refile - Pick Task ",
+      title_pos = "center"
+    },
+    fzf_opts = {
+      ["--no-info"] = true,
+      ["--tiebreak"] = "index",
+    },
+    actions = {
+      ["default"] = function(sel)
+        local choice = sel and sel[1]; if not choice then return end
+        local idx = vim.fn.index(display, choice) + 1
+        local task = actionable_tasks[idx]; if not task then return end
+        vim.cmd("edit " .. task.path)
+        pcall(vim.api.nvim_win_set_cursor, 0, { task.lnum, 0 })
+        vim.schedule(function()
+          M.refile_to_project()
+        end)
       end
     }
   })
