@@ -33,18 +33,18 @@ local gtd = require("gtd-nvim.gtd")
 local zk = require("gtd-nvim.zettelkasten")
 
 -- GTD Capture & Process
-vim.keymap.set("n", "<leader>gc", gtd.capture.capture, { desc = "GTD: Quick Capture" })
-vim.keymap.set("n", "<leader>gp", gtd.clarify.process_inbox, { desc = "GTD: Process Inbox" })
+vim.keymap.set("n", "<leader>cc", gtd.capture.capture, { desc = "GTD: Quick Capture" })
+vim.keymap.set("n", "<leader>clt", gtd.clarify.process_inbox, { desc = "GTD: Process Inbox" })
 
 -- GTD Lists
-vim.keymap.set("n", "<leader>gn", gtd.lists.show_next_actions, { desc = "GTD: Next Actions" })
-vim.keymap.set("n", "<leader>gw", gtd.lists.show_waiting_for, { desc = "GTD: Waiting For" })
-vim.keymap.set("n", "<leader>gs", gtd.lists.show_someday_maybe, { desc = "GTD: Someday/Maybe" })
-vim.keymap.set("n", "<leader>gP", gtd.projects.show_projects, { desc = "GTD: Projects" })
+vim.keymap.set("n", "<leader>cln", gtd.lists.show_next_actions, { desc = "GTD: Next Actions" })
+vim.keymap.set("n", "<leader>clw", gtd.lists.show_waiting_for, { desc = "GTD: Waiting For" })
+vim.keymap.set("n", "<leader>cls", gtd.lists.show_someday_maybe, { desc = "GTD: Someday/Maybe" })
+vim.keymap.set("n", "<leader>clP", gtd.projects.show_projects, { desc = "GTD: Projects" })
 
 -- GTD Manage
-vim.keymap.set("n", "<leader>gm", gtd.manage.manage_tasks, { desc = "GTD: Manage All" })
-vim.keymap.set("n", "<leader>go", gtd.organize.organize, { desc = "GTD: Organize" })
+vim.keymap.set("n", "<leader>cmt", gtd.manage.manage_tasks, { desc = "GTD: Manage All" })
+vim.keymap.set("n", "<leader>cr", gtd.organize.organize, { desc = "GTD: Organize" })
 
 -- Zettelkasten
 vim.keymap.set("n", "<leader>zn", zk.new_note, { desc = "Zettel: New Note" })
@@ -68,7 +68,7 @@ GTD-Nvim implements David Allen's five-step methodology:
 **How to capture:**
 
 ```
-<leader>gc  # Open capture interface
+<leader>cc  # Open capture interface
 ```
 
 **What to capture:**
@@ -100,7 +100,7 @@ GTD-Nvim implements David Allen's five-step methodology:
 **How to process:**
 
 ```
-<leader>gp  # Start processing inbox
+<leader>clt  # Start processing inbox
 ```
 
 **The Clarify Questions:**
@@ -133,7 +133,7 @@ For each item, ask:
 
 **Clarify Interface:**
 
-When you press `<leader>gp`, you'll see each inbox item with options:
+When you press `<leader>clt`, you'll see each inbox item with options:
 
 ```
 Actions:
@@ -168,7 +168,7 @@ Inbox: "Website is slow"
 **How to organize:**
 
 ```
-<leader>go  # Open organize interface
+<leader>cr  # Open organize interface
 ```
 
 **Organization Categories:**
@@ -216,9 +216,9 @@ Scheduled: 2024-10-25 (Friday morning - deep work block)
 
 **Daily Review** (5-10 minutes)
 ```
-<leader>gn  # Review Next Actions
-<leader>gc  # Capture today's open loops
-<leader>gp  # Process new inbox items
+<leader>cln  # Review Next Actions
+<leader>cc  # Capture today's open loops
+<leader>clt  # Process new inbox items
 ```
 
 **Weekly Review** (30-60 minutes) - See [Weekly Review](#weekly-review) section
@@ -234,7 +234,7 @@ Scheduled: 2024-10-25 (Friday morning - deep work block)
 **How to engage:**
 
 ```
-<leader>gn  # See all Next Actions
+<leader>cln  # See all Next Actions
 ```
 
 **Choosing What To Do:**
@@ -274,13 +274,13 @@ Pick: "Review PR#142" - good fit for time and energy!
 nvim
 
 # 2. Review what's on deck
-<leader>gn    # Check Next Actions
+<leader>cln    # Check Next Actions
 
 # 3. Check calendar/appointments
 # (Integration with your calendar app)
 
 # 4. Capture overnight thoughts
-<leader>gc    # Anything from yesterday evening?
+<leader>cc    # Anything from yesterday evening?
 
 # 5. Pick your "MIT" (Most Important Task) for today
 # Flag it or move it to top of list
@@ -290,12 +290,12 @@ nvim
 
 **Capture mode:** Always on
 ```
-Something crosses your mind → <leader>gc → Dump it → Back to work
+Something crosses your mind → <leader>cc → Dump it → Back to work
 ```
 
 **Quick checks** (Between meetings/tasks):
 ```
-<leader>gn    # Quick scan of Next Actions
+<leader>cln    # Quick scan of Next Actions
               # Pick next task based on context/time/energy
 ```
 
@@ -303,19 +303,19 @@ Something crosses your mind → <leader>gc → Dump it → Back to work
 
 ```bash
 # 1. Brain dump
-<leader>gc    # Capture everything still in your head
+<leader>cc    # Capture everything still in your head
 
 # 2. Process inbox
-<leader>gp    # Clarify today's captures
+<leader>clt    # Clarify today's captures
 
 # 3. Review tomorrow
-<leader>gn    # Scan for tomorrow's tasks
+<leader>cln    # Scan for tomorrow's tasks
 
 # 4. Plan morning
 # Pick 3 MITs for tomorrow
 
 # 5. Close loops
-<leader>gw    # Check Waiting For - any follow-ups needed?
+<leader>clw    # Check Waiting For - any follow-ups needed?
 ```
 
 ---
@@ -332,10 +332,10 @@ Something crosses your mind → <leader>gc → Dump it → Back to work
 
 ```bash
 # Empty your head
-<leader>gc    # Capture EVERYTHING bothering you
+<leader>cc    # Capture EVERYTHING bothering you
 
 # Empty your inbox
-<leader>gp    # Process every item to zero
+<leader>clt    # Process every item to zero
 
 # Empty your notes
 <leader>zf    # Review zettelkasten notes for action items
@@ -346,24 +346,24 @@ Something crosses your mind → <leader>gc → Dump it → Back to work
 
 ```bash
 # Review Next Actions
-<leader>gn    # Mark completed items DONE
+<leader>cln    # Mark completed items DONE
               # Delete obsolete items
               # Update stale items
 
 # Review Projects
-<leader>gP    # For each project:
+<leader>clP    # For each project:
               # - Is the next action still correct?
               # - Has progress been made?
               # - Is it still active?
 
 # Review Waiting For
-<leader>gw    # For each item:
+<leader>clw    # For each item:
               # - Has it been too long? Follow up?
               # - Can I close this loop?
               # - Still waiting or time to act?
 
 # Review Someday/Maybe
-<leader>gs    # Anything ready to activate?
+<leader>cls    # Anything ready to activate?
               # Anything to delete?
 ```
 
@@ -376,7 +376,7 @@ Something crosses your mind → <leader>gc → Dump it → Back to work
 # - What new projects should I start?
 
 # Brainstorm New Projects
-<leader>gc    # Capture ideas for:
+<leader>cc    # Capture ideas for:
               # - Things you want to learn
               # - Things you want to create
               # - Things you want to improve
@@ -550,12 +550,12 @@ Create custom list commands:
 
 ```lua
 -- Show only @home tasks
-vim.keymap.set("n", "<leader>gh", function()
+vim.keymap.set("n", "<leader>ch", function()
   require("gtd-nvim.gtd.lists").show_by_context("@home")
 end, { desc = "GTD: Home Tasks" })
 
 -- Show only quick tasks
-vim.keymap.set("n", "<leader>gq", function()
+vim.keymap.set("n", "<leader>cq", function()
   require("gtd-nvim.gtd.lists").show_by_tag("#quick")
 end, { desc = "GTD: Quick Tasks" })
 ```
@@ -567,15 +567,15 @@ Match tasks to your current energy level:
 
 ```bash
 # High energy (morning, post-coffee)
-<leader>gn → Filter: energy:high
+<leader>cln → Filter: energy:high
 # Deep work, creative tasks, complex problem-solving
 
 # Medium energy (mid-day)
-<leader>gn → Filter: energy:medium
+<leader>cln → Filter: energy:medium
 # Meetings, code reviews, documentation
 
 # Low energy (post-lunch, evening)
-<leader>gn → Filter: energy:low
+<leader>cln → Filter: energy:low
 # Email, admin tasks, organizing
 ```
 
@@ -585,15 +585,15 @@ Process similar tasks together:
 
 ```bash
 # Email batch (every few hours)
-<leader>gn → Filter: @email
+<leader>cln → Filter: @email
 # Process all emails at once
 
 # Phone calls batch (twice daily)
-<leader>gn → Filter: @phone
+<leader>cln → Filter: @phone
 # Make all calls in one session
 
 # Errands batch (weekly)  
-<leader>gn → Filter: @errands
+<leader>cln → Filter: @errands
 # Plan efficient route
 ```
 
@@ -848,13 +848,13 @@ Don't try to capture your entire life on day one:
 
 **Morning:**
 ```bash
-8:00 AM  - <leader>gn → @computer energy:high
+8:00 AM  - <leader>cln → @computer energy:high
          → Pick: "Refactor authentication module" (2h, deep work)
 
-10:00 AM - <leader>gn → @computer energy:medium
+10:00 AM - <leader>cln → @computer energy:medium
          → Pick: "Review 3 PRs" (30m each)
 
-11:30 AM - <leader>gc → Capture: "Investigate slow query in reports"
+11:30 AM - <leader>cc → Capture: "Investigate slow query in reports"
 ```
 
 **Throughout day:**
@@ -864,9 +864,9 @@ Don't try to capture your entire life on day one:
 
 **Evening:**
 ```bash
-5:00 PM  - <leader>gc → Brain dump
-5:10 PM  - <leader>gp → Process 8 inbox items
-5:20 PM  - <leader>gw → Follow up on "Waiting for design mockups"
+5:00 PM  - <leader>cc → Brain dump
+5:10 PM  - <leader>clt → Process 8 inbox items
+5:20 PM  - <leader>clw → Follow up on "Waiting for design mockups"
 5:25 PM  - Tomorrow's MITs identified → Done for the day
 ```
 
@@ -895,7 +895,7 @@ Evening:   Social media + email (energy:low)
 **Before exam period:**
 ```bash
 # Create project
-<leader>gc → "Final Exams - Spring 2024"
+<leader>cc → "Final Exams - Spring 2024"
 
 # Break into subjects
 - Physics exam (May 15)
@@ -930,12 +930,12 @@ GTD-Nvim is designed for keyboard warriors. Here's a complete keyboard-only work
 nvim
 
 # Capture (no mouse)
-<leader>gc
+<leader>cc
 [type your thought]
 <CR> (enter) to save
 
 # Process (all keyboard)
-<leader>gp
+<leader>clt
 [see item]
 n (next action)
 [type action]
@@ -943,7 +943,7 @@ n (next action)
 <CR> (save)
 
 # Review (fuzzy find)
-<leader>gn
+<leader>cln
 [type to filter]
 <CR> to open
 gx to open links
@@ -1021,20 +1021,20 @@ Together = **Thinking + Doing** in one system
 
 ```
 CAPTURE
-<leader>gc    Quick capture
+<leader>cc    Quick capture
 
 PROCESS
-<leader>gp    Process inbox
+<leader>clt    Process inbox
 
 LISTS  
-<leader>gn    Next Actions
-<leader>gw    Waiting For
-<leader>gs    Someday/Maybe
-<leader>gP    Projects
+<leader>cln    Next Actions
+<leader>clw    Waiting For
+<leader>cls    Someday/Maybe
+<leader>clP    Projects
 
 MANAGE
-<leader>gm    Manage all tasks
-<leader>go    Organize tasks
+<leader>cmt    Manage all tasks
+<leader>cr    Organize tasks
 
 ZETTELKASTEN
 <leader>zn    New note

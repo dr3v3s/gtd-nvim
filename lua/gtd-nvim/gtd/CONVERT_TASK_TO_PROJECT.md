@@ -26,12 +26,12 @@ Add to your Neovim config:
 
 ```lua
 -- In your keymap configuration
-vim.keymap.set('n', '<leader>gP', ':GtdConvertToProject<CR>', 
+vim.keymap.set('n', '<leader>cp', ':GtdConvertToProject<CR>', 
   { desc = "Convert task to project" })
 
 -- Or with WhichKey
 {
-  ["<leader>g"] = {
+  ["<leader>c"] = {
     name = "GTD",
     P = { "<cmd>GtdConvertToProject<cr>", "Convert to project" },
   }
@@ -208,7 +208,7 @@ projects.create_from_task_at_cursor()
 ```lua
 -- In your which-key config
 {
-  ["<leader>g"] = {
+  ["<leader>c"] = {
     name = "GTD",
     c = { "<cmd>GtdCapture<cr>", "Capture" },
     C = { "<cmd>GtdClarify<cr>", "Clarify" },
