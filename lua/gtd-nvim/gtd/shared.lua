@@ -1,7 +1,167 @@
--- ~/.config/nvim/lua/gtd/shared.lua
 -- Fixed shared utilities with proper sorting, filtering, and fzf config
 
 local M = {}
+
+-- ============================================================================
+-- GLYPH SYSTEM (Nerd Font icons for consistent UI)
+-- ============================================================================
+-- Uses Nerd Fonts: https://www.nerdfonts.com/cheat-sheet
+-- Requires a Nerd Font patched terminal font
+
+M.glyphs = {
+  -- GTD States (task status)
+  state = {
+    NEXT     = "",  -- nf-fa-bolt (lightning/action)
+    TODO     = "",  -- nf-fa-circle_o (open circle)
+    WAITING  = "",  -- nf-fa-clock_o (clock/waiting)
+    SOMEDAY  = "",  -- nf-fa-star_o (star/dream)
+    DONE     = "",  -- nf-fa-check (checkmark)
+    PROJECT  = "",  -- nf-oct-project (project)
+    CANCELLED = "",  -- nf-fa-times (x mark)
+  },
+  
+  -- GTD Workflow phases
+  phase = {
+    capture  = "",  -- nf-fa-plus_circle (add/capture)
+    clarify  = "",  -- nf-fa-filter (filter/clarify)
+    organize = "",  -- nf-fa-sitemap (organize)
+    reflect  = "",  -- nf-fa-eye (review/reflect)
+    engage   = "",  -- nf-fa-play (do/engage)
+  },
+  
+  -- GTD Containers/Locations
+  container = {
+    inbox     = "",  -- nf-fa-inbox (inbox tray)
+    projects  = "",  -- nf-fa-folder_open (folder)
+    areas     = "",  -- nf-fa-th_large (grid/areas)
+    someday   = "",  -- nf-fa-archive (archive/someday)
+    reference = "",  -- nf-fa-book (reference)
+    trash     = "",  -- nf-fa-trash (trash)
+    calendar  = "",  -- nf-fa-calendar (calendar)
+    recurring = "",  -- nf-fa-refresh (recurring/repeat)
+  },
+  
+  -- Review phases
+  review = {
+    clear    = "",  -- nf-fa-eraser (clear/clean)
+    current  = "",  -- nf-fa-refresh (current/sync)
+    creative = "",  -- nf-fa-lightbulb_o (creative/idea)
+    complete = "",  -- nf-fa-check_circle (complete)
+  },
+  
+  -- UI Elements
+  ui = {
+    arrow_right = "",  -- nf-fa-chevron_right
+    arrow_down  = "",  -- nf-fa-chevron_down
+    arrow_up    = "",  -- nf-fa-chevron_up
+    bullet      = "",  -- nf-fa-circle (filled)
+    empty       = "",  -- nf-fa-circle_o (empty)
+    check       = "",  -- nf-fa-check
+    cross       = "",  -- nf-fa-times
+    warning     = "",  -- nf-fa-exclamation_triangle
+    info        = "",  -- nf-fa-info_circle
+    question    = "",  -- nf-fa-question_circle
+    edit        = "",  -- nf-fa-pencil
+    search      = "",  -- nf-fa-search
+    link        = "",  -- nf-fa-link
+    tag         = "",  -- nf-fa-tag
+    clock       = "",  -- nf-fa-clock_o
+    user        = "",  -- nf-fa-user
+    note        = "",  -- nf-fa-sticky_note_o
+    list        = "",  -- nf-fa-list
+    menu        = "",  -- nf-fa-bars
+    home        = "",  -- nf-fa-home
+    cog         = "",  -- nf-fa-cog (settings)
+    rocket      = "",  -- nf-fa-rocket (brainstorm)
+  },
+  
+  -- Priority indicators
+  priority = {
+    high   = "",  -- nf-fa-arrow_up
+    medium = "",  -- nf-fa-minus
+    low    = "",  -- nf-fa-arrow_down
+  },
+  
+  -- Checklist states
+  checkbox = {
+    checked   = "",  -- nf-fa-check_square
+    unchecked = "",  -- nf-fa-square_o
+    partial   = "",  -- nf-fa-minus_square_o
+  },
+  
+  -- File types
+  file = {
+    org      = "",  -- nf-fa-file_text_o
+    markdown = "",  -- nf-dev-markdown
+    folder   = "",  -- nf-fa-folder
+    folder_open = "",  -- nf-fa-folder_open
+  },
+  
+  -- Progress/Status
+  progress = {
+    pending  = "",  -- nf-fa-hourglass_start
+    active   = "",  -- nf-fa-spinner
+    done     = "",  -- nf-fa-check_circle
+    blocked  = "",  -- nf-fa-ban
+  },
+}
+
+-- Helper: Get state glyph
+function M.state_glyph(state)
+  return M.glyphs.state[state] or M.glyphs.ui.bullet
+end
+
+-- Helper: Get container glyph
+function M.container_glyph(name)
+  local lower = (name or ""):lower()
+  if lower:match("inbox") then return M.glyphs.container.inbox
+  elseif lower:match("project") then return M.glyphs.container.projects
+  elseif lower:match("area") then return M.glyphs.container.areas
+  elseif lower:match("someday") then return M.glyphs.container.someday
+  elseif lower:match("recurring") then return M.glyphs.container.recurring
+  elseif lower:match("calendar") then return M.glyphs.container.calendar
+  elseif lower:match("archive") then return M.glyphs.container.someday
+  else return M.glyphs.file.org
+  end
+end
+
+-- Helper: Format task for display with glyphs
+function M.format_task(item, opts)
+  opts = opts or {}
+  local g = M.glyphs
+  
+  local state_icon = g.state[item.state] or g.ui.bullet
+  local container_icon = M.container_glyph(item.filename or "")
+  
+  if opts.with_file then
+    local short_file = (item.filename or ""):gsub("%.org$", "")
+    return string.format("%s %s %s │ %s", state_icon, item.title or "", container_icon, short_file)
+  else
+    return string.format("%s %s", state_icon, item.title or "")
+  end
+end
+
+-- Helper: Format header for fzf
+function M.fzf_header(opts)
+  local g = M.glyphs
+  opts = opts or {}
+  local parts = {}
+  
+  table.insert(parts, "Enter:" .. g.ui.arrow_right .. "Open")
+  table.insert(parts, "C-e:" .. g.ui.edit .. "Edit")
+  
+  if opts.clarify then
+    table.insert(parts, "C-c:" .. g.phase.clarify .. "Clarify")
+  end
+  if opts.zettel then
+    table.insert(parts, "C-z:" .. g.ui.note .. "Zettel")
+  end
+  if opts.back then
+    table.insert(parts, "C-b:" .. g.ui.arrow_up .. "Back")
+  end
+  
+  return table.concat(parts, " │ ")
+end
 
 -- ============================================================================
 -- BASIC UTILITIES
@@ -142,14 +302,9 @@ function M.scan_gtd_files_robust(opts)
         elseif filename:lower():match("inbox") then priority = 1
         end
         
-        -- Context icon
-        local context_icon = "📋"
-        if state == "NEXT" then context_icon = "⚡"
-        elseif state == "WAITING" then context_icon = "⏳"
-        elseif state == "SOMEDAY" then context_icon = "💭"
-        elseif is_project then context_icon = "📂"
-        elseif filename:lower():match("inbox") then context_icon = "📥"
-        end
+        -- Context glyph (using new glyph system)
+        local context_icon = M.state_glyph(state)
+        local container_icon = M.container_glyph(filename)
         
         local item = {
           path = path,
@@ -163,6 +318,7 @@ function M.scan_gtd_files_robust(opts)
           level = level,
           is_project = is_project,
           context_icon = context_icon,
+          container_icon = container_icon,
           priority = priority,
         }
         

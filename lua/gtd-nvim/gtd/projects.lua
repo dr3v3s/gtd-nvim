@@ -1,4 +1,3 @@
--- ~/.config/nvim/lua/gtd/projects.lua
 -- GTD Projects (Org) – create, open, search, ZK integration (fzf-lua)
 -- ENHANCED: Convert task to project feature
 -- - Prompts for Title, Description, Defer (SCHEDULED), Due (DEADLINE)
@@ -75,7 +74,7 @@ local function get_area_dirs()
   local results = {}
 
   -- 1) From gtd.areas, if present
-  local areas_mod = safe_require("gtd.areas")
+  local areas_mod = safe_require("gtd-nvim.gtd.areas")
   if areas_mod then
     local list = nil
     if type(areas_mod.get_areas) == "function" then
@@ -708,7 +707,7 @@ end
 
 function M.create_from_task_at_cursor()
   -- Load enhanced UI helpers
-  local ui = safe_require("gtd.projects_enhanced_ui")
+  local ui = safe_require("gtd-nvim.gtd.projects_enhanced_ui")
   if not ui then
     vim.notify("❌ Enhanced UI module not found", vim.log.levels.ERROR)
     return
@@ -1150,6 +1149,154 @@ function M.tab_link_under_cursor()
   local path = parse_org_file_link_at_cursor()
   if path then vim.cmd("tabedit " .. vim.fn.fnameescape(path))
   else vim.notify("No org [[file:...]] link on this line.", vim.log.levels.INFO) end
+end
+
+-- ------------------------------------------------------------
+-- Link task to project
+-- ------------------------------------------------------------
+
+--- Get all project files for picker
+local function get_project_files()
+  local results = {}
+  
+  -- Main projects directory
+  local main_dir = xp(cfg.projects_dir)
+  if vim.fn.isdirectory(main_dir) == 1 then
+    local files = vim.fn.glob(main_dir .. "/*.org", false, true)
+    if type(files) == "string" then files = {files} end
+    for _, f in ipairs(files) do
+      local name = vim.fn.fnamemodify(f, ":t:r")
+      table.insert(results, { display = name, path = f, area = nil })
+    end
+  end
+  
+  -- Area projects
+  for _, area in ipairs(get_area_dirs()) do
+    local files = vim.fn.glob(area.dir .. "/*.org", false, true)
+    if type(files) == "string" then files = {files} end
+    for _, f in ipairs(files) do
+      local name = vim.fn.fnamemodify(f, ":t:r")
+      if name ~= "Inbox" and name ~= "Archive" then
+        table.insert(results, {
+          display = area.label .. "/" .. name,
+          path = f,
+          area = area.label
+        })
+      end
+    end
+  end
+  
+  return results
+end
+
+--- Link task at cursor to a project by adding :PROJECT: property
+---@param opts table|nil Options
+function M.link_task_to_project_at_cursor(opts)
+  opts = opts or {}
+  
+  local buf = vim.api.nvim_get_current_buf()
+  local lnum = vim.api.nvim_win_get_cursor(0)[1]
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  
+  -- Find heading at or above cursor
+  local head_line = nil
+  for i = lnum, 1, -1 do
+    if lines[i] and lines[i]:match("^%*+%s") then
+      head_line = i
+      break
+    end
+  end
+  
+  if not head_line then
+    vim.notify("No heading found at or above cursor", vim.log.levels.WARN)
+    return
+  end
+  
+  local heading = lines[head_line]
+  local title = heading:match("^%*+%s+[A-Z]+%s+(.*)") or heading:match("^%*+%s+(.*)")
+  
+  -- Get project files
+  local projects = get_project_files()
+  if #projects == 0 then
+    vim.notify("No projects found", vim.log.levels.WARN)
+    return
+  end
+  
+  local items = {}
+  local meta = {}
+  for _, p in ipairs(projects) do
+    table.insert(items, p.display)
+    table.insert(meta, p)
+  end
+  
+  local fzf = safe_require("fzf-lua")
+  if fzf then
+    fzf.fzf_exec(items, {
+      prompt = "Link to project> ",
+      fzf_opts = { ["--no-info"] = true },
+      winopts = { height = 0.40, width = 0.60, row = 0.20 },
+      actions = {
+        ["default"] = function(sel)
+          local line = sel and sel[1]
+          if not line then return end
+          local idx = vim.fn.index(items, line) + 1
+          local proj = meta[idx]
+          if not proj then return end
+          
+          -- Find or create properties drawer
+          local props_start, props_end = nil, nil
+          local level = #(heading:match("^(%*+)") or "*")
+          
+          for i = head_line + 1, #lines do
+            local ln = lines[i]
+            if ln:match("^%*+%s") then
+              local next_level = #(ln:match("^(%*+)") or "")
+              if next_level <= level then break end
+            end
+            if ln:match("^%s*:PROPERTIES:%s*$") then props_start = i end
+            if props_start and ln:match("^%s*:END:%s*$") then props_end = i; break end
+          end
+          
+          if props_start and props_end then
+            -- Check if :PROJECT: already exists
+            local has_project = false
+            for i = props_start, props_end do
+              if lines[i]:match("^%s*:PROJECT:") then
+                has_project = true
+                lines[i] = ":PROJECT:   " .. proj.display
+                break
+              end
+            end
+            if not has_project then
+              table.insert(lines, props_end, ":PROJECT:   " .. proj.display)
+            end
+          else
+            -- Create properties drawer
+            local insert_at = head_line + 1
+            -- Skip date lines
+            while insert_at <= #lines and (lines[insert_at]:match("^SCHEDULED:") or lines[insert_at]:match("^DEADLINE:") or lines[insert_at]:match("^%s*$")) do
+              insert_at = insert_at + 1
+            end
+            table.insert(lines, insert_at, ":PROPERTIES:")
+            table.insert(lines, insert_at + 1, ":PROJECT:   " .. proj.display)
+            table.insert(lines, insert_at + 2, ":END:")
+          end
+          
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+          vim.notify("Linked to project: " .. proj.display, vim.log.levels.INFO)
+        end,
+      },
+    })
+  else
+    vim.ui.select(items, { prompt = "Link to project" }, function(choice)
+      if not choice then return end
+      local idx = vim.fn.index(items, choice) + 1
+      local proj = meta[idx]
+      if proj then
+        vim.notify("Selected: " .. proj.display .. " (vim.ui.select fallback)", vim.log.levels.INFO)
+      end
+    end)
+  end
 end
 
 -- ------------------------------------------------------------

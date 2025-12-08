@@ -1,6 +1,6 @@
 -- GTD System Migration Script
 -- Converts system to use TASK_ID only and org-mode date formats
--- Run with: :luafile ~/.config/nvim/lua/gtd/scripts/migrate_to_v2.lua
+-- Run with: :luafile path/to/gtd-nvim/lua/gtd-nvim/gtd/scripts/migrate_to_v2.lua
 
 local M = {}
 
@@ -18,8 +18,8 @@ local function safe_require(name)
   return ok and mod or nil
 end
 
-local task_id = safe_require("gtd.utils.task_id")
-local org_dates = safe_require("gtd.utils.org_dates")
+local task_id = safe_require("gtd-nvim.gtd.utils.task_id")
+local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")
 
 local function log(msg, level)
   if config.verbose then

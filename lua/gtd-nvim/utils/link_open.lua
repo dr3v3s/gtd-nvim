@@ -1,4 +1,3 @@
--- ~/.config/nvim/lua/utils/link_open.lua
 -- Fixed and simplified link opener
 
 local M = {}

@@ -4,7 +4,7 @@
 local M = {}
 
 -- Get core zettelkasten module
-local core = require("utils.zettelkasten")
+local core = require("gtd-nvim.zettelkasten")
 
 ----------------------------------------------------------------------
 -- Book Note Creation

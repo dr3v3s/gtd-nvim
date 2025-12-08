@@ -5,7 +5,7 @@
 
 local M = {}
 
-M._VERSION = "2.0.0"
+M._VERSION = "2.1.0"
 
 -- Default configuration
 M.config = {
@@ -26,6 +26,16 @@ M.config = {
   -- Behavior
   auto_save = true,
   quiet_capture = true,
+  
+  -- Keymaps configuration
+  -- Set to false to disable all keymaps
+  -- Set to table to customize (see mappings.lua for options)
+  keymaps = {
+    enabled = true,
+    prefix = "<leader>c",
+    -- Individual keys can be customized or disabled (set to false)
+    -- keys = { capture = "c", ... }
+  },
 }
 
 -- Safe require helper
@@ -53,12 +63,30 @@ function M.setup(opts)
     })
   end
   
+  -- Setup GTD Lists (registers commands like GtdRecurring, GtdNextActions, etc.)
+  local lists = safe_require("gtd-nvim.gtd.lists")
+  if lists and lists.setup then
+    lists.setup({
+      gtd_root = M.config.gtd_root,
+    })
+  end
+  
+  -- Setup GTD Capture (registers capture commands)
+  local capture = safe_require("gtd-nvim.gtd.capture")
+  if capture and capture.setup then
+    capture.setup({
+      gtd_dir = M.config.gtd_root,
+      inbox_file = M.config.gtd_root .. "/" .. M.config.inbox_file,
+      projects_dir = M.config.gtd_root .. "/" .. M.config.projects_dir,
+    })
+  end
+  
   -- Setup Zettelkasten
   local zk = safe_require("gtd-nvim.zettelkasten")
   if zk and zk.setup then
     zk.setup({
       notes_dir = M.config.zk_root,
-      keymaps = false, -- User sets their own keymaps
+      keymaps = false, -- Handled separately
     })
   end
   
@@ -69,12 +97,28 @@ function M.setup(opts)
       gtd_root = M.config.gtd_root,
     })
   end
+  
+  -- Setup Keymaps
+  if M.config.keymaps then
+    local keymap_opts = M.config.keymaps
+    if type(keymap_opts) == "boolean" then
+      keymap_opts = { enabled = keymap_opts }
+    end
+    
+    if keymap_opts.enabled ~= false then
+      local mappings = safe_require("gtd-nvim.mappings")
+      if mappings and mappings.setup then
+        mappings.setup(keymap_opts)
+      end
+    end
+  end
 end
 
 -- Export modules for direct access
 M.gtd = safe_require("gtd-nvim.gtd")
 M.zettelkasten = safe_require("gtd-nvim.zettelkasten")
 M.audit = safe_require("gtd-nvim.audit")
+M.mappings = safe_require("gtd-nvim.mappings")
 M.utils = {
   link_insert = safe_require("gtd-nvim.utils.link_insert"),
   link_open = safe_require("gtd-nvim.utils.link_open"),

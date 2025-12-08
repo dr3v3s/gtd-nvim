@@ -1,4 +1,3 @@
--- ~/.config/nvim/lua/gtd/reminders.lua
 -- Apple Reminders bidirectional integration for GTD system
 -- Import from Reminders → GTD Inbox
 -- Export GTD tasks → Reminders
@@ -50,8 +49,8 @@ local function append_lines(path, lines)
   vim.fn.writefile(lines, xp(path), "a")
 end
 
-local task_id = require("gtd.utils.task_id")
-local ui = require("gtd.ui")
+local task_id = require("gtd-nvim.gtd.utils.task_id")
+local ui = require("gtd-nvim.gtd.ui")
 
 local function safe_exec_applescript(script)
   local handle = io.popen('osascript -e ' .. vim.fn.shellescape(script))

@@ -1,11 +1,11 @@
 -- GTD Modules Compliance Fixer - Neovim Native
--- Run with: :luafile ~/.config/nvim/lua/gtd/scripts/fix_compliance.lua
+-- Run with: :luafile path/to/gtd-nvim/lua/gtd-nvim/gtd/scripts/fix_compliance.lua
 -- Or add as command: :GtdFixCompliance
 
 local M = {}
 
 local config = {
-  gtd_path = vim.fn.expand("~/.config/nvim/lua/gtd"),
+  gtd_path = vim.fn.expand("~/Documents/GTD"),
   backup_suffix = ".backup-" .. os.date("%Y%m%d%H%M%S"),
   dry_run = false,
 }
@@ -62,8 +62,8 @@ Some changes require manual intervention:
 
 1. ADD UTILITY IMPORTS at top of each module:
    
-   local task_id = require("gtd.utils.task_id")
-   local org_dates = require("gtd.utils.org_dates")
+   local task_id = require("gtd-nvim.gtd.utils.task_id")
+   local org_dates = require("gtd-nvim.gtd.utils.org_dates")
 
 2. REMOVE now_id() FUNCTION definition:
    

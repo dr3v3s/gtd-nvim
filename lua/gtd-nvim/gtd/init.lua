@@ -1,4 +1,3 @@
--- ~/.config/nvim/lua/gtd/init.lua
 -- GTD glue: delegates to capture / clarify / organize / projects.
 -- Keeps config minimal and stable. Safe requires; friendly health checks.
 -- ENHANCED: Added convert task to project command
@@ -52,11 +51,11 @@ local function safe_require(name)
 end
 
 -- Backing modules (namespace style)
-local task_id = safe_require "gtd.utils.task_id"
-local capture = safe_require "gtd.capture"
-local clarify = safe_require "gtd.clarify"
-local organize = safe_require "gtd.organize"
-local projects = safe_require "gtd.projects"
+local task_id = safe_require "gtd-nvim.gtd.utils.task_id"
+local capture = safe_require "gtd-nvim.gtd.capture"
+local clarify = safe_require "gtd-nvim.gtd.clarify"
+local organize = safe_require "gtd-nvim.gtd.organize"
+local projects = safe_require "gtd-nvim.gtd.projects"
 
 -- ------------------------ Health ------------------------
 function M.health()
@@ -212,9 +211,70 @@ function M.setup(user_cfg)
   vim.api.nvim_create_user_command("GtdHealth", function()
     M.health()
   end, { desc = "Check GTD system health" })
+  
+  vim.api.nvim_create_user_command("GtdFindDuplicates", function()
+    M.find_duplicates()
+  end, { desc = "Find duplicate TASK_IDs in GTD system" })
 end
 
-local manage = safe_require "gtd.manage"
+-- ------------------------ Duplicate Detection ------------------------
+function M.find_duplicates()
+  if not task_id or not task_id.find_all_duplicates then
+    vim.notify("task_id.find_all_duplicates not available", vim.log.levels.ERROR)
+    return
+  end
+  
+  local duplicates = task_id.find_all_duplicates(M.cfg.gtd_root)
+  local count = 0
+  
+  for _ in pairs(duplicates) do
+    count = count + 1
+  end
+  
+  if count == 0 then
+    vim.notify("✅ No duplicate TASK_IDs found", vim.log.levels.INFO)
+    return
+  end
+  
+  -- Build report
+  local report = { "⚠️  Found " .. count .. " duplicate TASK_ID(s):", "" }
+  
+  for task_id_val, locations in pairs(duplicates) do
+    table.insert(report, "TASK_ID: " .. task_id_val)
+    for _, loc in ipairs(locations) do
+      local short_file = vim.fn.fnamemodify(loc.file, ":t")
+      table.insert(report, string.format("  - %s (line %d): %s", short_file, loc.heading_line or loc.line, loc.title or "?"))
+    end
+    table.insert(report, "")
+  end
+  
+  -- Show in floating window or quickfix
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, report)
+  vim.api.nvim_buf_set_option(buf, "modifiable", false)
+  vim.api.nvim_buf_set_option(buf, "buftype", "nofile")
+  vim.api.nvim_buf_set_option(buf, "filetype", "markdown")
+  
+  local width = math.min(80, vim.o.columns - 4)
+  local height = math.min(#report + 2, vim.o.lines - 4)
+  
+  vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    col = math.floor((vim.o.columns - width) / 2),
+    row = math.floor((vim.o.lines - height) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " GTD Duplicate Report ",
+    title_pos = "center",
+  })
+  
+  -- Press q to close
+  vim.api.nvim_buf_set_keymap(buf, "n", "q", ":close<CR>", { noremap = true, silent = true })
+end
+
+local manage = safe_require "gtd-nvim.gtd.manage"
 
 pcall(function()
   if manage and manage.setup then
@@ -223,6 +283,17 @@ pcall(function()
       zk_root = M.cfg.zk_root,
       projects_dir = M.cfg.projects_dir,
       inbox_file = M.cfg.inbox_file,
+    }
+  end
+end)
+
+-- Setup Weekly Review module
+local review = safe_require "gtd-nvim.gtd.review"
+
+pcall(function()
+  if review and review.setup then
+    review.setup {
+      gtd_root = M.cfg.gtd_root,
     }
   end
 end)

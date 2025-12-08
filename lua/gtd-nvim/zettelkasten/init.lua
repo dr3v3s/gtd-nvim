@@ -4,14 +4,14 @@
 local M = {}
 
 -- Load core module
-local core = require("utils.zettelkasten")
+local core = require("gtd-nvim.zettelkasten.zettelkasten")
 
 -- Load submodules
-local capture = require("utils.zettelkasten.capture")
-local project = require("utils.zettelkasten.project")
-local manage = require("utils.zettelkasten.manage")
-local reading = require("utils.zettelkasten.reading")
-local people = require("utils.zettelkasten.people")
+local capture = require("gtd-nvim.zettelkasten.capture")
+local project = require("gtd-nvim.zettelkasten.project")
+local manage = require("gtd-nvim.zettelkasten.manage")
+local reading = require("gtd-nvim.zettelkasten.reading")
+local people = require("gtd-nvim.zettelkasten.people")
 
 ----------------------------------------------------------------------
 -- Unified Setup

@@ -1,4 +1,3 @@
--- ~/.config/nvim/lua/gtd/manage.lua
 -- Manage tasks & projects with enhanced GTD workflow integration
 -- - Scan .org files for tasks/projects with full metadata
 -- - Present rich fzf-lua action menus: Open / Clarify / Archive / Delete / Refile / Open ZK
@@ -29,17 +28,17 @@ M.cfg = {
 }
 
 -- ------------------------ Dependencies ------------------------
-local ui = require("gtd.ui")
-local task_id = require("gtd.utils.task_id")
+local ui = require("gtd-nvim.gtd.ui")
+local task_id = require("gtd-nvim.gtd.utils.task_id")
 
 local function safe_require(name)
   local ok, mod = pcall(require, name)
   return ok and mod or nil
 end
 
-local org_dates = safe_require("gtd.utils.org_dates")  -- ✅ Added
-local clarify = safe_require("gtd.clarify")
-local organize = safe_require("gtd.organize")
+local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- ✅ Added
+local clarify = safe_require("gtd-nvim.gtd.clarify")
+local organize = safe_require("gtd-nvim.gtd.organize")
 
 -- ------------------------ Helpers ------------------------
 local function xp(p) return vim.fn.expand(p) end
@@ -581,7 +580,7 @@ local function task_actions_menu(item, on_done)
   end
 
   local fzf = require("fzf-lua")
-  local actions = { "Open", "Clarify", "Archive", "Delete", "Refile", "Open ZK", "Cancel" }
+  local actions = { "Open", "Clarify", "Archive (→ DONE)", "Delete", "Refile", "Open ZK", "Cancel" }
 
   -- Remove actions that don't apply
   if not item.zk_path then
@@ -614,12 +613,28 @@ local function task_actions_menu(item, on_done)
           vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
           clarify.clarify({})
 
-        elseif action == "Archive" then
+        elseif action == "Archive (→ DONE)" then
           local P = paths()
+          -- First mark as DONE, then archive
+          local lines = readf(item.path)
+          if lines[item.hstart] then
+            -- Change state to DONE in the heading line
+            local heading = lines[item.hstart]
+            local stars, state, title = heading:match("^(%*+%s+)([A-Z]+)%s+(.*)")
+            if stars and state and title then
+              -- Replace any GTD state with DONE
+              local gtd_states = { TODO = true, NEXT = true, WAITING = true, SOMEDAY = true }
+              if gtd_states[state] then
+                lines[item.hstart] = stars .. "DONE " .. title
+                writef(item.path, lines)
+              end
+            end
+          end
+          -- Now archive the (now DONE) task
           if archive_subtree_to_file(item.path, item.hstart, item.hend, P.archive, "task") then
             remove_subtree_from_file(item.path, item.hstart, item.hend)
             archive_or_delete_zk(item.zk_path, "move")
-            vim.notify("✅ Task archived successfully", vim.log.levels.INFO)
+            vim.notify("✅ Task marked DONE and archived", vim.log.levels.INFO)
           else
             vim.notify("❌ Failed to archive task", vim.log.levels.ERROR)
           end

@@ -1,4 +1,3 @@
--- ~/.config/nvim/lua/gtd/organize.lua
 -- Clarify & Refile GTD org-mode tasks:
 --  - Clarify at cursor / from global list (fzf-lua)
 --  - Smart sorting by GTD context + dates
@@ -14,10 +13,10 @@ local function heading_level(line) local s = line:match("^(%*+)%s+") return s an
 local function safe_require(name) local ok, m = pcall(require, name); return ok and m or nil end
 local function notify(msg, lvl, t) vim.notify(msg, lvl or vim.log.levels.INFO, t) end
 
-local task_id  = safe_require("gtd.utils.task_id")
-local org_dates = safe_require("gtd.utils.org_dates")  -- ✅ Added
-local projects = safe_require("gtd.projects")
-local refile   = safe_require("gtd.refile")
+local task_id  = safe_require("gtd-nvim.gtd.utils.task_id")
+local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- ✅ Added
+local projects = safe_require("gtd-nvim.gtd.projects")
+local refile   = safe_require("gtd-nvim.gtd.refile")
 
 -- ---------- enhanced date parsing for smart sorting ----------
 local function parse_org_date(date_str)

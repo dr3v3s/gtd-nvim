@@ -11,7 +11,7 @@ local cfg = {
 }
 
 local has_plenary, scandir = pcall(function() return require("plenary.scandir") end)
-local task_id = require("gtd.utils.task_id")
+local task_id = require("gtd-nvim.gtd.utils.task_id")
 
 local function xp(p) return vim.fn.expand(p) end
 local function read_file(p) local ok, d = pcall(vim.fn.readfile, p); return ok and d or nil end

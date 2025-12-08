@@ -1,9 +1,8 @@
--- ~/.config/nvim/lua/gtd/clarify.lua
 -- Fixed clarify module: no DONE tasks, no notes, proper fzf config
 -- Enhanced with comprehensive WAITING FOR support and metadata management
 
 local M = {}
-local shared = require("gtd.shared")
+local shared = require("gtd-nvim.gtd.shared")
 
 -- Focus-mode integration (Sketchybar HUD)
 local focus_mode = (function()
@@ -19,10 +18,10 @@ local function buf_lines(buf) return vim.api.nvim_buf_get_lines(buf, 0, -1, fals
 local function set_buf_lines(buf, L) vim.api.nvim_buf_set_lines(buf, 0, -1, false, L) end
 local function safe_require(name) local ok, m = pcall(require, name); return ok and m or nil end
 
-local task_id  = safe_require("gtd.utils.task_id")
-local org_dates = safe_require("gtd.utils.org_dates")  -- ✅ Added
-local projects = safe_require("gtd.projects")
-local refile   = safe_require("gtd.refile")
+local task_id  = safe_require("gtd-nvim.gtd.utils.task_id")
+local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- ✅ Added
+local projects = safe_require("gtd-nvim.gtd.projects")
+local refile   = safe_require("gtd-nvim.gtd.refile")
 
 -- ---------- WAITING FOR Support ----------
 

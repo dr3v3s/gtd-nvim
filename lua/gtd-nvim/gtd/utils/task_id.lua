@@ -311,6 +311,158 @@ function M.validate_file_ids(lines, file_path)
 end
 
 -- ============================================================================
+-- DUPLICATE DETECTION ACROSS GTD FILES
+-- ============================================================================
+
+--- Scan all GTD org files and build index of TASK_IDs
+--- Returns: { [task_id] = { file = path, line = num, title = heading } }
+function M.scan_all_task_ids(gtd_root)
+  local xp = vim.fn.expand
+  local root = xp(gtd_root or "~/Documents/GTD")
+  local index = {}
+  
+  -- Find all .org files recursively
+  local find_cmd = string.format("find %q -type f -name '*.org' 2>/dev/null", root)
+  local handle = io.popen(find_cmd)
+  if not handle then return index end
+  
+  local files = {}
+  for line in handle:lines() do
+    table.insert(files, line)
+  end
+  handle:close()
+  
+  -- Scan each file for TASK_IDs
+  for _, filepath in ipairs(files) do
+    local lines = vim.fn.readfile(filepath)
+    local current_heading = nil
+    local current_heading_line = nil
+    
+    for i, line in ipairs(lines) do
+      -- Track current heading
+      local heading_match = line:match("^%*+%s+(.+)")
+      if heading_match then
+        current_heading = heading_match
+        current_heading_line = i
+      end
+      
+      -- Check for TASK_ID property
+      local task_id = line:match("^%s*:TASK_ID:%s*(.-)%s*$")
+      if task_id and task_id ~= "" then
+        if not index[task_id] then
+          index[task_id] = {}
+        end
+        table.insert(index[task_id], {
+          file = filepath,
+          line = i,
+          heading_line = current_heading_line,
+          title = current_heading or "(unknown)"
+        })
+      end
+    end
+  end
+  
+  return index
+end
+
+--- Check if a TASK_ID already exists in GTD system
+--- Returns: nil if unique, or { file, line, title } of existing task
+function M.find_duplicate(task_id, gtd_root)
+  if not task_id or task_id == "" then return nil end
+  
+  local index = M.scan_all_task_ids(gtd_root)
+  local existing = index[task_id]
+  
+  if existing and #existing > 0 then
+    return existing[1]  -- Return first occurrence
+  end
+  
+  return nil
+end
+
+--- Find all duplicates across GTD system
+--- Returns: { [task_id] = { {file, line, title}, ... } } for IDs with >1 occurrence
+function M.find_all_duplicates(gtd_root)
+  local index = M.scan_all_task_ids(gtd_root)
+  local duplicates = {}
+  
+  for task_id, locations in pairs(index) do
+    if #locations > 1 then
+      duplicates[task_id] = locations
+    end
+  end
+  
+  return duplicates
+end
+
+--- Check if a title+date combination already exists (fuzzy duplicate detection)
+--- Returns: nil if unique, or { file, line, title, task_id } of similar task
+function M.find_similar_task(title, gtd_root, opts)
+  opts = opts or {}
+  local xp = vim.fn.expand
+  local root = xp(gtd_root or "~/Documents/GTD")
+  
+  -- Normalize title for comparison
+  local norm_title = title:lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  
+  -- Find all .org files
+  local find_cmd = string.format("find %q -type f -name '*.org' 2>/dev/null", root)
+  local handle = io.popen(find_cmd)
+  if not handle then return nil end
+  
+  local files = {}
+  for line in handle:lines() do
+    -- Optionally skip Archive.org
+    if not opts.include_archive and not line:match("Archive%.org$") then
+      table.insert(files, line)
+    elseif opts.include_archive then
+      table.insert(files, line)
+    end
+  end
+  handle:close()
+  
+  -- Scan for matching titles
+  for _, filepath in ipairs(files) do
+    local lines = vim.fn.readfile(filepath)
+    local current_task_id = nil
+    
+    for i, line in ipairs(lines) do
+      -- Extract heading
+      local state, htitle = line:match("^%*+%s+([A-Z]+)%s+(.*)")
+      if htitle then
+        -- Normalize and compare
+        local norm_htitle = htitle:lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+        -- Remove trailing tags
+        norm_htitle = norm_htitle:gsub("%s*:[%w,_@:-]+:%s*$", "")
+        
+        if norm_htitle == norm_title then
+          -- Found matching title - get its TASK_ID if any
+          for j = i + 1, math.min(i + 10, #lines) do
+            local tid = lines[j]:match("^%s*:TASK_ID:%s*(.-)%s*$")
+            if tid then
+              current_task_id = tid
+              break
+            end
+            -- Stop at next heading
+            if lines[j]:match("^%*+%s") then break end
+          end
+          
+          return {
+            file = filepath,
+            line = i,
+            title = htitle,
+            state = state,
+            task_id = current_task_id
+          }
+        end
+      end
+    end
+  end
+  
+  return nil
+end
+
+-- ============================================================================
 -- MODULE CONFIGURATION
 -- ============================================================================
 

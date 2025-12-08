@@ -11,9 +11,9 @@
 --   :GtdQuickFix     - Quick fix common issues (WIP)
 --
 -- Keybindings (suggested):
---   vim.keymap.set('n', '<leader>ca', '<cmd>GtdAudit<cr>', { desc = 'GTD Audit' })
---   vim.keymap.set('n', '<leader>cA', '<cmd>GtdAuditAll<cr>', { desc = 'GTD Audit All' })
---   vim.keymap.set('n', '<leader>cls', '<cmd>GtdSuggest<cr>', { desc = 'GTD Suggest' })
+--   vim.keymap.set('n', '<leader>ga', '<cmd>GtdAudit<cr>', { desc = 'GTD Audit' })
+--   vim.keymap.set('n', '<leader>gA', '<cmd>GtdAuditAll<cr>', { desc = 'GTD Audit All' })
+--   vim.keymap.set('n', '<leader>gs', '<cmd>GtdSuggest<cr>', { desc = 'GTD Suggest' })
 --
 -- What it checks:
 --   ✓ Duplicate SCHEDULED/DEADLINE entries

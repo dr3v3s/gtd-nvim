@@ -1,4 +1,3 @@
--- ~/.config/nvim/lua/utils/link_insert.lua
 -- Enhanced but compatible version based on your original
 
 local M = {}

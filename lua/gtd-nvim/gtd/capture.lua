@@ -1,10 +1,11 @@
--- ~/.config/nvim/lua/gtd/capture.lua
 -- Enhanced capture to Inbox.org with post-capture fzf-lua destination picker + refile
 -- Integrated with utils.zettelkasten for solid note linking
 -- Aligned with ZK-ID: writes :ID: and :TASK_ID: and adds "ID:: [[zk:<ID>]]"
 -- QUIET MODE: Minimal notifications to reduce visual clutter
 -- WAITING FOR: Enhanced support for GTD waiting-for items with proper metadata
--- AREAS: Optional Area-of-Focus selection + Area-aware destinations
+-- AREAS: Optional Area-of-Focus selection - tags task for later refile during clarify
+-- SINGLE INBOX: All captures go to main Inbox.org - no scattered area inboxes
+-- RECURRING: Capture recurring tasks with org-mode repeaters (+1w, .+1m, etc.)
 
 local M = {}
 
@@ -14,16 +15,28 @@ local M = {}
 M.cfg = {
   gtd_dir           = "~/Documents/GTD",
   inbox_file        = "~/Documents/GTD/Inbox.org",
+  recurring_file    = "~/Documents/GTD/Recurring.org",
   projects_dir      = "~/Documents/GTD/Projects",
   default_state     = "TODO",
   quiet_capture     = true,  -- Minimize notifications during capture
   show_success_only = true,  -- Only show final success message
+  
+  -- Capture behavior
+  capture_to_inbox_only = true,  -- Skip destination picker, stay in inbox for review
+  ask_for_area          = true,  -- Ask which area this task relates to
 
   -- WAITING FOR defaults
   waiting_defaults = {
     follow_up_days    = 7,       -- Default follow-up in N days
     default_context   = "",      -- Default context (email, meeting, etc.)
     default_priority  = "medium" -- low, medium, high, urgent
+  },
+  
+  -- RECURRING defaults
+  recurring_defaults = {
+    default_frequency = "weekly",
+    default_interval  = 1,
+    recur_from        = "scheduled",  -- scheduled, completion, or deadline
   },
 }
 
@@ -65,8 +78,6 @@ local function append_lines(p, lines)
   return vim.fn.writefile(lines, expanded, "a") == 0
 end
 
--- ✅ Removed now_id() - using task_id.generate() instead
-
 -- Focus-mode integration (Sketchybar HUD)
 local focus_mode = (function()
   local ok, mod = pcall(require, "utils.focus_mode")
@@ -82,8 +93,8 @@ local function safe_require(module_name)
 end
 
 -- ✅ Load GTD v2.0 utilities
-local task_id = safe_require("gtd.utils.task_id")
-local org_dates = safe_require("gtd.utils.org_dates")
+local task_id = safe_require("gtd-nvim.gtd.utils.task_id")
+local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")
 
 -- Fallback if utilities not available
 if not task_id then
@@ -244,14 +255,131 @@ end
 -- Areas support
 -- ------------------------------------------------------------
 local function get_areas()
-  local mod = safe_require("gtd.areas")
+  local mod = safe_require("gtd-nvim.gtd.areas")
   if mod and type(mod.areas) == "table" then
     return mod.areas
   end
   return nil
 end
 
+-- ------------------------------------------------------------
+-- Projects support - Get ALL project files for direct capture
+-- ------------------------------------------------------------
+local function get_all_projects()
+  local projects = {}
+  local gtd_root = xp(M.cfg.gtd_dir)
+  
+  -- 1) Standalone Projects (Projects/*.org)
+  local projects_dir = gtd_root .. "/Projects"
+  if vim.fn.isdirectory(projects_dir) == 1 then
+    local files = vim.fn.glob(projects_dir .. "/*.org", false, true)
+    for _, f in ipairs(files) do
+      local name = vim.fn.fnamemodify(f, ":t:r")
+      table.insert(projects, {
+        name = name,
+        path = f,
+        display = "📂 " .. name,
+        type = "project",
+        area = nil,
+      })
+    end
+  end
+  
+  -- 2) Area Projects (Areas/*/*.org)
+  local areas_dir = gtd_root .. "/Areas"
+  if vim.fn.isdirectory(areas_dir) == 1 then
+    local area_folders = vim.fn.glob(areas_dir .. "/*", false, true)
+    for _, area_path in ipairs(area_folders) do
+      if vim.fn.isdirectory(area_path) == 1 then
+        local area_name = vim.fn.fnamemodify(area_path, ":t")
+        local area_files = vim.fn.glob(area_path .. "/*.org", false, true)
+        for _, f in ipairs(area_files) do
+          local name = vim.fn.fnamemodify(f, ":t:r")
+          table.insert(projects, {
+            name = name,
+            path = f,
+            display = "📁 " .. area_name .. "/" .. name,
+            type = "area_project",
+            area = area_name,
+          })
+        end
+      end
+    end
+  end
+  
+  -- Sort: standalone projects first, then by area/name
+  table.sort(projects, function(a, b)
+    if a.type ~= b.type then
+      return a.type == "project"  -- standalone projects first
+    end
+    return a.display < b.display
+  end)
+  
+  return projects
+end
+
+-- Pick destination: Inbox or direct to Project
+local function pick_destination(cb)
+  local items = {
+    "📥 Inbox (for review)",
+    "📂 Direct to Project...",
+  }
+  
+  select_fzf(items, "Capture to", function(choice)
+    if not choice then
+      cb(nil)
+      return
+    end
+    
+    if choice:match("^📥") then
+      -- Inbox selected - continue with optional area tagging
+      cb({ type = "inbox" })
+    elseif choice:match("^📂") then
+      -- Project selected - show project picker
+      local projects = get_all_projects()
+      if #projects == 0 then
+        vim.notify("No project files found. Create a project first.", vim.log.levels.WARN)
+        cb(nil)
+        return
+      end
+      
+      local display_items = {}
+      for _, p in ipairs(projects) do
+        table.insert(display_items, p.display)
+      end
+      
+      select_fzf(display_items, "Select Project", function(proj_choice)
+        if not proj_choice then
+          cb(nil)
+          return
+        end
+        
+        -- Find matching project
+        for _, p in ipairs(projects) do
+          if p.display == proj_choice then
+            cb({
+              type = "project",
+              path = p.path,
+              name = p.name,
+              area = p.area,
+            })
+            return
+          end
+        end
+        cb(nil)
+      end)
+    else
+      cb(nil)
+    end
+  end)
+end
+
 local function pick_area(cb)
+  if not M.cfg.ask_for_area then
+    cb(nil)
+    return
+  end
+  
   local areas = get_areas()
   if not areas or vim.tbl_isempty(areas) then
     -- No areas configured -> just continue with nil
@@ -262,19 +390,18 @@ local function pick_area(cb)
   local items = { "No specific area" }
   for _, a in ipairs(areas) do
     if a.name and a.dir then
-      table.insert(items, string.format("%s (%s)", a.name, xp(a.dir)))
+      table.insert(items, a.name)
     end
   end
 
-  select_fzf(items, "Area of Focus", function(choice)
+  select_fzf(items, "Area of Responsibility", function(choice)
     if not choice or choice == "No specific area" then
       cb(nil)
       return
     end
 
-    local chosen_name = choice:match("^(.-)%s+%(") or choice
     for _, a in ipairs(areas) do
-      if a.name == chosen_name then
+      if a.name == choice then
         cb(a)
         return
       end
@@ -417,7 +544,181 @@ local function format_waiting_title(original_title, waiting_data)
 end
 
 -- ------------------------------------------------------------
--- Destination picker (fzf-lua)
+-- RECURRING TASKS Support
+-- ------------------------------------------------------------
+local RECUR_FREQUENCIES = {
+  "daily",
+  "weekly", 
+  "biweekly",
+  "monthly",
+  "quarterly",
+  "yearly",
+  "custom",
+}
+
+local RECUR_FROM_OPTIONS = {
+  "scheduled",   -- Repeat from SCHEDULED date (org: +)
+  "completion",  -- Repeat from completion date (org: .+)
+  "deadline",    -- Repeat from DEADLINE date
+}
+
+local WEEKDAYS = {
+  "monday", "tuesday", "wednesday", "thursday",
+  "friday", "saturday", "sunday"
+}
+
+-- Convert frequency to org-mode repeater interval
+local function frequency_to_org_interval(freq, interval)
+  interval = interval or 1
+  local map = {
+    daily     = tostring(interval) .. "d",
+    weekly    = tostring(interval) .. "w",
+    biweekly  = "2w",
+    monthly   = tostring(interval) .. "m",
+    quarterly = "3m",
+    yearly    = tostring(interval) .. "y",
+  }
+  return map[freq] or (tostring(interval) .. "w")
+end
+
+-- Build org-mode date with repeater
+-- recur_from: "scheduled" = +, "completion" = .+, "deadline" = ++
+local function format_recurring_date(date_str, freq, interval, recur_from)
+  if not date_str or date_str == "" then return nil end
+  
+  local org_interval = frequency_to_org_interval(freq, interval)
+  local repeater_prefix = "+"  -- Default: from scheduled date
+  
+  if recur_from == "completion" then
+    repeater_prefix = ".+"  -- From completion date
+  elseif recur_from == "deadline" then
+    repeater_prefix = "++"  -- From deadline, shift into future
+  end
+  
+  -- Get day of week for the date
+  local year, month, day = date_str:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+  if not year then return "<" .. date_str .. " " .. repeater_prefix .. org_interval .. ">" end
+  
+  local time = os.time({year = tonumber(year), month = tonumber(month), day = tonumber(day)})
+  local weekday = os.date("%a", time)
+  
+  return string.format("<%s %s %s%s>", date_str, weekday, repeater_prefix, org_interval)
+end
+
+-- Collect RECURRING task metadata
+local function collect_recurring_metadata(cb)
+  if not cb then return end
+  
+  local recur_data = {}
+  
+  -- 1) Frequency
+  select_fzf(RECUR_FREQUENCIES, "Recurrence frequency", function(freq)
+    if not freq then return end
+    recur_data.frequency = freq
+    
+    -- 2) Custom interval (only for certain frequencies)
+    local function continue_with_interval()
+      -- 3) Recur from (scheduled, completion, or deadline)
+      select_fzf(RECUR_FROM_OPTIONS, "Repeat from", function(recur_from)
+        recur_data.recur_from = recur_from or M.cfg.recurring_defaults.recur_from
+        
+        -- 4) Optional: specific day for weekly tasks
+        if freq == "weekly" or freq == "biweekly" then
+          local day_items = { "Any day (use scheduled date)" }
+          for _, d in ipairs(WEEKDAYS) do
+            table.insert(day_items, d:sub(1,1):upper() .. d:sub(2))
+          end
+          
+          select_fzf(day_items, "Preferred day", function(day_choice)
+            if day_choice and day_choice ~= "Any day (use scheduled date)" then
+              recur_data.preferred_day = day_choice:lower()
+            end
+            cb(recur_data)
+          end)
+        else
+          cb(recur_data)
+        end
+      end)
+    end
+    
+    if freq == "custom" then
+      maybe_input({ prompt = "Every N days (number): " }, function(n)
+        local num = tonumber(n)
+        if num and num > 0 then
+          recur_data.interval = num
+          recur_data.frequency = "daily"  -- Custom uses daily with interval
+        else
+          recur_data.interval = M.cfg.recurring_defaults.default_interval
+        end
+        continue_with_interval()
+      end)
+    else
+      recur_data.interval = M.cfg.recurring_defaults.default_interval
+      continue_with_interval()
+    end
+  end)
+end
+
+-- Generate RECURRING properties for org-mode
+local function generate_recurring_properties(recur_data)
+  if not recur_data then return {} end
+  
+  local props = {}
+  
+  table.insert(props, ":RECUR:     " .. (recur_data.frequency or "weekly"))
+  
+  if recur_data.interval and recur_data.interval ~= 1 then
+    table.insert(props, ":RECUR_INTERVAL: " .. recur_data.interval)
+  end
+  
+  table.insert(props, ":RECUR_FROM: " .. (recur_data.recur_from or "scheduled"))
+  
+  if recur_data.preferred_day then
+    table.insert(props, ":RECUR_DAY: " .. recur_data.preferred_day)
+  end
+  
+  -- Track creation and last completion
+  table.insert(props, ":RECUR_CREATED: " .. os.date("%Y-%m-%d"))
+  
+  return props
+end
+
+-- Calculate next occurrence date based on preferred day
+local function get_next_occurrence_date(freq, preferred_day, interval)
+  local today = os.time()
+  interval = interval or 1
+  
+  -- If no preferred day, return today
+  if not preferred_day then
+    return os.date("%Y-%m-%d", today)
+  end
+  
+  -- Map day names to weekday numbers (1=Sunday in Lua)
+  local day_map = {
+    sunday = 1, monday = 2, tuesday = 3, wednesday = 4,
+    thursday = 5, friday = 6, saturday = 7
+  }
+  
+  local target_wday = day_map[preferred_day:lower()]
+  if not target_wday then
+    return os.date("%Y-%m-%d", today)
+  end
+  
+  -- Find next occurrence of that day
+  local current_wday = tonumber(os.date("%w", today)) + 1  -- Lua: 0=Sunday, we want 1=Sunday
+  local days_ahead = target_wday - current_wday
+  
+  if days_ahead <= 0 then
+    days_ahead = days_ahead + 7  -- Next week
+  end
+  
+  local next_date = today + (days_ahead * 24 * 60 * 60)
+  return os.date("%Y-%m-%d", next_date)
+end
+
+-- ------------------------------------------------------------
+-- Destination picker (fzf-lua) - For optional immediate refile
+-- Excludes area-specific Inbox.org files to enforce single inbox
 -- ------------------------------------------------------------
 
 -- Build a list of destination items, optionally filtered by a chosen Area
@@ -429,24 +730,23 @@ local function list_destinations(selected_area)
 
   local areas = get_areas()
 
-  -- If an Area is selected: only offer that Area's files (plus Inbox)
+  -- If an Area is selected: only offer that Area's files (excluding any Inbox.org)
   if selected_area and selected_area.dir then
     local area_dir = xp(selected_area.dir)
 
     -- Recursively collect all .org files under this area
     local files = scan_orgs_recursive(area_dir)
 
-    -- If no .org files exist in this area, offer a default Inbox.org there
-    if #files == 0 then
-      files = { area_dir .. "/Inbox.org" }
-    end
-
     local area_label = selected_area.name or vim.fn.fnamemodify(area_dir, ":t")
     for _, f in ipairs(files) do
-      table.insert(items, {
-        display = string.format("Areas/%s/%s", area_label, vim.fn.fnamemodify(f, ":t")),
-        path = f,
-      })
+      -- SKIP any Inbox.org files - enforce single inbox
+      local filename = vim.fn.fnamemodify(f, ":t")
+      if filename:lower() ~= "inbox.org" then
+        table.insert(items, {
+          display = string.format("Areas/%s/%s", area_label, filename),
+          path = f,
+        })
+      end
     end
 
     return items
@@ -474,22 +774,23 @@ local function list_destinations(selected_area)
   end
 
   -- Add Area files for all Areas (when no specific Area was chosen)
+  -- SKIP Inbox.org files in areas - enforce single inbox
   if areas and not vim.tbl_isempty(areas) then
     for _, a in ipairs(areas) do
       if a.dir then
         local area_dir = xp(a.dir)
         local files = scan_orgs_recursive(area_dir)
 
-        if #files == 0 then
-          files = { area_dir .. "/Inbox.org" }
-        end
-
         local area_label = a.name or vim.fn.fnamemodify(area_dir, ":t")
         for _, f in ipairs(files) do
-          table.insert(items, {
-            display = string.format("Areas/%s/%s", area_label, vim.fn.fnamemodify(f, ":t")),
-            path = f,
-          })
+          local filename = vim.fn.fnamemodify(f, ":t")
+          -- Skip Inbox.org files in areas
+          if filename:lower() ~= "inbox.org" then
+            table.insert(items, {
+              display = string.format("Areas/%s/%s", area_label, filename),
+              path = f,
+            })
+          end
         end
       end
     end
@@ -584,7 +885,8 @@ local function refile_captured_id(id, dest_path)
 end
 
 -- ------------------------------------------------------------
--- Capture flow (fzf-lua prompts) - Enhanced with WAITING FOR + Areas
+-- Capture flow (fzf-lua prompts) - Enhanced with WAITING FOR + Areas + Direct to Project
+-- Supports: Inbox capture (with optional Area tag) OR direct capture to Project file
 -- ------------------------------------------------------------
 function M.capture_quick()
   -- Tell focus-mode HUD that we're in GTD mode
@@ -592,8 +894,26 @@ function M.capture_quick()
     focus_mode.set("gtd")
   end
 
-  -- 0) Optional Area-of-Focus
-  pick_area(function(selected_area)
+  -- 0) Pick destination: Inbox or direct to Project
+  pick_destination(function(destination)
+    if not destination then
+      if focus_mode and focus_mode.clear then focus_mode.clear() end
+      return
+    end
+    
+    -- For project destinations, we know the area already
+    local selected_area = nil
+    local target_file = M.cfg.inbox_file  -- default
+    
+    if destination.type == "project" then
+      target_file = destination.path
+      -- Set area info if available
+      if destination.area then
+        selected_area = { name = destination.area }
+      end
+    end
+    
+    local function continue_with_destination()
     -- 1) State
     pick_state(function(state)
       local want_dates = (state ~= "SOMEDAY")
@@ -602,186 +922,411 @@ function M.capture_quick()
       -- 2) Title
       input_nonempty({ prompt = "Title: " }, function(original_title)
 
-        -- Handle WAITING FOR metadata collection
-        local function continue_with_waiting_data(waiting_data)
-          local title = original_title
+        -- 2.1) Check for duplicate/similar tasks
+        local function proceed_with_capture()
+          -- 2.5) Ask if recurring (only for actionable states)
+        local function continue_capture(is_recurring, recur_data)
+          
+          -- Handle WAITING FOR metadata collection
+          local function continue_with_waiting_data(waiting_data)
+            local title = original_title
 
-          -- Enhance title for WAITING items
-          if is_waiting and waiting_data then
-            title = format_waiting_title(original_title, waiting_data)
-          end
-
-          -- 3) Tags
-          maybe_input({ prompt = "Tags (space sep, optional): " }, function(tags)
-            local id = task_id.generate()
-            local scheduled, deadline = "", ""
-
-            local function create_task_with_zk(zk_path)
-              local lines = {}
-
-              -- Heading with tags
-              local tag_string = ""
-              if tags and tags ~= "" then
-                tag_string = "  :" .. tags:gsub("%s+", ":") .. ":"
-              end
-              table.insert(lines, string.format("* %s %s%s", state, title, tag_string))
-
-              -- Dates - for WAITING, use follow-up date as SCHEDULED if provided
-              if want_dates then
-                if is_waiting and waiting_data and waiting_data.follow_up_date then
-                  table.insert(lines, "SCHEDULED: <" .. waiting_data.follow_up_date .. ">")
-                  quiet_notify("Set follow-up as SCHEDULED date", vim.log.levels.INFO)
-                else
-                  if scheduled ~= "" then
-                    table.insert(lines, "SCHEDULED: " .. (org_dates.format_org_date(scheduled) or "<" .. scheduled .. ">"))
-                  end
-                end
-
-                if deadline ~= "" then
-                  table.insert(lines, "DEADLINE: " .. (org_dates.format_org_date(deadline) or "<" .. deadline .. ">"))
-                end
-              end
-
-              -- Properties + IDs
-              table.insert(lines, ":PROPERTIES:")
-              -- REMOVED: Redundant :ID: (using TASK_ID only)
-              table.insert(lines, ":TASK_ID:   " .. id)
-
-              -- Add WAITING FOR specific properties
-              if is_waiting and waiting_data then
-                local waiting_props = generate_waiting_properties(waiting_data)
-                for _, prop in ipairs(waiting_props) do
-                  table.insert(lines, prop)
-                end
-              end
-
-              if zk_path then
-                local zk_filename = vim.fn.fnamemodify(zk_path, ":t")
-                table.insert(lines, ":ZK_NOTE:   [[file:" .. zk_path .. "][" .. zk_filename .. "]]")
-                quiet_notify("Created ZK note: " .. zk_filename, vim.log.levels.INFO)
-              end
-
-              table.insert(lines, ":END:")
-
-              -- Breadcrumb link
-              table.insert(lines, string.format("ID:: [[zk:%s]]", id))
-
-              -- Add WAITING summary as body text
-              if is_waiting and waiting_data then
-                table.insert(lines, "")
-                table.insert(lines, string.format("Waiting for: %s", waiting_data.waiting_for or ""))
-                table.insert(lines, string.format("Expecting: %s", waiting_data.waiting_what or ""))
-                table.insert(lines, string.format("Requested: %s via %s",
-                  waiting_data.requested_date or "", waiting_data.context or ""))
-                if waiting_data.notes and waiting_data.notes ~= "" then
-                  table.insert(lines, "")
-                  table.insert(lines, "Notes: " .. waiting_data.notes)
-                end
-              end
-
-              -- Ensure directories exist
-              ensure_dir(M.cfg.gtd_dir)
-              ensure_dir(M.cfg.projects_dir)
-
-              -- Write to inbox
-              if append_lines(M.cfg.inbox_file, lines) then
-                quiet_notify("Task captured to Inbox.org", vim.log.levels.INFO)
-
-                -- Pick destination (with Area-aware list)
-                pick_destination_fzf(selected_area, function(dest)
-                  if not dest then
-                    -- User cancelled destination selection → clear focus
-                    if focus_mode and focus_mode.clear then
-                      focus_mode.clear()
-                    end
-                    return
-                  end
-                  if refile_captured_id(id, dest) then
-                    local dest_display = vim.fn.fnamemodify(dest, ":.")
-                    local zk_note_text = zk_path and " + ZK note" or ""
-                    local waiting_text = is_waiting and " [WAITING FOR]" or ""
-                    -- success_notify("📝 " .. original_title .. " → " .. dest_display .. zk_note_text .. waiting_text, vim.log.levels.INFO)
-                    silent_cmd("edit " .. xp(dest))
-
-                    -- Clear focus once capture + refile is complete
-                    if focus_mode and focus_mode.clear then
-                      focus_mode.clear()
-                    end
-                  else
-                    vim.notify("Failed to refile task", vim.log.levels.WARN)
-                    -- Clear focus even on failure to avoid stale GTD mode
-                    if focus_mode and focus_mode.clear then
-                      focus_mode.clear()
-                    end
-                  end
-                end)
-              else
-                vim.notify("Failed to capture task", vim.log.levels.ERROR)
-                -- Clear focus on capture failure
-                if focus_mode and focus_mode.clear then
-                  focus_mode.clear()
-                end
-              end
+            -- Enhance title for WAITING items
+            if is_waiting and waiting_data then
+              title = format_waiting_title(original_title, waiting_data)
             end
 
-            local function handle_zk_creation()
-              select_fzf({ "No note", "Create ZK note" }, "Attach note?", function(sel)
-                local zk_path = nil
+            -- 3) Tags
+            maybe_input({ prompt = "Tags (space sep, optional): " }, function(tags)
+              local id = task_id.generate()
+              local scheduled, deadline = "", ""
 
-                if sel == "Create ZK note" then
-                  local zk = safe_require("utils.zettelkasten")
-                  if zk and zk.create_note_file and zk.get_paths then
-                    local paths = zk.get_paths()
-                    if paths and paths.notes_dir then
-                      local dir = vim.fs.joinpath(paths.notes_dir, "Projects")
-                      local note_result, _ = zk.create_note_file({
-                        title = title, -- Use enhanced title for ZK note
-                        dir = dir,
-                        template = "note",
-                        id = id,
-                        open = false,
-                      })
-                      if note_result then
-                        zk_path = note_result
-                        quiet_notify("Created ZK note: " .. vim.fn.fnamemodify(zk_path, ":t"), vim.log.levels.INFO)
+              local function create_task_with_zk(zk_path)
+                local lines = {}
+
+                -- Heading with tags
+                local tag_string = ""
+                if tags and tags ~= "" then
+                  tag_string = "  :" .. tags:gsub("%s+", ":") .. ":"
+                end
+                
+                -- Add :recurring: tag automatically for recurring tasks
+                if is_recurring then
+                  if tag_string == "" then
+                    tag_string = "  :recurring:"
+                  elseif not tag_string:find(":recurring:") then
+                    tag_string = tag_string:gsub(":$", ":recurring:")
+                  end
+                end
+                
+                table.insert(lines, string.format("* %s %s%s", state, title, tag_string))
+
+                -- Dates handling
+                if is_recurring and recur_data then
+                  -- RECURRING: Use date with org-mode repeater
+                  local scheduled_date = get_next_occurrence_date(
+                    recur_data.frequency,
+                    recur_data.preferred_day,
+                    recur_data.interval
+                  )
+                  local scheduled_with_repeater = format_recurring_date(
+                    scheduled_date,
+                    recur_data.frequency,
+                    recur_data.interval,
+                    recur_data.recur_from
+                  )
+                  table.insert(lines, "SCHEDULED: " .. scheduled_with_repeater)
+                elseif want_dates then
+                  -- Standard date handling
+                  if is_waiting and waiting_data and waiting_data.follow_up_date then
+                    table.insert(lines, "SCHEDULED: <" .. waiting_data.follow_up_date .. ">")
+                    quiet_notify("Set follow-up as SCHEDULED date", vim.log.levels.INFO)
+                  else
+                    if scheduled ~= "" then
+                      table.insert(lines, "SCHEDULED: " .. (org_dates.format_org_date(scheduled) or "<" .. scheduled .. ">"))
+                    end
+                  end
+
+                  if deadline ~= "" then
+                    table.insert(lines, "DEADLINE: " .. (org_dates.format_org_date(deadline) or "<" .. deadline .. ">"))
+                  end
+                end
+
+                -- Properties + IDs
+                table.insert(lines, ":PROPERTIES:")
+                table.insert(lines, ":TASK_ID:   " .. id)
+                
+                -- ADD AREA PROPERTY when area is selected
+                if selected_area and selected_area.name then
+                  table.insert(lines, ":AREA:      " .. selected_area.name)
+                end
+
+                -- Add RECURRING properties
+                if is_recurring and recur_data then
+                  local recur_props = generate_recurring_properties(recur_data)
+                  for _, prop in ipairs(recur_props) do
+                    table.insert(lines, prop)
+                  end
+                end
+
+                -- Add WAITING FOR specific properties
+                if is_waiting and waiting_data then
+                  local waiting_props = generate_waiting_properties(waiting_data)
+                  for _, prop in ipairs(waiting_props) do
+                    table.insert(lines, prop)
+                  end
+                end
+
+                if zk_path then
+                  local zk_filename = vim.fn.fnamemodify(zk_path, ":t")
+                  table.insert(lines, ":ZK_NOTE:   [[file:" .. zk_path .. "][" .. zk_filename .. "]]")
+                  quiet_notify("Created ZK note: " .. zk_filename, vim.log.levels.INFO)
+                end
+
+                table.insert(lines, ":END:")
+
+                -- Breadcrumb link
+                table.insert(lines, string.format("ID:: [[zk:%s]]", id))
+
+                -- Add WAITING summary as body text
+                if is_waiting and waiting_data then
+                  table.insert(lines, "")
+                  table.insert(lines, string.format("Waiting for: %s", waiting_data.waiting_for or ""))
+                  table.insert(lines, string.format("Expecting: %s", waiting_data.waiting_what or ""))
+                  table.insert(lines, string.format("Requested: %s via %s",
+                    waiting_data.requested_date or "", waiting_data.context or ""))
+                  if waiting_data.notes and waiting_data.notes ~= "" then
+                    table.insert(lines, "")
+                    table.insert(lines, "Notes: " .. waiting_data.notes)
+                  end
+                end
+
+                -- Ensure directories exist
+                ensure_dir(M.cfg.gtd_dir)
+                ensure_dir(M.cfg.projects_dir)
+
+                -- Choose destination based on: destination type + recurring
+                local final_target = target_file  -- from outer scope (project path or inbox)
+                if destination.type == "inbox" then
+                  -- Inbox captures: recurring goes to Recurring.org, otherwise Inbox.org
+                  final_target = is_recurring and M.cfg.recurring_file or M.cfg.inbox_file
+                elseif destination.type == "project" and is_recurring then
+                  -- Project captures with recurring: still go to Recurring.org
+                  final_target = M.cfg.recurring_file
+                end
+                -- else: direct to project file (already set in target_file)
+                
+                -- Ensure recurring file exists
+                if is_recurring then
+                  local recurring_path = xp(M.cfg.recurring_file)
+                  if not file_exists(recurring_path) then
+                    writefile(recurring_path, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
+                  end
+                end
+
+                -- Write to target file
+                if append_lines(final_target, lines) then
+                  -- Build success message
+                  local dest_text = ""
+                  if destination.type == "project" and not is_recurring then
+                    dest_text = " → " .. destination.name
+                  end
+                  local area_text = selected_area and (" [" .. selected_area.name .. "]") or ""
+                  local waiting_text = is_waiting and " [WAITING]" or ""
+                  local zk_text = zk_path and " +ZK" or ""
+                  local recur_text = ""
+                  if is_recurring and recur_data then
+                    recur_text = " [" .. recur_data.frequency
+                    if recur_data.preferred_day then
+                      recur_text = recur_text .. " " .. recur_data.preferred_day
+                    end
+                    recur_text = recur_text .. "]"
+                  end
+                  
+                  local icon = is_recurring and "🔁" or (destination.type == "project" and "📂" or "📥")
+                  success_notify(icon .. " " .. original_title .. dest_text .. area_text .. recur_text .. waiting_text .. zk_text, vim.log.levels.INFO)
+                  
+                  -- Clear focus
+                  if focus_mode and focus_mode.clear then
+                    focus_mode.clear()
+                  end
+                else
+                  vim.notify("Failed to capture task", vim.log.levels.ERROR)
+                  if focus_mode and focus_mode.clear then
+                    focus_mode.clear()
+                  end
+                end
+              end
+
+              local function handle_zk_creation()
+                select_fzf({ "No note", "Create ZK note" }, "Attach note?", function(sel)
+                  local zk_path = nil
+
+                  if sel == "Create ZK note" then
+                    local zk = safe_require("gtd-nvim.zettelkasten")
+                    if zk and zk.create_note_file and zk.get_paths then
+                      local paths = zk.get_paths()
+                      if paths and paths.notes_dir then
+                        local dir = vim.fs.joinpath(paths.notes_dir, "Projects")
+                        local note_result, _ = zk.create_note_file({
+                          title = title,
+                          dir = dir,
+                          template = "note",
+                          id = id,
+                          open = false,
+                        })
+                        if note_result then
+                          zk_path = note_result
+                          quiet_notify("Created ZK note: " .. vim.fn.fnamemodify(zk_path, ":t"), vim.log.levels.INFO)
+                        end
                       end
                     end
                   end
-                end
 
-                create_task_with_zk(zk_path)
-              end)
-            end
-
-            -- Handle dates differently for WAITING items
-            if want_dates and not is_waiting then
-              local today = os.date("%Y-%m-%d")
-              local plus3 = os.date("%Y-%m-%d", os.time() + 3 * 24 * 3600)
-
-              maybe_input({ prompt = "Defer (YYYY-MM-DD) [Enter=" .. today .. "]: " }, function(s)
-                scheduled = (s ~= "" and s or today)
-
-                maybe_input({ prompt = "Due (YYYY-MM-DD) [Enter=" .. plus3 .. "]: " }, function(d)
-                  deadline = (d ~= "" and d or plus3)
-                  handle_zk_creation()
+                  create_task_with_zk(zk_path)
                 end)
+              end
+
+              -- Handle dates: skip for recurring (already has repeater) and SOMEDAY
+              if is_recurring then
+                -- Recurring tasks skip manual date entry - uses repeater
+                handle_zk_creation()
+              elseif want_dates and not is_waiting then
+                local today = os.date("%Y-%m-%d")
+                local plus3 = os.date("%Y-%m-%d", os.time() + 3 * 24 * 3600)
+
+                maybe_input({ prompt = "Defer (YYYY-MM-DD) [Enter=" .. today .. "]: " }, function(s)
+                  scheduled = (s ~= "" and s or today)
+
+                  maybe_input({ prompt = "Due (YYYY-MM-DD) [Enter=" .. plus3 .. "]: " }, function(d)
+                    deadline = (d ~= "" and d or plus3)
+                    handle_zk_creation()
+                  end)
+                end)
+              else
+                -- For WAITING items, we already have the follow-up date
+                -- For SOMEDAY items, we skip dates entirely
+                handle_zk_creation()
+              end
+            end)
+          end
+
+          -- Collect WAITING FOR metadata if this is a WAITING item
+          if is_waiting then
+            collect_waiting_metadata(function(waiting_data)
+              continue_with_waiting_data(waiting_data)
+            end)
+          else
+            continue_with_waiting_data(nil)
+          end
+        end
+        
+        -- Ask if recurring (for actionable states only, not SOMEDAY/DONE)
+        if state ~= "SOMEDAY" and state ~= "DONE" then
+          select_fzf({ "One-time task", "🔁 Recurring task" }, "Task type", function(task_type)
+            if task_type == "🔁 Recurring task" then
+              -- Collect recurring metadata then continue
+              collect_recurring_metadata(function(recur_data)
+                if recur_data then
+                  continue_capture(true, recur_data)
+                else
+                  -- User cancelled - treat as one-time
+                  continue_capture(false, nil)
+                end
               end)
             else
-              -- For WAITING items, we already have the follow-up date
-              -- For SOMEDAY items, we skip dates entirely
-              handle_zk_creation()
+              -- One-time task
+              continue_capture(false, nil)
             end
           end)
+        else
+          -- SOMEDAY/DONE don't get recurring option
+          continue_capture(false, nil)
         end
-
-        -- Collect WAITING FOR metadata if this is a WAITING item
-        if is_waiting then
-          collect_waiting_metadata(function(waiting_data)
-            continue_with_waiting_data(waiting_data)
+        end  -- end proceed_with_capture
+        
+        -- Check for similar existing tasks before proceeding
+        local similar = task_id.find_similar_task(original_title, M.cfg.gtd_dir)
+        if similar then
+          local short_file = vim.fn.fnamemodify(similar.file, ":t")
+          local msg = string.format("⚠️  Similar task exists:\n\"%s\" (%s)\nin %s\n\nCreate anyway?",
+            similar.title, similar.state or "?", short_file)
+          
+          select_fzf({ "Cancel (don't create)", "Create anyway" }, msg, function(choice)
+            if choice == "Create anyway" then
+              proceed_with_capture()
+            else
+              vim.notify("Capture cancelled - duplicate avoided", vim.log.levels.INFO)
+              if focus_mode and focus_mode.clear then focus_mode.clear() end
+            end
           end)
         else
-          continue_with_waiting_data(nil)
+          -- No duplicate found, proceed normally
+          proceed_with_capture()
         end
+      end)
+    end)
+    end  -- end continue_with_destination
+    
+    -- For inbox destinations, offer optional area selection first
+    if destination.type == "inbox" then
+      pick_area(function(area)
+        selected_area = area
+        continue_with_destination()
+      end)
+    else
+      -- Project destination: proceed directly (area is already known)
+      continue_with_destination()
+    end
+  end)
+end
+
+-- ------------------------------------------------------------
+-- Recurring Task Capture
+-- Captures directly to Recurring.org with proper org-mode repeaters
+-- ------------------------------------------------------------
+function M.capture_recurring()
+  -- Tell focus-mode HUD that we're in GTD mode
+  if focus_mode and focus_mode.set then
+    focus_mode.set("gtd")
+  end
+  
+  -- 0) Optional Area-of-Focus
+  pick_area(function(selected_area)
+    -- 1) Title
+    input_nonempty({ prompt = "🔁 Recurring task title: " }, function(title)
+      
+      -- 2) Tags
+      maybe_input({ prompt = "Tags (space sep, optional): " }, function(tags)
+        
+        -- 3) Collect recurrence metadata
+        collect_recurring_metadata(function(recur_data)
+          if not recur_data then
+            if focus_mode and focus_mode.clear then focus_mode.clear() end
+            return
+          end
+          
+          local id = task_id.generate()
+          
+          -- Calculate first scheduled date
+          local scheduled_date = get_next_occurrence_date(
+            recur_data.frequency,
+            recur_data.preferred_day,
+            recur_data.interval
+          )
+          
+          -- Build the recurring date with org-mode repeater
+          local scheduled_with_repeater = format_recurring_date(
+            scheduled_date,
+            recur_data.frequency,
+            recur_data.interval,
+            recur_data.recur_from
+          )
+          
+          -- Build task lines
+          local lines = {}
+          
+          -- Heading with tags
+          local tag_string = ""
+          if tags and tags ~= "" then
+            tag_string = "  :" .. tags:gsub("%s+", ":") .. ":"
+          end
+          -- Add :recurring: tag automatically
+          if tag_string == "" then
+            tag_string = "  :recurring:"
+          elseif not tag_string:find(":recurring:") then
+            tag_string = tag_string:gsub(":$", ":recurring:")
+          end
+          
+          table.insert(lines, string.format("* TODO %s%s", title, tag_string))
+          
+          -- SCHEDULED with org-mode repeater
+          table.insert(lines, "SCHEDULED: " .. scheduled_with_repeater)
+          
+          -- Properties
+          table.insert(lines, ":PROPERTIES:")
+          table.insert(lines, ":TASK_ID:   " .. id)
+          
+          -- Area if selected
+          if selected_area and selected_area.name then
+            table.insert(lines, ":AREA:      " .. selected_area.name)
+          end
+          
+          -- Recurring properties
+          local recur_props = generate_recurring_properties(recur_data)
+          for _, prop in ipairs(recur_props) do
+            table.insert(lines, prop)
+          end
+          
+          table.insert(lines, ":END:")
+          
+          -- Breadcrumb link
+          table.insert(lines, string.format("ID:: [[zk:%s]]", id))
+          
+          -- Ensure Recurring.org exists
+          local recurring_path = xp(M.cfg.recurring_file)
+          if not file_exists(recurring_path) then
+            writefile(recurring_path, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
+          end
+          
+          -- Append to Recurring.org
+          if append_lines(M.cfg.recurring_file, lines) then
+            local area_text = selected_area and (" [" .. selected_area.name .. "]") or ""
+            local freq_text = recur_data.frequency
+            if recur_data.preferred_day then
+              freq_text = freq_text .. " (" .. recur_data.preferred_day .. ")"
+            end
+            
+            success_notify("🔁 " .. title .. area_text .. " [" .. freq_text .. "]", vim.log.levels.INFO)
+          else
+            vim.notify("Failed to capture recurring task", vim.log.levels.ERROR)
+          end
+          
+          -- Clear focus
+          if focus_mode and focus_mode.clear then
+            focus_mode.clear()
+          end
+        end)
       end)
     end)
   end)
@@ -794,8 +1339,16 @@ function M.open_inbox()
   vim.cmd("edit " .. xp(M.cfg.inbox_file))
 end
 
+function M.open_recurring()
+  local recurring_path = xp(M.cfg.recurring_file)
+  if not file_exists(recurring_path) then
+    writefile(recurring_path, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
+  end
+  vim.cmd("edit " .. recurring_path)
+end
+
 function M.find_files()
-  local proj = safe_require("utils.projects")
+  local proj = safe_require("gtd-nvim.gtd.projects")
   if proj and type(proj.find_files) == "function" then
     return proj.find_files()
   end
@@ -809,7 +1362,7 @@ function M.find_files()
 end
 
 function M.search()
-  local proj = safe_require("utils.projects")
+  local proj = safe_require("gtd-nvim.gtd.projects")
   if proj and type(proj.search) == "function" then
     return proj.search()
   end
@@ -944,6 +1497,11 @@ function M.setup(opts)
   if not file_exists(M.cfg.inbox_file) then
     writefile(M.cfg.inbox_file, { "#+TITLE: Inbox", "" })
   end
+  
+  -- Ensure recurring file exists
+  if not file_exists(M.cfg.recurring_file) then
+    writefile(M.cfg.recurring_file, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
+  end
 
   -- Optionally set vim to be quieter during operations
   if M.cfg.quiet_capture then
@@ -961,6 +1519,11 @@ end
 function M.set_verbose()
   M.cfg.quiet_capture = false
   M.cfg.show_success_only = false
+end
+
+-- Toggle inbox-only capture mode
+function M.set_inbox_only(inbox_only)
+  M.cfg.capture_to_inbox_only = inbox_only
 end
 
 -- Backward-compat single entry (used by some wrappers): create() -> capture_quick()
