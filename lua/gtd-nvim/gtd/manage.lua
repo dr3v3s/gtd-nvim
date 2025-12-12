@@ -60,6 +60,20 @@ local function appendf(path, L) ensure_dir(path); vim.fn.writefile({ "" }, path,
 local function now() return os.date(M.cfg.date_format) end
 local function have_fzf() return pcall(require, "fzf-lua") end
 
+-- Ensure valid cwd for fzf-lua (prevents ENOENT errors on deleted directories)
+local function ensure_valid_cwd()
+  local cwd = vim.uv.cwd()
+  if not cwd then
+    -- cwd is nil (deleted directory) - change to GTD root or home
+    local fallback = xp(M.cfg.gtd_root)
+    if vim.fn.isdirectory(fallback) == 1 then
+      vim.cmd("cd " .. vim.fn.fnameescape(fallback))
+    else
+      vim.cmd("cd " .. vim.fn.fnameescape(vim.fn.expand("$HOME")))
+    end
+  end
+end
+
 local function truncate_title(title, max_len)
   max_len = max_len or M.cfg.max_title_length
   if not title or #title <= max_len then return title or "" end
@@ -123,7 +137,7 @@ local function get_property(lines, start_idx, end_idx, key)
   local p_start, p_end = find_properties_block(lines, start_idx, end_idx)
   if not p_start then return nil end
   for i = p_start + 1, p_end - 1 do
-    local k, v = lines[i]:match("^%s*:(%w+):%s*(.*)%s*$")
+    local k, v = lines[i]:match("^%s*:([%w_]+):%s*(.*)%s*$")
     if k and k:upper() == key:upper() then return v end
   end
   return nil
@@ -145,7 +159,7 @@ local function zk_path_in_subtree(lines, hstart, hend)
   -- Look for ZK_NOTE property first (file path)
   local zk_prop = get_property(lines, hstart, hend, "ZK_NOTE")
   if zk_prop then
-    local p = zk_prop:match("%[%[file:(.-)%]%]") or zk_prop:match("^file:(.+)")
+    local p = zk_prop:match("%[%[file:([^%]]+)%]") or zk_prop:match("^file:(.+)")
     if p then return xp(p) end
   end
 
@@ -161,7 +175,7 @@ local function zk_path_in_subtree(lines, hstart, hend)
 
   -- Look for body links (Notes: [[file:...]])
   for i = hstart, hend do
-    local p = (lines[i] or ""):match("^%s*Notes:%s*%[%[file:(.-)%]%]")
+    local p = (lines[i] or ""):match("^%s*Notes:%s*%[%[file:([^%]]+)%]")
     if p and p ~= "" then return xp(p) end
 
     -- Legacy fallback: check for standalone ID:: lines
@@ -622,8 +636,8 @@ local function archive_whole_project_file(proj_path, opts)
   -- Handle ZK notes
   local zk_files = {}
   for _, ln in ipairs(L) do
-    local p = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or
-             ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
+    local p = ln:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]") or
+             ln:match("^%s*Notes:%s*%[%[file:([^%]]+)%]")
     if p then zk_files[xp(p)] = true end
   end
 
@@ -637,7 +651,16 @@ local function archive_whole_project_file(proj_path, opts)
 end
 
 -- ------------------------ Enhanced Action Menus ------------------------
-local function task_actions_menu(item, on_done)
+-- Exported for use by other modules (e.g., lists.lua)
+-- Item expects: path, lnum, hstart, hend, zk_path (or aliases s/e/zk)
+function M.task_actions_menu(item, on_done)
+  -- Normalize field names (lists.lua uses s/e/zk, manage uses hstart/hend/zk_path)
+  item.hstart = item.hstart or item.s
+  item.hend = item.hend or item.e
+  item.zk_path = item.zk_path or item.zk
+  
+  ensure_valid_cwd()
+  
   if not have_fzf() then
     vim.notify("fzf-lua is required for task management", vim.log.levels.WARN)
     return
@@ -854,6 +877,8 @@ local function refile_project(proj_path, on_done)
 end
 
 local function project_actions_menu(proj_info, on_done)
+  ensure_valid_cwd()
+  
   if not have_fzf() then
     vim.notify("fzf-lua is required for project management", vim.log.levels.WARN)
     return
@@ -918,8 +943,8 @@ local function project_actions_menu(proj_info, on_done)
         elseif action == "Open ZK" then
           local L = readf(proj_info.path)
           for _, ln in ipairs(L) do
-            local zk = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or
-                      ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
+            local zk = ln:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]") or
+                      ln:match("^%s*Notes:%s*%[%[file:([^%]]+)%]")
             if zk then
               vim.cmd("edit " .. vim.fn.fnameescape(xp(zk)))
               return
@@ -958,6 +983,8 @@ end
 
 -- ------------------------ Enhanced Pickers ------------------------
 local function manage_tasks_picker()
+  ensure_valid_cwd()
+  
   if not have_fzf() then
     vim.notify("fzf-lua is required for task management", vim.log.levels.WARN)
     return
@@ -1006,7 +1033,7 @@ local function manage_tasks_picker()
         local item = tasks[idx]
         if not item then return end
 
-        task_actions_menu(item, function()
+        M.task_actions_menu(item, function()
           vim.schedule(function() manage_tasks_picker() end)
         end)
       end,
@@ -1039,6 +1066,8 @@ local function manage_tasks_picker()
 end
 
 local function manage_projects_picker()
+  ensure_valid_cwd()
+  
   if not have_fzf() then
     vim.notify("fzf-lua is required for project management", vim.log.levels.WARN)
     return
@@ -1184,8 +1213,8 @@ local function manage_projects_picker()
             if delete_zk then
               local L = readf(proj.path)
               for _, ln in ipairs(L) do
-                local p = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or
-                         ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
+                local p = ln:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]") or
+                         ln:match("^%s*Notes:%s*%[%[file:([^%]]+)%]")
                 if p then zk_files[xp(p)] = true end
               end
             end
@@ -1304,6 +1333,8 @@ end
 
 -- Help menu for available management commands
 function M.help_menu()
+  ensure_valid_cwd()
+  
   if not have_fzf() then
     vim.notify("fzf-lua is required", vim.log.levels.WARN)
     return

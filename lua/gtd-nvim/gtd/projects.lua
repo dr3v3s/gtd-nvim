@@ -319,7 +319,7 @@ local function upsert_property(lines, key, value)
   end
   local found = false
   for i = s_i + 1, e_i - 1 do
-    local k = lines[i]:match("^%s*:(%w+):")
+    local k = lines[i]:match("^%s*:([%w_]+):")
     if k and k:upper() == key:upper() then
       lines[i] = (":%s: %s"):format(key, value)
       found = true
@@ -336,7 +336,7 @@ local function get_property(lines, key)
   local s_i, e_i = find_properties_drawer(lines)
   if not s_i then return nil end
   for i = s_i + 1, e_i - 1 do
-    local k, v = lines[i]:match("^%s*:(%w+):%s*(.*)%s*$")
+    local k, v = lines[i]:match("^%s*:([%w_]+):%s*(.*)%s*$")
     if k and k:upper() == key:upper() then return v end
   end
   return nil
@@ -416,13 +416,13 @@ local function extract_task_metadata_at_cursor()
   if props_start and props_end then
     for i = props_start + 1, props_end - 1 do
       local line = lines[i] or ""
-      local key, val = line:match("^%s*:(%w+):%s*(.*)%s*$")
+      local key, val = line:match("^%s*:([%w_]+):%s*(.*)%s*$")
       if key then
         if key:upper() == "TASK_ID" or key:upper() == "ID" then
           task_id = task_id or val
         elseif key:upper() == "ZK_NOTE" then
           -- Extract path from [[file:...]]
-          zk_note = val:match("%[%[file:(.-)%]%]") or val:match("^file:(.+)")
+          zk_note = val:match("%[%[file:([^%]]+)%]") or val:match("^file:(.+)")
         end
       end
     end
@@ -1002,12 +1002,12 @@ local function collect_zk_links_from_file(path)
     local h = ln:match("^%*+%s+(.*)")
     if h and h ~= "" then current_heading = h end
 
-    local prop_link = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]")
+    local prop_link = ln:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]")
     if prop_link and prop_link ~= "" then
       table.insert(res, { project = path, lnum = i, heading = current_heading or "(no heading)", zk_path = prop_link })
     end
 
-    local body_link = ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
+    local body_link = ln:match("^%s*Notes:%s*%[%[file:([^%]]+)%]")
     if body_link and body_link ~= "" then
       table.insert(res, { project = path, lnum = i, heading = current_heading or "(no heading)", zk_path = body_link })
     end
@@ -1103,9 +1103,9 @@ local function zk_path_under_cursor(bufnr, lnum)
   while i <= #lines do
     local ln = lines[i]
     if i > start and ln:match("^" .. subtree_prefix .. "%s") then break end
-    local prop = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]")
+    local prop = ln:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]")
     if prop and prop ~= "" then return prop, start end
-    local body = ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
+    local body = ln:match("^%s*Notes:%s*%[%[file:([^%]]+)%]")
     if body and body ~= "" then return body, start end
     i = i + 1
   end

@@ -32,6 +32,8 @@ local function safe_require(name) local ok, m = pcall(require, name); return ok 
 
 local clarify = safe_require("gtd.clarify")
 local shared = safe_require("gtd.shared")
+local manage = safe_require("gtd.manage")
+local link_open = safe_require("utils.link_open")
 
 -- Date helpers for WAITING support
 local function parse_date(date_str)
@@ -119,7 +121,7 @@ local function prop_in(L, s, e, key)
   local ps, pe = find_properties(L, s, e)
   if not ps or not pe then return nil end
   for i=ps+1, pe-1 do
-    local k, v = (L[i] or ""):match("^%s*:(%w+):%s*(.*)%s*$")
+    local k, v = (L[i] or ""):match("^%s*:([%w_]+):%s*(.*)%s*$")
     if k and k:upper() == key:upper() then return v end
   end
   return nil
@@ -162,11 +164,12 @@ end
 local function zk_path_in_subtree(L, s, e)
   local zk = prop_in(L, s, e, "ZK_NOTE")
   if zk then
-    local p = zk:match("%[%[file:(.-)%]%]") or zk:match("^file:(.+)")
+    -- Handle org link format: [[file:/path][label]] - capture path only (not label)
+    local p = zk:match("%[%[file:([^%]]+)%]") or zk:match("^file:(.+)")
     if p then return xp(p) end
   end
   for i=s,e do
-    local p = (L[i] or ""):match("^%s*Notes:%s*%[%[file:(.-)%]%]")
+    local p = (L[i] or ""):match("^%s*Notes:%s*%[%[file:([^%]]+)%]")
     if p and p ~= "" then return xp(p) end
   end
   return nil
@@ -513,113 +516,182 @@ local function show_list(filter_fn, title, item_type, extra_actions)
     return
   end
   
+  -- Helper: find item from fzf selection
+  local function find_item(selected)
+    local selected_line = selected and selected[1]
+    if not selected_line then return nil end
+    
+    for i, line in ipairs(filtered) do
+      if line == selected_line then
+        return meta[i]
+      end
+    end
+    return nil
+  end
+  
+  -- Helper: reopen this list (for return-after-edit behavior)
+  local function reopen_list()
+    vim.schedule(function()
+      show_list(filter_fn, title, item_type, extra_actions)
+    end)
+  end
+  
+  -- Helper: edit file and return to list when buffer is left
+  local function edit_and_return_to_list(item)
+    if not item or not item.path or not item.lnum then return false end
+    
+    local ok = pcall(function()
+      vim.cmd("edit " .. vim.fn.fnameescape(item.path))
+      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
+    end)
+    
+    if not ok then
+      vim.notify("Failed to open: " .. (item.path or "unknown"), vim.log.levels.ERROR)
+      return false
+    end
+    
+    -- Set up autocmd to return to list when leaving buffer
+    local bufnr = vim.api.nvim_get_current_buf()
+    local group_name = "GTDListReturn_" .. bufnr
+    
+    pcall(vim.api.nvim_del_augroup_by_name, group_name)
+    
+    local group = vim.api.nvim_create_augroup(group_name, { clear = true })
+    vim.api.nvim_create_autocmd({ "BufLeave" }, {
+      group = group,
+      buffer = bufnr,
+      once = true,
+      callback = function()
+        pcall(vim.api.nvim_del_augroup_by_name, group_name)
+        reopen_list()
+      end,
+    })
+    
+    return true
+  end
+  
   -- Base actions for all lists
   local base_actions = {
-    -- Enter → open task for editing
+    -- Enter → open task (no return to list - user wants to work on it)
     ["default"] = function(selected)
-      local selected_line = selected[1]
-      if not selected_line then return end
+      local item = find_item(selected)
+      if not item then return end
       
-      -- Find the index of the selected line in our filtered array
-      local idx = nil
-      for i, line in ipairs(filtered) do
-        if line == selected_line then
-          idx = i
-          break
-        end
-      end
-      
-      if not idx or not meta[idx] then 
-        vim.notify("Could not find selected task", vim.log.levels.ERROR)
-        return 
-      end
-      
-      local item = meta[idx]
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      vim.notify(string.format("Opened: %s", trim(item.title or item.line or "")), vim.log.levels.INFO)
+      pcall(function()
+        vim.cmd("edit " .. vim.fn.fnameescape(item.path))
+        vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
+      end)
     end,
     
-    -- Ctrl-e → explicit edit (same as Enter, but more obvious)
+    -- Ctrl-e → GTD task actions menu (Open, Clarify, Archive, Delete, Refile, ZK)
     ["ctrl-e"] = function(selected)
-      local selected_line = selected[1]
-      if not selected_line then return end
+      local item = find_item(selected)
+      if not item then return end
       
-      local idx = nil
-      for i, line in ipairs(filtered) do
-        if line == selected_line then
-          idx = i
-          break
+      if not manage or not manage.task_actions_menu then
+        -- Fallback to raw edit if manage module unavailable
+        if edit_and_return_to_list(item) then
+          vim.notify("Editing: " .. trim(item.title or "") .. " (leave buffer to return)", vim.log.levels.INFO)
         end
+        return
       end
       
-      if not idx or not meta[idx] then return end
-      
-      local item = meta[idx]
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      vim.notify(string.format("Editing: %s", trim(item.title or item.line or "")), vim.log.levels.INFO)
+      -- Use the comprehensive task actions menu from manage.lua
+      manage.task_actions_menu(item, function()
+        -- Return to this list after action completes
+        reopen_list()
+      end)
     end,
     
-    -- Ctrl-x → clarify (run clarify wizard)
+    -- Ctrl-x → clarify wizard (opens file, runs clarify, returns to list)
     ["ctrl-x"] = function(selected)
-      local selected_line = selected[1]
-      if not selected_line then return end
+      local item = find_item(selected)
+      if not item then return end
       
-      local idx = nil
-      for i, line in ipairs(filtered) do
-        if line == selected_line then idx = i; break end
-      end
-      
-      if not idx or not meta[idx] then return end
-      local item = meta[idx]
-      
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      if clarify and clarify.clarify then
-        vim.schedule(function() clarify.clarify({}) end)
-      else
+      if not clarify or not clarify.clarify then
         vim.notify("Clarify module not available", vim.log.levels.WARN)
+        return
       end
+      
+      -- Open file and position cursor
+      local ok = pcall(function()
+        vim.cmd("edit " .. vim.fn.fnameescape(item.path))
+        vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
+      end)
+      
+      if not ok then
+        vim.notify("Failed to open file for clarify", vim.log.levels.ERROR)
+        return
+      end
+      
+      -- Set up return-to-list when buffer is written or left
+      local bufnr = vim.api.nvim_get_current_buf()
+      local group_name = "GTDClarifyReturn_" .. bufnr
+      
+      pcall(vim.api.nvim_del_augroup_by_name, group_name)
+      
+      local group = vim.api.nvim_create_augroup(group_name, { clear = true })
+      vim.api.nvim_create_autocmd({ "BufWritePost" }, {
+        group = group,
+        buffer = bufnr,
+        once = true,
+        callback = function()
+          pcall(vim.api.nvim_del_augroup_by_name, group_name)
+          -- Brief delay to let write complete, then return to list
+          vim.defer_fn(function()
+            reopen_list()
+          end, 200)
+        end,
+      })
+      
+      -- Run clarify wizard after a small delay to ensure buffer is ready
+      vim.schedule(function()
+        clarify.clarify({})
+      end)
     end,
     
-    -- Ctrl-f → fast clarify (just ensure ID and status)
+    -- Ctrl-f → fast clarify (ensure ID/status, then return to list)
     ["ctrl-f"] = function(selected)
-      local selected_line = selected[1]
-      if not selected_line then return end
+      local item = find_item(selected)
+      if not item then return end
       
-      local idx = nil
-      for i, line in ipairs(filtered) do
-        if line == selected_line then idx = i; break end
-      end
-      
-      if not idx or not meta[idx] then return end
-      local item = meta[idx]
-      
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      if clarify and clarify.fast then
-        clarify.fast({ promote_if_needed = false })
-      else
+      if not clarify or not clarify.fast then
         vim.notify("Fast clarify not available", vim.log.levels.WARN)
+        return
       end
+      
+      local ok = pcall(function()
+        vim.cmd("edit " .. vim.fn.fnameescape(item.path))
+        vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
+      end)
+      
+      if not ok then return end
+      
+      -- Run fast clarify then return to list
+      vim.schedule(function()
+        clarify.fast({ promote_if_needed = false })
+        vim.cmd("write")
+        reopen_list()
+      end)
     end,
     
-    -- Ctrl-z → open ZK note
+    -- Ctrl-z → open ZK note (uses link_open for proper path handling)
     ["ctrl-z"] = function(selected)
-      local selected_line = selected[1]
-      if not selected_line then return end
-      
-      local idx = nil
-      for i, line in ipairs(filtered) do
-        if line == selected_line then idx = i; break end
-      end
-      
-      if not idx or not meta[idx] then return end
-      local item = meta[idx]
+      local item = find_item(selected)
+      if not item then return end
       
       if item.zk then
-        vim.cmd("edit " .. item.zk)
+        if link_open and link_open.open_file then
+          link_open.open_file(item.zk)
+        else
+          -- Fallback if link_open not available
+          local path = xp(item.zk)
+          if vim.fn.filereadable(path) == 1 then
+            vim.cmd("edit " .. vim.fn.fnameescape(path))
+          else
+            vim.notify("ZK note not found: " .. path, vim.log.levels.ERROR)
+          end
+        end
       else
         vim.notify("No ZK note linked to this " .. item_type, vim.log.levels.INFO)
       end
@@ -627,35 +699,19 @@ local function show_list(filter_fn, title, item_type, extra_actions)
     
     -- Ctrl-s → split open
     ["ctrl-s"] = function(selected)
-      local selected_line = selected[1]
-      if not selected_line then return end
+      local item = find_item(selected)
+      if not item then return end
       
-      local idx = nil
-      for i, line in ipairs(filtered) do
-        if line == selected_line then idx = i; break end
-      end
-      
-      if not idx or not meta[idx] then return end
-      local item = meta[idx]
-      
-      vim.cmd("split " .. item.path)
+      vim.cmd("split " .. vim.fn.fnameescape(item.path))
       vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
     end,
     
     -- Ctrl-t → tab open
     ["ctrl-t"] = function(selected)
-      local selected_line = selected[1]
-      if not selected_line then return end
+      local item = find_item(selected)
+      if not item then return end
       
-      local idx = nil
-      for i, line in ipairs(filtered) do
-        if line == selected_line then idx = i; break end
-      end
-      
-      if not idx or not meta[idx] then return end
-      local item = meta[idx]
-      
-      vim.cmd("tabedit " .. item.path)
+      vim.cmd("tabedit " .. vim.fn.fnameescape(item.path))
       vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
     end,
     

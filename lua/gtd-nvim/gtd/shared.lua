@@ -1556,14 +1556,14 @@ function M.extract_zk_path(item)
   for i = h_start, math.min(h_end, #lines) do
     local line = lines[i] or ""
     
-    -- Check :ZK_NOTE: property
-    local zk_file = line:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]%]")
+    -- Check :ZK_NOTE: property - handle [[file:/path][label]] format
+    local zk_file = line:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]")
     if zk_file then
       return M.xp(zk_file)
     end
     
     -- Also check Notes: body link
-    local notes_file = line:match("^%s*Notes:%s*%[%[file:([^%]]+)%]%]")
+    local notes_file = line:match("^%s*Notes:%s*%[%[file:([^%]]+)%]")
     if notes_file then
       return M.xp(notes_file)
     end

@@ -486,7 +486,7 @@ local function post_actions_menu(ctx)
             local lines = buf_lines(0)
             for i = ctx.h_start, math.min(ctx.h_start + 15, #lines) do
               local lk = (lines[i] or ""):match("%[%[zk:" .. id .. "%]%]")
-              local fp = (lines[i] or ""):match("%[%[file:(.-)%]%]")
+              local fp = (lines[i] or ""):match("%[%[file:([^%]]+)%]")
               if fp then vim.cmd("edit " .. vim.fn.expand(fp)); return end
               if lk then
                 notify("You use [[zk:ID]] links; open via your ZK tooling.", vim.log.levels.INFO)

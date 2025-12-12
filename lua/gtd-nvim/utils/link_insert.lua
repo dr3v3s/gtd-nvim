@@ -1,4 +1,5 @@
--- Enhanced but compatible version based on your original
+-- Enhanced link insertion with wiki-link completion
+-- Backward compatible with all existing functionality
 
 local M = {}
 
@@ -9,13 +10,17 @@ M.config = {
   link_formats = {
     markdown = {
       file = "[%s](%s)",
+      wiki = "[[%s]]",           -- NEW: wiki-link format
+      wiki_aliased = "[[%s|%s]]", -- NEW: wiki-link with alias
       url = "[%s](%s)", 
       mailto = "[%s](mailto:%s)",
       tag = "#%s",
       date = "[[%s]]",
     },
     org = {
-      file = "[[%s][%s]]",
+      file = "[[file:%s][%s]]",
+      wiki = "[[file:%s][%s]]",   -- Org uses file: links
+      wiki_aliased = "[[file:%s][%s]]",
       url = "[[%s][%s]]",
       mailto = "[[mailto:%s][%s]]",
       tag = ":%s:",
@@ -23,8 +28,20 @@ M.config = {
     }
   },
   extensions = { "md", "org", "txt", "markdown" },
-  -- FIXED: Added .continuity to exclude patterns
   exclude_patterns = { "%.git", "%.DS_Store", "node_modules", "^#.*#$", "%.gpg$", "%.continuity" },
+  -- NEW: Wiki-link completion settings
+  wiki_link = {
+    trigger = "[[",              -- Trigger sequence for completion
+    use_relative_paths = true,   -- Use relative paths in links
+    prefer_basename = true,      -- Link by basename, not full path
+    auto_extension = false,      -- Don't add .md extension in links
+  },
+  -- NEW: Notes file cache
+  _cache = {
+    files = nil,
+    timestamp = 0,
+    ttl = 30,  -- 30 second cache
+  },
 }
 
 -- Setup function  
@@ -34,7 +51,7 @@ function M.setup(user_config)
   end
 end
 
--- Helpers (from your original)
+-- Helpers (preserved from original)
 local function get_filetype()
   local ft = vim.bo.filetype
   if ft == "org" then return "org" end
@@ -46,7 +63,6 @@ local function expand_path(path)
   return vim.fn.expand(path)
 end
 
--- Helper to build fd exclude options (matching zettelkasten.lua approach)
 local function build_fd_exclude_opts()
   local exclude_opts = {}
   for _, pat in ipairs(M.config.exclude_patterns) do
@@ -56,7 +72,35 @@ local function build_fd_exclude_opts()
   return exclude_opts
 end
 
-local function get_notes_files()
+
+-- ============================================================================
+-- CACHED FILE DISCOVERY (NEW - performance optimization)
+-- ============================================================================
+
+local function get_notes_files_cached()
+  local now = os.time()
+  local cache = M.config._cache
+  
+  if cache.files and (now - cache.timestamp) < cache.ttl then
+    return cache.files
+  end
+  
+  -- Refresh cache
+  cache.files = M.get_notes_files()
+  cache.timestamp = now
+  return cache.files
+end
+
+function M.invalidate_cache()
+  M.config._cache.files = nil
+  M.config._cache.timestamp = 0
+end
+
+-- ============================================================================
+-- FILE DISCOVERY (preserved from original, no limits)
+-- ============================================================================
+
+function M.get_notes_files()
   local notes_dir = expand_path(M.config.notes_dir)
   local files = {}
   
@@ -71,7 +115,6 @@ local function get_notes_files()
   end
   
   local escaped_dir = vim.fn.shellescape(notes_dir)
-  -- FIXED: Removed head -200 limit - no limits!
   local find_cmd = string.format(
     'find %s -type f \\( %s \\)',
     escaped_dir,
@@ -93,11 +136,17 @@ local function get_notes_files()
         local basename = vim.fn.fnamemodify(rel_path, ":t:r")
         local dir_part = vim.fn.fnamemodify(rel_path, ":h")
         if dir_part == "." then dir_part = "" end
+        
+        -- NEW: Extract ZK ID if present (YYYYMMDDHHMM format at start)
+        local zk_id = basename:match("^(%d%d%d%d%d%d%d%d%d%d%d%d)")
+        
         table.insert(files, {
           path = line,
           rel_path = rel_path,
           basename = basename,
           display = basename .. (dir_part ~= "" and " (" .. dir_part .. ")" or ""),
+          zk_id = zk_id,
+          dir = dir_part,
         })
       end
     end
@@ -106,6 +155,11 @@ local function get_notes_files()
   
   return files
 end
+
+
+-- ============================================================================
+-- CORE INSERTION HELPERS (preserved from original)
+-- ============================================================================
 
 local function insert_at_cursor(text)
   local pos = vim.api.nvim_win_get_cursor(0)
@@ -122,16 +176,180 @@ local function format_link(link_type, content, target, ft)
     format = M.config.link_formats.markdown[link_type] or "[%s](%s)"
   end
   
-  if link_type == "tag" or link_type == "date" then
+  if link_type == "tag" or link_type == "date" or link_type == "wiki" then
     return string.format(format, content)
   else
     return string.format(format, content, target)
   end
 end
 
--- Link insertion functions (from your original but with safe fzf loading)
+-- ============================================================================
+-- WIKI-LINK COMPLETION (NEW - Core Zettelkasten feature)
+-- ============================================================================
+
+--- Get the wiki-link target from basename
+---@param file table File entry from get_notes_files()
+---@return string Link target (basename without extension)
+local function get_wiki_target(file)
+  if M.config.wiki_link.prefer_basename then
+    return file.basename
+  else
+    local target = file.rel_path
+    if not M.config.wiki_link.auto_extension then
+      target = target:gsub("%.%w+$", "")
+    end
+    return target
+  end
+end
+
+--- Check if cursor is inside a wiki-link trigger
+---@return boolean, number, number is_triggered, start_col, end_col
+local function check_wiki_trigger()
+  local line = vim.api.nvim_get_current_line()
+  local col = vim.api.nvim_win_get_cursor(0)[2]
+  
+  -- Look backward for [[ that isn't closed
+  local before = line:sub(1, col + 1)
+  local trigger_start = nil
+  local search_start = 1
+  
+  while true do
+    local s = before:find("%[%[", search_start)
+    if not s then break end
+    
+    -- Check if this [[ is closed before cursor
+    local close = before:find("%]%]", s + 2)
+    if not close or close > col then
+      trigger_start = s
+      break
+    end
+    search_start = s + 2
+  end
+  
+  if trigger_start then
+    -- Extract what's been typed after [[
+    local typed = before:sub(trigger_start + 2)
+    return true, trigger_start, typed
+  end
+  
+  return false, 0, ""
+end
+
+--- Complete wiki-link with fzf picker
+function M.complete_wiki_link()
+  local triggered, start_col, typed = check_wiki_trigger()
+  
+  local files = get_notes_files_cached()
+  if #files == 0 then
+    return vim.notify("No notes found in " .. M.config.notes_dir, vim.log.levels.WARN)
+  end
+  
+  local ok, fzf_lua = pcall(require, 'fzf-lua')
+  if not ok then
+    vim.notify("fzf-lua not available", vim.log.levels.ERROR)
+    return
+  end
+  
+  local items = {}
+  local file_map = {}
+  
+  for _, file in ipairs(files) do
+    table.insert(items, file.display)
+    file_map[file.display] = file
+  end
+  
+  fzf_lua.fzf_exec(items, {
+    prompt = "Wiki Link> ",
+    query = typed or "",  -- Pre-fill with what user has typed
+    preview = function(selected)
+      local file = file_map[selected[1]]
+      if file and vim.fn.filereadable(file.path) == 1 then
+        return file.path
+      end
+      return nil
+    end,
+    actions = {
+      ['default'] = function(selected)
+        local file = file_map[selected[1]]
+        if file then
+          local target = get_wiki_target(file)
+          local ft = get_filetype()
+          local link
+          
+          if ft == "org" then
+            -- Org uses file: links
+            link = string.format("[[file:%s][%s]]", file.rel_path, file.basename)
+          else
+            -- Markdown wiki-link
+            link = string.format("[[%s]]", target)
+          end
+          
+          -- If triggered, replace from [[ to cursor
+          if triggered then
+            local line = vim.api.nvim_get_current_line()
+            local col = vim.api.nvim_win_get_cursor(0)[2]
+            local new_line = line:sub(1, start_col - 1) .. link .. line:sub(col + 2)
+            vim.api.nvim_set_current_line(new_line)
+            vim.api.nvim_win_set_cursor(0, {vim.api.nvim_win_get_cursor(0)[1], start_col - 1 + #link})
+          else
+            insert_at_cursor(link)
+          end
+        end
+      end,
+      ['ctrl-e'] = function(selected)
+        local file = file_map[selected[1]]
+        if file then
+          vim.cmd("edit " .. vim.fn.fnameescape(file.path))
+        end
+      end,
+    },
+  })
+end
+
+
+--- Setup auto-trigger for wiki-link completion
+--- Call this in ftplugin/markdown.lua or after/ftplugin/markdown.lua
+function M.setup_wiki_completion()
+  -- Create autocommand for markdown and org files
+  local group = vim.api.nvim_create_augroup("WikiLinkCompletion", { clear = true })
+  
+  vim.api.nvim_create_autocmd("InsertCharPre", {
+    group = group,
+    pattern = { "*.md", "*.markdown", "*.org" },
+    callback = function()
+      local char = vim.v.char
+      if char == "[" then
+        -- Check if previous char is also [
+        local col = vim.api.nvim_win_get_cursor(0)[2]
+        if col > 0 then
+          local line = vim.api.nvim_get_current_line()
+          local prev_char = line:sub(col, col)
+          if prev_char == "[" then
+            -- Schedule picker to run after insert
+            vim.schedule(function()
+              -- Small delay to let the second [ be inserted
+              vim.defer_fn(function()
+                M.complete_wiki_link()
+              end, 50)
+            end)
+          end
+        end
+      end
+    end,
+  })
+end
+
+--- Manual trigger for wiki-link (when auto isn't desired)
+function M.insert_wiki_link()
+  M.complete_wiki_link()
+end
+
+-- ============================================================================
+-- ORIGINAL LINK INSERTION FUNCTIONS (fully preserved)
+-- ============================================================================
+
 function M.insert_file_link()
-  local files = get_notes_files()
+  local files = M.get_notes_files()
   if #files == 0 then
     return vim.notify("No notes found in " .. M.config.notes_dir, vim.log.levels.WARN)
   end
@@ -222,6 +440,7 @@ function M.insert_date_link(date_format)
   insert_at_cursor(link)
 end
 
+
 function M.insert_task_ref()
   local ok, fzf_lua = pcall(require, 'fzf-lua')
   if not ok then
@@ -300,7 +519,6 @@ function M.insert_person_link()
     end)
   end
   
-  -- FIXED: Added fd_opts with exclusions
   local exclude_opts = build_fd_exclude_opts()
   
   fzf_lua.files({
@@ -352,7 +570,6 @@ function M.insert_project_link()
     end)
   end
   
-  -- FIXED: Added fd_opts with exclusions
   local exclude_opts = build_fd_exclude_opts()
   
   fzf_lua.files({
@@ -383,6 +600,7 @@ function M.insert_project_link()
   })
 end
 
+
 function M.insert_timestamp_note()
   local timestamp = os.date("%Y%m%d%H%M")
   vim.ui.input({ prompt = "Note title: " }, function(title)
@@ -405,7 +623,10 @@ function M.insert_timestamp_note()
   end)
 end
 
--- Link menu (original from your code)
+-- ============================================================================
+-- LINK MENU (enhanced with wiki-link option)
+-- ============================================================================
+
 function M.link_menu()
   local ok, fzf_lua = pcall(require, 'fzf-lua')
   if not ok then
@@ -414,6 +635,7 @@ function M.link_menu()
   end
   
   local options = {
+    "wiki         🔗 Wiki-link [[note]]",  -- NEW
     "file         📄 File/Note link",
     "url          🌐 URL link", 
     "mailto       📧 Email link",
@@ -426,6 +648,7 @@ function M.link_menu()
   }
   
   local actions = {
+    wiki = M.insert_wiki_link,  -- NEW
     file = M.insert_file_link,
     url = M.insert_url_link,
     mailto = M.insert_mailto_link,
@@ -450,27 +673,38 @@ function M.link_menu()
   })
 end
 
--- Debug helpers (simplified)
+-- ============================================================================
+-- DEBUG HELPERS
+-- ============================================================================
+
 function M.debug_notes_scan()
   local notes_dir = expand_path(M.config.notes_dir)
   print("Notes directory: " .. notes_dir)
   print("Directory exists: " .. (vim.fn.isdirectory(notes_dir) == 1 and "YES" or "NO"))
   
-  local files = get_notes_files()
+  local files = M.get_notes_files()
   print("Files found: " .. #files)
   
   for i, file in ipairs(files) do
-    print(string.format("%d. %s -> %s", i, file.display, file.rel_path))
-    if i >= 5 then 
-      print("... (showing first 5)")
+    local zk_info = file.zk_id and (" [ZK:" .. file.zk_id .. "]") or ""
+    print(string.format("%d. %s%s -> %s", i, file.display, zk_info, file.rel_path))
+    if i >= 10 then 
+      print("... (showing first 10)")
       break 
     end
   end
 end
 
--- Setup keymaps function
+-- ============================================================================
+-- KEYMAP SETUP (enhanced with wiki-link bindings)
+-- ============================================================================
+
 function M.setup_keymaps()
-  -- Core link insertion
+  -- Wiki-link completion (NEW)
+  vim.keymap.set({"n", "i"}, "<leader>lw", M.insert_wiki_link, { desc = "Insert wiki-link [[]]" })
+  vim.keymap.set("i", "<C-]>", M.complete_wiki_link, { desc = "Complete wiki-link" })
+  
+  -- Core link insertion (preserved)
   vim.keymap.set({"n", "i"}, "<leader>ll", M.link_menu, { desc = "Insert link menu" })
   vim.keymap.set({"n", "i"}, "<leader>lf", M.insert_file_link, { desc = "Insert file link" })
   vim.keymap.set({"n", "i"}, "<leader>lu", M.insert_url_link, { desc = "Insert URL link" })
@@ -478,7 +712,7 @@ function M.setup_keymaps()
   vim.keymap.set({"n", "i"}, "<leader>lt", M.insert_tag, { desc = "Insert tag" })
   vim.keymap.set({"n", "i"}, "<leader>ld", M.insert_date_link, { desc = "Insert date" })
   
-  -- GTD workflow
+  -- GTD workflow (preserved)
   vim.keymap.set({"n", "i"}, "<leader>lp", M.insert_person_link, { desc = "Insert person link" })
   vim.keymap.set({"n", "i"}, "<leader>lP", M.insert_project_link, { desc = "Insert project link" })
   vim.keymap.set({"n", "i"}, "<leader>lk", M.insert_task_ref, { desc = "Insert task reference" })
