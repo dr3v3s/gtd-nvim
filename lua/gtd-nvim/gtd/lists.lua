@@ -914,9 +914,10 @@ function M.menu()
   local g = shared and shared.glyphs or {}
   local c = shared and shared.colorize or function(t, _) return t end
   
-  -- Build menu items with glyphs and colors
-  local menu_items = {}
-  local menu_keys = {}  -- Track which function to call
+  -- Build menu items: colored for display, plain for matching
+  local menu_display = {}  -- With ANSI colors (for fzf display)
+  local menu_plain = {}    -- Without colors (for matching returned selection)
+  local menu_keys = {}     -- Track which function to call
   
   -- Define menu structure: { key, glyph, label, color }
   local menu_def = {
@@ -931,9 +932,15 @@ function M.menu()
   }
   
   for _, item in ipairs(menu_def) do
+    -- Plain version for matching (fzf strips ANSI codes in returned selection)
+    local plain = item.glyph .. "  " .. item.label
+    table.insert(menu_plain, plain)
+    
+    -- Colored version for display
     local colored_glyph = c(item.glyph, item.color)
     local display = colored_glyph .. "  " .. item.label
-    table.insert(menu_items, display)
+    table.insert(menu_display, display)
+    
     table.insert(menu_keys, item.key)
   end
   
@@ -942,10 +949,10 @@ function M.menu()
       local selected_line = selected[1]
       if not selected_line then return end
       
-      -- Find index in menu_items
+      -- Match against plain text (fzf returns selection without ANSI codes)
       local idx = nil
-      for i, item in ipairs(menu_items) do
-        if item == selected_line then
+      for i, plain in ipairs(menu_plain) do
+        if plain == selected_line then
           idx = i
           break
         end
@@ -977,10 +984,10 @@ function M.menu()
     header = "Enter: Select • Esc: Cancel"
   end
   
-  fzf.fzf_exec(menu_items, {
+  fzf.fzf_exec(menu_display, {
     prompt = c(g.ui and g.ui.menu or "☰", "accent") .. " GTD> ",
     fzf_opts = {
-      ["--ansi"] = true,  -- CRITICAL: Enable ANSI colors
+      ["--ansi"] = true,  -- CRITICAL: Enable ANSI colors for display
       ["--no-info"] = true,
       ["--tiebreak"] = "index",
       ["--header"] = header,
