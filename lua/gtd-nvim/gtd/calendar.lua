@@ -1,10 +1,23 @@
+-- ============================================================================
+-- GTD-NVIM CALENDAR MODULE
+-- ============================================================================
 -- Apple Calendar integration for GTD system
--- - Create calendar events from tasks with SCHEDULED/DEADLINE dates
--- - Import calendar events as tasks
--- - Sync task dates with calendar events
--- - Bidirectional date synchronization
+-- Bidirectional sync: tasks ↔ calendar events
+--
+-- @module gtd-nvim.gtd.calendar
+-- @version 0.8.0
+-- @requires shared (>= 1.0.0)
+-- @todo Use shared.colorize() for fzf displays
+-- ============================================================================
 
 local M = {}
+
+M._VERSION = "0.8.0"
+M._UPDATED = "2024-12-08"
+
+-- Load shared utilities with glyph system
+local shared = require("gtd-nvim.gtd.shared")
+local g = shared.glyphs  -- Glyph shortcuts
 
 -- ============================================================================
 -- Config
@@ -331,11 +344,11 @@ function M.import_events(events)
 end
 
 function M.import_all()
-  vim.notify("📅 Importing from Calendar...", vim.log.levels.INFO)
+  vim.notify(g.container.calendar .. " Importing from Calendar...", vim.log.levels.INFO)
   
   local events, err = M.fetch_calendar_events()
   if not events then
-    vim.notify("❌ Failed to fetch: " .. (err or "unknown error"), vim.log.levels.ERROR)
+    vim.notify(g.ui.cross .. " Failed to fetch: " .. (err or "unknown error"), vim.log.levels.ERROR)
     return
   end
   
@@ -345,7 +358,7 @@ function M.import_all()
   end
   
   local imported, skipped = M.import_events(events)
-  vim.notify(string.format("✅ Imported %d events, skipped %d", imported, skipped), 
+  vim.notify(string.format(g.state.DONE .. " Imported %d events, skipped %d", imported, skipped), 
     vim.log.levels.INFO)
 end
 
@@ -542,7 +555,7 @@ end tell
 end
 
 function M.export_to_calendar()
-  vim.notify("📆 Exporting tasks to Calendar...", vim.log.levels.INFO)
+  vim.notify(g.container.calendar .. " Exporting tasks to Calendar...", vim.log.levels.INFO)
   
   local tasks = M.scan_tasks_for_calendar()
   if #tasks == 0 then
@@ -560,7 +573,7 @@ function M.export_to_calendar()
         updated = updated + 1
       else
         errors = errors + 1
-        vim.notify(string.format("⚠️  Failed to update: %s (%s)", task.title, err or "unknown"), 
+        vim.notify(string.format(g.ui.warning .. " Failed to update: %s (%s)", task.title, err or "unknown"), 
           vim.log.levels.WARN)
       end
     else
@@ -571,13 +584,13 @@ function M.export_to_calendar()
         M.add_event_id_to_task(task.path, task.lnum, event_id)
       else
         errors = errors + 1
-        vim.notify(string.format("⚠️  Failed to create: %s (%s)", task.title, err or "unknown"),
+        vim.notify(string.format(g.ui.warning .. " Failed to create: %s (%s)", task.title, err or "unknown"),
           vim.log.levels.WARN)
       end
     end
   end
   
-  vim.notify(string.format("✅ Export complete: %d created, %d updated, %d errors", 
+  vim.notify(string.format(g.state.DONE .. " Export complete: %d created, %d updated, %d errors", 
     created, updated, errors), vim.log.levels.INFO)
 end
 
@@ -616,7 +629,7 @@ end
 -- ============================================================================
 
 function M.bidirectional_sync()
-  vim.notify("🔄 Starting bidirectional calendar sync...", vim.log.levels.INFO)
+  vim.notify(g.container.recurring .. " Starting bidirectional calendar sync...", vim.log.levels.INFO)
   
   -- Import new events
   M.import_all()
@@ -624,7 +637,7 @@ function M.bidirectional_sync()
   -- Export/update tasks with dates
   M.export_to_calendar()
   
-  vim.notify("✅ Bidirectional sync complete", vim.log.levels.INFO)
+  vim.notify(g.state.DONE .. " Bidirectional sync complete", vim.log.levels.INFO)
 end
 
 -- ============================================================================
@@ -632,21 +645,21 @@ end
 -- ============================================================================
 
 function M.test_basic()
-  vim.notify("🧪 Testing Calendar access...", vim.log.levels.INFO)
+  vim.notify(g.ui.cog .. " Testing Calendar access...", vim.log.levels.INFO)
   
   local result, err = safe_exec_applescript('tell application "Calendar" to return "OK"')
   
   if result and result:find("OK") then
-    vim.notify("✅ Calendar access works", vim.log.levels.INFO)
+    vim.notify(g.state.DONE .. " Calendar access works", vim.log.levels.INFO)
   else
-    vim.notify("❌ Failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+    vim.notify(g.ui.cross .. " Failed: " .. (err or "unknown"), vim.log.levels.ERROR)
     vim.notify("Check System Settings → Privacy & Security → Automation", vim.log.levels.INFO)
   end
 end
 
 function M.show_config()
   local info = {
-    "📅 Calendar Configuration:",
+    g.container.calendar .. " Calendar Configuration:",
     "",
     "Calendar: " .. M.cfg.default_calendar,
     "Event duration: " .. M.cfg.event_duration .. " minutes",

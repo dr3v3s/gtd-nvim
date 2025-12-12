@@ -1,8 +1,19 @@
--- GTD glue: delegates to capture / clarify / organize / projects.
+-- ============================================================================
+-- GTD-NVIM MAIN ENTRY POINT
+-- ============================================================================
+-- GTD glue: delegates to capture / clarify / organize / projects
 -- Keeps config minimal and stable. Safe requires; friendly health checks.
--- ENHANCED: Added convert task to project command
+--
+-- @module gtd-nvim.gtd
+-- @version 1.0.0-alpha
+-- @see 202512081430-GTD-Nvim-Shared-Module-Audit
+-- ============================================================================
 
 local M = {}
+
+-- Version information (canonical source: shared.lua)
+M._VERSION = "1.0.0-alpha"
+M._UPDATED = "2024-12-08"
 
 -- ------------------------ Config ------------------------
 M.cfg = {
@@ -125,6 +136,22 @@ function M.clarify(opts)
   return clarify.at_cursor(opts or {})
 end
 
+--- Clarify with fzf-lua task picker
+--- Opens picker to select any task, then runs full GTD clarification workflow
+--- including Expected Outcome, Next Action, dates, and more
+---@param opts table|nil Options passed to clarify_pick_any
+function M.clarify_pick(opts)
+  if not clarify then
+    vim.notify("gtd.clarify not loaded", vim.log.levels.ERROR)
+    return
+  end
+  if not clarify.clarify_pick_any then
+    vim.notify("gtd.clarify.clarify_pick_any() not found", vim.log.levels.ERROR)
+    return
+  end
+  return clarify.clarify_pick_any(opts or {})
+end
+
 function M.refile_to_project(opts)
   if not organize then
     return
@@ -170,6 +197,12 @@ function M.setup(user_cfg)
     end
   end
 
+  -- Setup GTD highlight groups for colored glyphs
+  local shared = safe_require("gtd-nvim.gtd.shared")
+  if shared and shared.setup_highlights then
+    shared.setup_highlights()
+  end
+
   pcall(function()
     if clarify and clarify.setup then
       clarify.setup { gtd_root = M.cfg.gtd_root, inbox_file = M.cfg.inbox_file, projects_dir = M.cfg.projects_dir }
@@ -192,6 +225,10 @@ function M.setup(user_cfg)
     M.clarify { status = status, promote_if_needed = true }
   end, { nargs = "?", desc = "Clarify and promote line to task" })
 
+  vim.api.nvim_create_user_command("GtdClarifyPick", function()
+    M.clarify_pick {}
+  end, { desc = "Pick task with fzf and run GTD clarification (Expected Outcome, Next Action, etc.)" })
+
   vim.api.nvim_create_user_command("GtdRefile", function()
     M.refile_to_project {}
   end, { desc = "Refile task to project" })
@@ -211,6 +248,10 @@ function M.setup(user_cfg)
   vim.api.nvim_create_user_command("GtdHealth", function()
     M.health()
   end, { desc = "Check GTD system health" })
+  
+  vim.api.nvim_create_user_command("GtdVersion", function()
+    M.version()
+  end, { desc = "Show GTD-Nvim version information" })
   
   vim.api.nvim_create_user_command("GtdFindDuplicates", function()
     M.find_duplicates()
@@ -297,5 +338,74 @@ pcall(function()
     }
   end
 end)
+
+-- Setup Task Editor module
+local editor = safe_require "gtd-nvim.gtd.editor"
+
+pcall(function()
+  if editor and editor.setup then
+    editor.setup {
+      gtd_root = M.cfg.gtd_root,
+      zk_root = M.cfg.zk_root,
+    }
+  end
+end)
+
+-- ============================================================================
+-- VERSION INFORMATION
+-- ============================================================================
+
+-- Show version info for all modules
+function M.version()
+  local shared = safe_require("gtd-nvim.gtd.shared")
+  if not shared or not shared.VERSION then
+    vim.notify("GTD-Nvim " .. M._VERSION, vim.log.levels.INFO)
+    return
+  end
+  
+  local g = shared.glyphs or {}
+  local lines = {
+    "╔══════════════════════════════════════════════════════╗",
+    "║             GTD-NVIM VERSION INFORMATION             ║",
+    "╠══════════════════════════════════════════════════════╣",
+    string.format("║  Plugin Version: %-35s ║", shared.VERSION.string),
+    string.format("║  Release Date:   %-35s ║", shared.VERSION.date),
+    "╠══════════════════════════════════════════════════════╣",
+    "║  MODULE VERSIONS                                     ║",
+    "╠══════════════════════════════════════════════════════╣",
+  }
+  
+  for module, version in pairs(shared.MODULE_VERSIONS) do
+    local status = version:match("^1%.") and "✓" or "○"
+    table.insert(lines, string.format("║  %s %-12s  %s", status, module, string.rep(" ", 35 - #module) .. version .. " ║"))
+  end
+  
+  table.insert(lines, "╠══════════════════════════════════════════════════════╣")
+  table.insert(lines, "║  Legend: ✓ = 1.0 ready  ○ = needs update             ║")
+  table.insert(lines, "╚══════════════════════════════════════════════════════╝")
+  
+  -- Show in floating window
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_option(buf, "modifiable", false)
+  vim.api.nvim_buf_set_option(buf, "buftype", "nofile")
+  
+  local width = 58
+  local height = #lines
+  
+  vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    col = math.floor((vim.o.columns - width) / 2),
+    row = math.floor((vim.o.lines - height) / 2),
+    style = "minimal",
+    border = "rounded",
+  })
+  
+  -- Press q to close
+  vim.api.nvim_buf_set_keymap(buf, "n", "q", ":close<CR>", { noremap = true, silent = true })
+  vim.api.nvim_buf_set_keymap(buf, "n", "<Esc>", ":close<CR>", { noremap = true, silent = true })
+end
 
 return M

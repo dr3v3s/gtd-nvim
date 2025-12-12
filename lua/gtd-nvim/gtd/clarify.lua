@@ -1,8 +1,23 @@
--- Fixed clarify module: no DONE tasks, no notes, proper fzf config
--- Enhanced with comprehensive WAITING FOR support and metadata management
+-- ============================================================================
+-- GTD-NVIM CLARIFY MODULE
+-- ============================================================================
+-- Task clarification: state changes, dates, effort, WAITING FOR metadata
+-- No DONE tasks, no notes - only actionable items
+--
+-- @module gtd-nvim.gtd.clarify
+-- @version 0.9.0
+-- @requires shared (>= 1.0.0)
+-- @todo Update to use shared.colorize() for fzf displays
+-- @todo Add --ansi to all fzf configs
+-- ============================================================================
 
 local M = {}
+
+M._VERSION = "0.9.0"
+M._UPDATED = "2024-12-08"
+
 local shared = require("gtd-nvim.gtd.shared")
+local g = shared.glyphs  -- Glyph shortcuts
 
 -- Focus-mode integration (Sketchybar HUD)
 local focus_mode = (function()
@@ -158,7 +173,7 @@ local function collect_waiting_metadata(existing_data, cb)
   local waiting_data = existing_data or {}
 
   -- WHO are we waiting for?
-  local who_prompt = "Waiting for WHO (person/org): "
+  local who_prompt = g.state.WAITING .. " Waiting for WHO (person/org): "
   if waiting_data.waiting_for then
     who_prompt = who_prompt .. "[" .. waiting_data.waiting_for .. "] "
   end
@@ -171,7 +186,7 @@ local function collect_waiting_metadata(existing_data, cb)
     waiting_data.waiting_for = who
 
     -- WHAT are we waiting for?
-    local what_prompt = "Waiting for WHAT (deliverable): "
+    local what_prompt = g.state.WAITING .. " Waiting for WHAT (deliverable): "
     if waiting_data.waiting_what then
       what_prompt = what_prompt .. "[" .. waiting_data.waiting_what .. "] "
     end
@@ -186,10 +201,12 @@ local function collect_waiting_metadata(existing_data, cb)
       -- WHEN was it requested?
       local today = os.date("%Y-%m-%d")
       local when_default = waiting_data.requested_date or today
-      local when_prompt = "When requested (YYYY-MM-DD) [" .. when_default .. "]: "
+      local date_help = shared.smart_date_help()
+      local when_prompt = g.container.calendar .. (" When requested [%s] (%s): "):format(when_default, date_help)
 
       vim.ui.input({ prompt = when_prompt, default = when_default }, function(when)
-        waiting_data.requested_date = (when and when ~= "" and when or when_default)
+        local parsed_when = shared.parse_smart_date(when)
+        waiting_data.requested_date = parsed_when or (when and when ~= "" and when or when_default)
 
         if not is_valid_date(waiting_data.requested_date) then
           shared.notify("Invalid date format, using today", "WARN")
@@ -198,10 +215,11 @@ local function collect_waiting_metadata(existing_data, cb)
 
         -- FOLLOW-UP date
         local default_followup = waiting_data.follow_up_date or future_date(7)
-        local followup_prompt = "Follow up on (YYYY-MM-DD) [" .. default_followup .. "]: "
+        local followup_prompt = g.ui.clock .. (" Follow up [%s] (%s): "):format(default_followup, date_help)
 
         vim.ui.input({ prompt = followup_prompt, default = default_followup }, function(followup)
-          waiting_data.follow_up_date = (followup and followup ~= "" and followup or default_followup)
+          local parsed_followup = shared.parse_smart_date(followup, waiting_data.requested_date)
+          waiting_data.follow_up_date = parsed_followup or (followup and followup ~= "" and followup or default_followup)
 
           if not is_valid_date(waiting_data.follow_up_date) then
             shared.notify("Invalid follow-up date, using default", "WARN")
@@ -215,7 +233,7 @@ local function collect_waiting_metadata(existing_data, cb)
           end
 
           vim.ui.select(context_items, {
-            prompt = "How was it requested?",
+            prompt = g.ui.link .. " How was it requested?",
             format_item = function(item)
               return item == waiting_data.context and (item .. " (current)") or item
             end
@@ -226,7 +244,7 @@ local function collect_waiting_metadata(existing_data, cb)
             local priority_items = vim.tbl_deep_extend("force", {}, WAITING_PRIORITIES)
 
             vim.ui.select(priority_items, {
-              prompt = "Priority level",
+              prompt = g.priority.high .. " Priority level",
               format_item = function(item)
                 return item == waiting_data.priority and (item .. " (current)") or item
               end
@@ -234,7 +252,7 @@ local function collect_waiting_metadata(existing_data, cb)
               waiting_data.priority = priority or waiting_data.priority or "medium"
 
               -- Optional notes
-              local notes_prompt = "Additional notes (optional): "
+              local notes_prompt = g.ui.note .. " Additional notes (optional): "
               if waiting_data.notes then
                 notes_prompt = notes_prompt .. "[" .. waiting_data.notes:sub(1, 30) .. "...] "
               end
@@ -349,23 +367,30 @@ local function ensure_props(lines, h_start)
   return pos, pos + 1
 end
 
+--- Ensure ZK_LINK property exists in PROPERTIES drawer (org-mode compliant)
+--- @param lines table Array of lines
+--- @param h_start number Heading line
+--- @param h_end number Subtree end line
+--- @param id string ZK/Task ID
 local function ensure_zk_link(lines, h_start, h_end, id)
   if not id or id == "" then return end
-  for i = h_start, h_end do
-    if (lines[i] or ""):find("%[%[zk:" .. id .. "%]%]") then return end
-  end
-  local i = h_start + 1
-  while i <= h_end and (lines[i] or ""):match("^%s*$") do i = i + 1 end
-  local p_end = nil
-  if i <= h_end and (lines[i] or ""):match("^%s*:PROPERTIES:%s*$") then
-    local j = i + 1
-    while j <= h_end do
-      if (lines[j] or ""):match("^%s*:END:%s*$") then p_end = j; break end
-      j = j + 1
+  
+  -- Check if ZK_LINK property already exists in PROPERTIES
+  local props_start, props_end = shared.find_properties_drawer(lines, h_start, h_end)
+  if props_start and props_end then
+    for i = props_start + 1, props_end - 1 do
+      local line = lines[i] or ""
+      if line:match("^%s*:ZK_LINK:") and line:find("[[zk:" .. id .. "]]", 1, true) then
+        return  -- Already has correct ZK_LINK
+      end
     end
+    
+    -- Add ZK_LINK property before :END:
+    table.insert(lines, props_end, string.format(":ZK_LINK:   [[zk:%s]]", id))
+  else
+    -- No PROPERTIES drawer - use shared helper to create one with ZK_LINK
+    shared.set_property(lines, "ZK_LINK", "[[zk:" .. id .. "]]", h_start)
   end
-  local insert_pos = (p_end and (p_end + 1)) or (h_start + 1)
-  table.insert(lines, insert_pos, ("ID:: [[zk:%s]]"):format(id))
 end
 
 local function promote_line_to_heading(lines, lnum, status_kw)
@@ -373,7 +398,7 @@ local function promote_line_to_heading(lines, lnum, status_kw)
   local line = lines[lnum] or ""
   if line:match("^%s*$") then
     local title = nil
-    vim.ui.input({ prompt = "Task title: " }, function(input) title = input end)
+    vim.ui.input({ prompt = g.phase.capture .. " Task title: " }, function(input) title = input end)
     title = title and title:gsub("^%s+",""):gsub("%s+$","") or ""
     if title == "" then title = "New Task" end
     lines[lnum] = ("* %s %s"):format(status, title)
@@ -456,6 +481,115 @@ local function set_status(lines, h_start, p_start, p_end, status_kw)
   return p_end
 end
 
+-- ============================================================================
+-- EXPECTED OUTCOME - Core GTD Clarification
+-- ============================================================================
+-- "What does DONE look like?" - THE key question in GTD clarification
+
+--- Extract existing expected outcome from properties drawer
+---@param lines table Buffer lines
+---@param p_start number Properties drawer start line
+---@param p_end number Properties drawer end line
+---@return string|nil Expected outcome or nil if not set
+local function extract_expected_outcome(lines, p_start, p_end)
+  if not p_start or not p_end then return nil end
+  for i = p_start + 1, p_end - 1 do
+    local line = lines[i] or ""
+    local outcome = line:match("^%s*:EXPECTED_OUTCOME:%s*(.-)%s*$")
+    if outcome and outcome ~= "" then
+      return outcome
+    end
+  end
+  return nil
+end
+
+--- Set or update expected outcome in properties drawer
+---@param lines table Buffer lines (modified in place)
+---@param p_start number Properties drawer start line
+---@param p_end number Properties drawer end line  
+---@param outcome string Expected outcome text
+---@return number Updated p_end
+local function set_expected_outcome(lines, p_start, p_end, outcome)
+  if not outcome or outcome == "" then return p_end end
+  
+  local have = false
+  for i = p_start + 1, p_end - 1 do
+    if (lines[i] or ""):match("^%s*:EXPECTED_OUTCOME:%s") then
+      lines[i] = ":EXPECTED_OUTCOME: " .. outcome
+      have = true
+      break
+    end
+  end
+  
+  if not have then
+    -- Insert after :STATUS: if present, otherwise at end of properties
+    local insert_pos = p_end
+    for i = p_start + 1, p_end - 1 do
+      if (lines[i] or ""):match("^%s*:STATUS:%s") then
+        insert_pos = i + 1
+        break
+      end
+    end
+    table.insert(lines, insert_pos, ":EXPECTED_OUTCOME: " .. outcome)
+    p_end = p_end + 1
+  end
+  
+  return p_end
+end
+
+--- Extract next physical action from properties drawer
+---@param lines table Buffer lines
+---@param p_start number Properties drawer start line
+---@param p_end number Properties drawer end line
+---@return string|nil Next action or nil if not set
+local function extract_next_action(lines, p_start, p_end)
+  if not p_start or not p_end then return nil end
+  for i = p_start + 1, p_end - 1 do
+    local line = lines[i] or ""
+    local action = line:match("^%s*:NEXT_ACTION:%s*(.-)%s*$")
+    if action and action ~= "" then
+      return action
+    end
+  end
+  return nil
+end
+
+--- Set or update next physical action in properties drawer
+---@param lines table Buffer lines (modified in place)
+---@param p_start number Properties drawer start line
+---@param p_end number Properties drawer end line
+---@param action string Next action text
+---@return number Updated p_end
+local function set_next_action(lines, p_start, p_end, action)
+  if not action or action == "" then return p_end end
+  
+  local have = false
+  for i = p_start + 1, p_end - 1 do
+    if (lines[i] or ""):match("^%s*:NEXT_ACTION:%s") then
+      lines[i] = ":NEXT_ACTION: " .. action
+      have = true
+      break
+    end
+  end
+  
+  if not have then
+    -- Insert after :EXPECTED_OUTCOME: if present, otherwise after :STATUS:
+    local insert_pos = p_end
+    for i = p_start + 1, p_end - 1 do
+      if (lines[i] or ""):match("^%s*:EXPECTED_OUTCOME:%s") then
+        insert_pos = i + 1
+        break
+      elseif (lines[i] or ""):match("^%s*:STATUS:%s") then
+        insert_pos = i + 1
+      end
+    end
+    table.insert(lines, insert_pos, ":NEXT_ACTION: " .. action)
+    p_end = p_end + 1
+  end
+  
+  return p_end
+end
+
 local function append_note(lines, h_start, h_end, note)
   if not note or note == "" then return h_end end
   local insert_at = h_start + 1
@@ -478,22 +612,43 @@ end
 -- ---------- Enhanced Status picker with WAITING support ----------
 local STATES = { "NEXT", "TODO", "WAITING", "SOMEDAY", "DONE" }
 
+-- Build colored state list for fzf
+local function get_colored_states()
+  local colored = {}
+  for _, state in ipairs(STATES) do
+    local glyph = shared.colored_state_glyph(state)
+    table.insert(colored, glyph .. " " .. state)
+  end
+  return colored
+end
+
+-- Extract state name from colored selection
+local function extract_state(selection)
+  if not selection then return nil end
+  -- Strip ANSI codes and glyph
+  local stripped = selection:gsub("\27%[[%d;]*m", ""):gsub("^%S+%s+", "")
+  return stripped
+end
+
 local function pick_status(prompt, current, cb)
   local fzf = safe_require("fzf-lua")
   if fzf then
-    local header = current and ("Current: " .. current) or ""
-    fzf.fzf_exec(STATES, {
-      prompt = (prompt or "Status> ") .. " ",
+    local header = current and (shared.colorize("Current: ", "muted") .. shared.colored_state_glyph(current) .. " " .. current) or ""
+    local colored_states = get_colored_states()
+    fzf.fzf_exec(colored_states, {
+      prompt = shared.colorize(g.phase.clarify, "accent") .. " " .. (prompt or "Status") .. "> ",
       fzf_opts = {
         ["--no-info"] = true,
         ["--tiebreak"] = "index",
+        ["--ansi"] = true,
         ["--header"] = header
       },
-      winopts = { height = 0.30, width = 0.50, row = 0.10 },
+      -- Larger window to show all 5 statuses comfortably
+      winopts = { height = 0.55, width = 0.55, row = 0.10 },
       actions = {
         ["default"] = function(sel)
           local s = sel and sel[1]
-          if s then cb(s) end
+          if s then cb(extract_state(s)) end
         end,
       },
     })
@@ -508,45 +663,84 @@ end
 local function post_actions_menu(ctx)
   local fzf = safe_require("fzf-lua")
   if not fzf then return end
+  
+  -- Build menu items with glyphs
   local items = {
-    "Finish",
-    (projects and "Link to project") or nil,
-    (refile   and "Refile into project") or nil,
-    "Open ZK note",
-    "Mark DONE",
+    { display = shared.colorize(g.ui.check, "success") .. " Finish", action = "Finish" },
+    (projects and { display = shared.colorize(g.ui.link, "project") .. " Link to project", action = "Link to project" }) or nil,
+    (refile and { display = shared.colorize(g.phase.organize, "accent") .. " Refile into project", action = "Refile into project" }) or nil,
+    { display = shared.colorize(g.ui.note, "calendar") .. " Open ZK note", action = "Open ZK note" },
+    { display = shared.colorize(g.state.DONE, "done") .. " Mark DONE", action = "Mark DONE" },
   }
 
   -- Add WAITING-specific actions if this is a WAITING item
   local current_status = (ctx.lines and ctx.lines[ctx.h_start] or ""):match("^%*+%s+(%u+)%s")
   if current_status == "WAITING" then
-    table.insert(items, 2, "Edit WAITING details")
-    table.insert(items, 3, "Convert from WAITING")
+    table.insert(items, 2, { display = shared.colorize(g.state.WAITING, "waiting") .. " Edit WAITING details", action = "Edit WAITING details" })
+    table.insert(items, 3, { display = shared.colorize(g.ui.arrow_right, "info") .. " Convert from WAITING", action = "Convert from WAITING" })
   end
 
-  local filtered = {}
-  for _, v in ipairs(items) do if v then table.insert(filtered, v) end end
+  -- Filter nil entries and build display list
+  local filtered_items = {}
+  local display = {}
+  for _, v in ipairs(items) do 
+    if v then 
+      table.insert(filtered_items, v)
+      table.insert(display, v.display)
+    end 
+  end
 
-  fzf.fzf_exec(filtered, {
-    prompt = "After clarify> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+  fzf.fzf_exec(display, {
+    prompt = shared.colorize(g.phase.clarify, "accent") .. " After clarify> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
+    winopts = { height = 0.50, width = 0.55, row = 0.10 },
     actions = {
       ["default"] = function(sel)
-        local act = sel and sel[1]
+        local line = sel and sel[1]
+        if not line then return end
+        
+        -- Strip ANSI codes for robust pattern matching
+        local function strip_ansi(s)
+          return s:gsub("\027%[[%d;]*m", "")
+        end
+        local stripped = strip_ansi(line)
+        
+        -- Find matching action by checking if action text is in the stripped display line
+        local act = ""
+        for _, item in ipairs(filtered_items) do
+          -- Match on unique action keywords in the display text
+          if stripped:find(item.action, 1, true) then
+            act = item.action
+            break
+          end
+        end
+        
+        -- Use vim.defer_fn with delay to ensure FZF window is fully closed before opening another picker
         if act == "Link to project" and projects and projects.link_task_to_project_at_cursor then
-          projects.link_task_to_project_at_cursor({})
+          vim.defer_fn(function()
+            projects.link_task_to_project_at_cursor({})
+          end, 50)
         elseif act == "Refile into project" and refile and refile.to_project_at_cursor then
-          refile.to_project_at_cursor({})
+          vim.defer_fn(function()
+            refile.to_project_at_cursor({})
+          end, 50)
         elseif act == "Edit WAITING details" then
-          M.update_waiting_at_cursor()
+          vim.defer_fn(function()
+            M.update_waiting_at_cursor()
+          end, 50)
         elseif act == "Convert from WAITING" then
-          M.convert_from_waiting_at_cursor()
+          vim.defer_fn(function()
+            M.convert_from_waiting_at_cursor()
+          end, 50)
         elseif act == "Open ZK note" then
-          local item = {
+          local zk_item = {
             path = ctx.path,
             h_start = ctx.h_start,
             h_end = ctx.h_end,
           }
-          shared.open_zk_link(item)
+          vim.defer_fn(function()
+            shared.open_zk_link(zk_item)
+          end, 50)
         elseif act == "Mark DONE" then
           local lines = buf_lines(0)
           local p_s, p_e = ensure_props(lines, ctx.h_start)
@@ -647,10 +841,45 @@ function M.clarify(opts)
       end
       h_end = j - 1
 
-      vim.ui.input({ prompt = "Append note (optional): " }, function(note)
-        h_end = append_note(lines, h_start, h_end, note or "")
+      -- ================================================================
+      -- GTD CLARIFICATION CORE: Expected Outcome
+      -- "What does DONE look like?" - THE key GTD question
+      -- ================================================================
+      local current_outcome = extract_expected_outcome(lines, p_start, p_end)
+      local outcome_prompt = g.state.DONE .. " What does DONE look like?"
+      if current_outcome then
+        outcome_prompt = outcome_prompt .. " [" .. current_outcome:sub(1, 40) .. (current_outcome:len() > 40 and "..." or "") .. "]"
+      end
+      outcome_prompt = outcome_prompt .. ": "
 
-        local today = os.date("%Y-%m-%d")
+      vim.ui.input({ prompt = outcome_prompt, default = current_outcome }, function(outcome)
+        -- Set expected outcome if provided (or keep existing if empty)
+        if outcome and outcome ~= "" then
+          p_end = set_expected_outcome(lines, p_start, p_end, outcome)
+        end
+
+        -- ================================================================
+        -- GTD CLARIFICATION: Next Physical Action  
+        -- "What's the very next physical action?"
+        -- ================================================================
+        local current_action = extract_next_action(lines, p_start, p_end)
+        local action_prompt = g.state.NEXT .. " Next physical action?"
+        if current_action then
+          action_prompt = action_prompt .. " [" .. current_action:sub(1, 40) .. (current_action:len() > 40 and "..." or "") .. "]"
+        end
+        action_prompt = action_prompt .. ": "
+
+        vim.ui.input({ prompt = action_prompt, default = current_action }, function(next_action)
+          -- Set next action if provided
+          if next_action and next_action ~= "" then
+            p_end = set_next_action(lines, p_start, p_end, next_action)
+          end
+
+          -- Optional note
+          vim.ui.input({ prompt = g.ui.note .. " Append note (optional): " }, function(note)
+            h_end = append_note(lines, h_start, h_end, note or "")
+
+            local today = os.date("%Y-%m-%d")
 
         -- Special handling for WAITING status - use follow-up date as SCHEDULED
         if status_choice == "WAITING" then
@@ -660,8 +889,10 @@ function M.clarify(opts)
             shared.notify("Set follow-up date as SCHEDULED", "INFO")
           else
             -- No follow-up date set, ask for defer only
-            vim.ui.input({ prompt = ("Defer/SCHEDULED (YYYY-MM-DD, empty=keep, -=clear) [e.g. %s]: "):format(today) }, function(sched_in)
-              local sched = sched_in or ""
+            local date_help = shared.smart_date_help()
+            vim.ui.input({ prompt = g.container.calendar .. (" Defer [%s] (%s): "):format(today, date_help) }, function(sched_in)
+              local sched = shared.parse_smart_date(sched_in) or ""
+              if sched_in == "-" then sched = "-" end  -- Keep clear command
               lines, h_end = set_dates(lines, h_start, h_end, sched, "")
 
               ensure_zk_link(lines, h_start, h_end, id)
@@ -678,11 +909,18 @@ function M.clarify(opts)
           end
         else
           -- Normal date handling for non-WAITING items
-          vim.ui.input({ prompt = ("Defer/SCHEDULED (YYYY-MM-DD, empty=keep, -=clear) [e.g. %s]: "):format(today) }, function(sched_in)
-            local sched = sched_in or ""
-            local plus3 = os.date("%Y-%m-%d", os.time() + 3*24*3600)
-            vim.ui.input({ prompt = ("Due/DEADLINE (YYYY-MM-DD, empty=keep, -=clear) [e.g. %s]: "):format(plus3) }, function(dead_in)
-              local dead = dead_in or ""
+          local date_help = shared.smart_date_help()
+          vim.ui.input({ prompt = g.container.calendar .. (" Defer [%s] (%s): "):format(today, date_help) }, function(sched_in)
+            local sched = shared.parse_smart_date(sched_in) or ""
+            if sched_in == "-" then sched = "-" end  -- Keep clear command
+            
+            -- Calculate intelligent due suggestion based on defer date
+            local due_base = (sched ~= "" and sched ~= "-") and sched or today
+            local due_suggestion = shared.parse_smart_date("+3d", due_base) or os.date("%Y-%m-%d", os.time() + 3*24*3600)
+            
+            vim.ui.input({ prompt = g.ui.warning .. (" Due [after %s → %s] (%s): "):format(due_base, due_suggestion, date_help) }, function(dead_in)
+              local dead = shared.parse_smart_date(dead_in, due_base) or ""
+              if dead_in == "-" then dead = "-" end  -- Keep clear command
               lines, h_end = set_dates(lines, h_start, h_end, sched, dead)
 
               ensure_zk_link(lines, h_start, h_end, id)
@@ -708,7 +946,9 @@ function M.clarify(opts)
           buf = buf, lines = lines, h_start = h_start, h_end = h_end,
           id = id, path = vim.api.nvim_buf_get_name(buf)
         })
-      end)
+      end)  -- closes note input
+      end)  -- closes next_action input  
+      end)  -- closes outcome input
     end
 
     -- Handle status transitions
@@ -845,14 +1085,20 @@ function M.clarify_pick_any(opts)
     return
   end
 
-  -- Create display list with proper priority order
+  -- Create display list with index prefix for reliable matching
   local display = {}
-  for _, item in ipairs(items) do
-    local state_tag = item.state and ("[" .. item.state .. "] ") or "[TODO] "
-    local waiting_indicator = (item.state == "WAITING") and "⏳ " or ""
-    local line = string.format("%s%s %s%s (%s)",
-      item.context_icon, waiting_indicator, state_tag, item.title, item.filename)
+  local lookup = {}  -- Map display string -> item index
+  for i, item in ipairs(items) do
+    local state_glyph = shared.colored_state_glyph(item.state or "TODO")
+    local container_glyph = shared.colored_container_glyph(item.filename or "")
+    local file_short = shared.colorize((item.filename or ""):gsub("%.org$", ""), "muted")
+    local line = string.format("%s %s %s │ %s",
+      state_glyph, item.title, container_glyph, file_short)
     table.insert(display, line)
+    lookup[line] = i
+    -- Also store without ANSI for fallback matching
+    local plain = line:gsub("\027%[[%d;]*m", "")
+    lookup[plain] = i
   end
 
   local fzf_config = shared.create_fzf_config(
@@ -861,14 +1107,42 @@ function M.clarify_pick_any(opts)
     "Enter: Clarify • Ctrl-E: Edit & Return • Ctrl-W: Update WAITING"
   )
 
-  local actions = shared.create_standard_actions(display, items, M.clarify_pick_any, opts)
+  -- Helper to find item from selection
+  local function find_item(sel)
+    if not sel or not sel[1] then return nil end
+    local selected = sel[1]
+    
+    -- Try direct lookup first
+    local idx = lookup[selected]
+    if idx then return items[idx] end
+    
+    -- Try without ANSI codes
+    local plain = selected:gsub("\027%[[%d;]*m", "")
+    idx = lookup[plain]
+    if idx then return items[idx] end
+    
+    -- Fallback: iterate and compare
+    for i, d in ipairs(display) do
+      if d == selected then return items[i] end
+      local d_plain = d:gsub("\027%[[%d;]*m", "")
+      if d_plain == plain then return items[i] end
+      -- Substring match as last resort
+      if d_plain:find(plain, 1, true) or plain:find(d_plain, 1, true) then
+        return items[i]
+      end
+    end
+    
+    return nil
+  end
 
   -- Override default action for clarify workflow
+  local actions = {}
   actions["default"] = function(sel)
-    if not sel or not sel[1] then return end
-    local idx = vim.fn.index(display, sel[1]) + 1
-    local item = items[idx]
-    if not item then return end
+    local item = find_item(sel)
+    if not item then
+      shared.notify("Could not find selected task", "WARN")
+      return
+    end
 
     vim.cmd("edit " .. vim.fn.fnameescape(item.path))
     vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
@@ -879,11 +1153,16 @@ function M.clarify_pick_any(opts)
     end)
   end
 
+  -- Edit and return action
+  actions["ctrl-e"] = function(sel)
+    local item = find_item(sel)
+    if not item then return end
+    shared.edit_and_return(item, M.clarify_pick_any, opts)
+  end
+
   -- Add WAITING-specific action
   actions["ctrl-w"] = function(sel)
-    if not sel or not sel[1] then return end
-    local idx = vim.fn.index(display, sel[1]) + 1
-    local item = items[idx]
+    local item = find_item(sel)
     if not item then return end
 
     vim.cmd("edit " .. vim.fn.fnameescape(item.path))
@@ -899,6 +1178,9 @@ function M.clarify_pick_any(opts)
       vim.schedule(function() M.clarify_pick_any(opts) end)
     end
   end
+
+  -- CRITICAL: Ensure valid cwd before fzf-lua (it checks cwd before applying our config)
+  shared.ensure_valid_cwd()
 
   local fzf = require("fzf-lua")
   fzf.fzf_exec(display, vim.tbl_extend("force", fzf_config, {
@@ -930,20 +1212,23 @@ function M.list_waiting_items()
 
   local display = {}
   for _, item in ipairs(items) do
-    local priority_indicator = ""
-    -- Extract priority if available (would need to be added to scan function)
-    local follow_up_text = "" -- Could extract follow-up date too
+    local state_glyph = shared.colored_state_glyph("WAITING")
+    local container_glyph = shared.colored_container_glyph(item.filename or "")
+    local file_short = shared.colorize((item.filename or ""):gsub("%.org$", ""), "muted")
 
-    table.insert(display, string.format("⏳ %s | %s (%s)%s",
+    table.insert(display, string.format("%s %s %s │ %s",
+      state_glyph,
       item.title,
-      item.filename,
-      item.context_icon:gsub("📁 ", ""):gsub("📧 ", ""):gsub("📋 ", ""),
-      follow_up_text))
+      container_glyph,
+      file_short))
   end
 
+  -- Ensure valid cwd before fzf-lua
+  shared.ensure_valid_cwd()
+
   fzf.fzf_exec(display, {
-    prompt = "WAITING FOR> ",
-    fzf_opts = { ["--no-info"] = true },
+    prompt = shared.colorize(g.state.WAITING, "waiting") .. " WAITING FOR> ",
+    fzf_opts = { ["--no-info"] = true, ["--ansi"] = true },
     winopts = { height = 0.60, width = 0.90, row = 0.10 },
     actions = {
       ["default"] = function(sel)

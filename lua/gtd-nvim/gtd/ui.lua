@@ -1,8 +1,25 @@
--- gtd/ui.lua — Enhanced UI helpers and shared utilities for GTD system
+-- ============================================================================
+-- GTD-NVIM UI MODULE
+-- ============================================================================
+-- Enhanced UI helpers and shared utilities for GTD system
 -- Provides consistent UI patterns, file operations, and common utilities
 -- 100% backward compatible with existing ui.select/ui.input/ui.STATUSES
+--
+-- @module gtd-nvim.gtd.ui
+-- @version 0.8.0
+-- @requires shared (>= 1.0.0)
+-- @todo Use shared.glyphs for icons
+-- @todo Use highlight groups for UI elements
+-- ============================================================================
 
 local M = {}
+
+M._VERSION = "1.0.0"
+M._UPDATED = "2024-12-09"
+
+-- Load shared utilities
+local shared = require("gtd-nvim.gtd.shared")
+local g = shared.glyphs
 
 -- ============================================================================
 -- BACKWARD COMPATIBILITY - Existing API (DO NOT CHANGE)
@@ -407,6 +424,215 @@ function M.org_subtree_range(lines, heading_line)
   end
   
   return heading_line, end_line
+end
+
+-- ============================================================================
+-- ENHANCED UI FUNCTIONS (for projects.lua create_from_task_at_cursor)
+-- ============================================================================
+
+--- Show extraction summary with fzf preview
+---@param task_data table Task metadata extracted from cursor
+---@param callback function Callback when user confirms
+function M.show_extraction_summary(task_data, callback)
+  local fzf = have_fzf()
+  
+  local summary_lines = {
+    "Task: " .. (task_data.title or "Untitled"),
+    "State: " .. (task_data.state or "TODO"),
+  }
+  
+  if task_data.description then
+    table.insert(summary_lines, "Desc: " .. task_data.description)
+  end
+  if task_data.scheduled then
+    table.insert(summary_lines, "Scheduled: " .. task_data.scheduled)
+  end
+  if task_data.deadline then
+    table.insert(summary_lines, "Deadline: " .. task_data.deadline)
+  end
+  if task_data.zk_note then
+    table.insert(summary_lines, "ZK Note: " .. vim.fn.fnamemodify(task_data.zk_note, ":t"))
+  end
+  if task_data.area and task_data.area.name then
+    table.insert(summary_lines, "Area: " .. task_data.area.name)
+  end
+  
+  if fzf then
+    local preview_content = table.concat(summary_lines, "\n")
+    fzf.fzf_exec({"→ Create Project from this task", "✗ Cancel"}, {
+      prompt = (g.container.projects or "󰉋") .. " Convert to Project> ",
+      winopts = { height = 0.40, width = 0.60, row = 0.20 },
+      fzf_opts = { 
+        ["--ansi"] = true,
+        ["--header"] = preview_content,
+      },
+      actions = {
+        ["default"] = function(sel)
+          if sel and sel[1] and sel[1]:match("Create Project") then
+            callback()
+          end
+        end,
+      },
+    })
+  else
+    -- Fallback to vim.ui.select
+    local confirm_msg = "Convert to project: " .. (task_data.title or "Untitled") .. "?"
+    vim.ui.select({"Yes, create project", "Cancel"}, { prompt = confirm_msg }, function(choice)
+      if choice and choice:match("Yes") then
+        callback()
+      end
+    end)
+  end
+end
+
+--- Enhanced input with step indicator
+---@param step number Current step number
+---@param total number Total steps
+---@param opts table Options: icon, prompt, hint, default, allow_empty
+---@param callback function Callback with input value
+function M.enhanced_input(step, total, opts, callback)
+  opts = opts or {}
+  local icon = opts.icon or (g.ui.bullet or "•")
+  local prompt_text = string.format("[%d/%d] %s %s: ", step, total, icon, opts.prompt or "Input")
+  
+  if opts.hint then
+    vim.notify(opts.hint, vim.log.levels.INFO)
+  end
+  
+  vim.ui.input({
+    prompt = prompt_text,
+    default = opts.default or "",
+  }, function(input)
+    if input == nil then
+      -- User cancelled
+      return
+    end
+    if input == "" and not opts.allow_empty then
+      vim.notify("Input required", vim.log.levels.WARN)
+      return
+    end
+    callback(input)
+  end)
+end
+
+--- Select area for project
+---@param areas table List of area tables with name and dir
+---@param callback function Callback with selected area directory
+function M.select_area(areas, callback)
+  local fzf = have_fzf()
+  
+  if not areas or #areas == 0 then
+    callback(nil)
+    return
+  end
+  
+  local display = {}
+  local lookup = {}
+  
+  for _, area in ipairs(areas) do
+    local line = (g.container.areas or "󰕰") .. " " .. area.name
+    table.insert(display, line)
+    lookup[line] = area.dir
+  end
+  
+  table.insert(display, 1, (g.container.projects or "󰉋") .. " Projects (no area)")
+  lookup[display[1]] = nil  -- nil means use default projects dir
+  
+  if fzf then
+    fzf.fzf_exec(display, {
+      prompt = "Select Area> ",
+      winopts = { height = 0.35, width = 0.50, row = 0.20 },
+      fzf_opts = { ["--ansi"] = true },
+      actions = {
+        ["default"] = function(sel)
+          if sel and sel[1] then
+            callback(lookup[sel[1]])
+          end
+        end,
+      },
+    })
+  else
+    vim.ui.select(display, { prompt = "Select area:" }, function(choice)
+      if choice then
+        callback(lookup[choice])
+      end
+    end)
+  end
+end
+
+--- Enhanced area picker for project creation (step 5/5)
+---@param task_data table Task metadata with optional area info
+---@param total_steps number Total steps in wizard
+---@param callback function Callback with choice: "keep", "choose", "root"
+function M.enhanced_area_picker(task_data, total_steps, callback)
+  local fzf = have_fzf()
+  local step = 5
+  
+  local options = {}
+  local has_area = task_data and task_data.area and task_data.area.name
+  
+  if has_area then
+    table.insert(options, (g.container.areas or "󰕰") .. " Keep: " .. task_data.area.name)
+  end
+  table.insert(options, (g.ui.search or "") .. " Choose different area...")
+  table.insert(options, (g.container.projects or "󰉋") .. " Projects root (no area)")
+  
+  local prompt_text = string.format("[%d/%d] %s Select Area> ", step, total_steps, g.container.areas or "󰕰")
+  
+  if fzf then
+    fzf.fzf_exec(options, {
+      prompt = prompt_text,
+      winopts = { height = 0.30, width = 0.50, row = 0.20 },
+      fzf_opts = { ["--ansi"] = true },
+      actions = {
+        ["default"] = function(sel)
+          if not sel or not sel[1] then return end
+          local choice = sel[1]
+          if choice:match("Keep:") then
+            callback("keep")
+          elseif choice:match("Choose different") then
+            callback("choose")
+          elseif choice:match("root") then
+            callback("root")
+          else
+            callback("choose")
+          end
+        end,
+      },
+    })
+  else
+    vim.ui.select(options, { prompt = "Select area:" }, function(choice)
+      if not choice then return end
+      if choice:match("Keep:") then
+        callback("keep")
+      elseif choice:match("Choose different") then
+        callback("choose")
+      else
+        callback("root")
+      end
+    end)
+  end
+end
+
+--- Show success message after project creation
+---@param filepath string Path to created project file
+---@param project_id string Project ID
+---@param zkpath string|nil Path to associated ZK note
+function M.show_success(filepath, project_id, zkpath)
+  local filename = vim.fn.fnamemodify(filepath, ":t")
+  local msg = (g.state.DONE or "󰸟") .. " Project created: " .. filename
+  
+  if zkpath then
+    local zkname = vim.fn.fnamemodify(zkpath, ":t")
+    msg = msg .. "\n" .. (g.ui.link or "") .. " ZK: " .. zkname
+  end
+  
+  vim.notify(msg, vim.log.levels.INFO)
+  
+  -- Open the new project file
+  vim.defer_fn(function()
+    vim.cmd("edit " .. filepath)
+  end, 100)
 end
 
 -- ============================================================================

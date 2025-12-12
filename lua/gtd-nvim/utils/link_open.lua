@@ -107,8 +107,20 @@ local function org_target_from_line_under_cursor()
   local line = vim.api.nvim_get_current_line()
   local col = vim.api.nvim_win_get_cursor(0)[2] + 1
 
-  local first_target = nil
+  -- First check for [[zk:ID]] links (ZK ID references, not file paths)
   local i = 1
+  while true do
+    local s, e, zk_id = line:find("%[%[zk:([^%]]+)%]%]", i)
+    if not s then break end
+    if col >= s and col <= e then
+      return "zk:" .. zk_id  -- Return with zk: prefix to indicate ZK link
+    end
+    i = e + 1
+  end
+
+  -- Then check for [[file:...]] links
+  local first_target = nil
+  i = 1
   while true do
     local s, e, target = line:find("%[%[file:([^%]]+)%]%[[^%]]*%]%]", i)
     if not s then break end
@@ -252,6 +264,25 @@ function M.open_at_point(opts)
   end
   if target:match("^https?://") then 
     return M.open_url(target) 
+  end
+  
+  -- ZK ID link (not a file path) - resolve to actual note
+  if target:match("^zk:") then
+    local zk_id = target:match("^zk:(.+)$")
+    if zk_id then
+      -- Try to load shared module for ZK resolution
+      local ok, shared = pcall(require, "gtd-nvim.gtd.shared")
+      if ok and shared and shared.resolve_zk_id then
+        local resolved_path = shared.resolve_zk_id(zk_id)
+        if resolved_path and vim.fn.filereadable(resolved_path) == 1 then
+          vim.cmd("edit " .. vim.fn.fnameescape(resolved_path))
+          vim.notify("Opened ZK note: " .. vim.fn.fnamemodify(resolved_path, ":t"), vim.log.levels.INFO, { title = "LinkOpen" })
+          return
+        end
+      end
+      vim.notify("ZK note not found for ID: " .. zk_id .. "\nTry searching your notes directory.", vim.log.levels.WARN, { title = "LinkOpen" })
+      return
+    end
   end
   
   -- File path

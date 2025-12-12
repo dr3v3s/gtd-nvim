@@ -1,13 +1,23 @@
--- Manage tasks & projects with enhanced GTD workflow integration
--- - Scan .org files for tasks/projects with full metadata
--- - Present rich fzf-lua action menus: Open / Clarify / Archive / Delete / Refile / Open ZK
--- - Smart sorting: NEXT → TODO → WAITING → SOMEDAY → others
--- - Archive entries shown separately with clear indicators
--- - Persistent pickers that refresh after mutations
--- - Full integration with clarify, organize, and ZK systems
--- - Aware of Areas/… project files (in addition to Projects/…)
+-- ============================================================================
+-- GTD-NVIM MANAGE MODULE
+-- ============================================================================
+-- Task & project management with enhanced GTD workflow integration
+-- Actions: Open, Clarify, Archive, Delete, Refile, Open ZK
+--
+-- @module gtd-nvim.gtd.manage
+-- @version 1.0.0
+-- @requires shared (>= 1.0.0)
+-- @see 202512081430-GTD-Nvim-Shared-Module-Audit
+-- ============================================================================
 
 local M = {}
+
+M._VERSION = "1.0.0"
+M._UPDATED = "2024-12-08"
+
+-- Load shared utilities with glyph system
+local shared = require("gtd-nvim.gtd.shared")
+local g = shared.glyphs  -- Glyph shortcuts
 
 -- ------------------------ Config ------------------------
 M.cfg = {
@@ -132,22 +142,32 @@ local function find_dates_in_subtree(lines, start_idx, end_idx)
 end
 
 local function zk_path_in_subtree(lines, hstart, hend)
-  -- Look for ZK_NOTE property first
+  -- Look for ZK_NOTE property first (file path)
   local zk_prop = get_property(lines, hstart, hend, "ZK_NOTE")
   if zk_prop then
     local p = zk_prop:match("%[%[file:(.-)%]%]") or zk_prop:match("^file:(.+)")
     if p then return xp(p) end
   end
 
-  -- Look for body links
+  -- Look for ZK_LINK property (org-mode compliant format)
+  local zk_link = get_property(lines, hstart, hend, "ZK_LINK")
+  if zk_link then
+    local zkid = zk_link:match("%[%[zk:(%w+)%]%]")
+    if zkid then
+      -- Has ZK ID reference - resolution left to ZK tooling
+      return nil  -- Return nil since we don't have the actual path
+    end
+  end
+
+  -- Look for body links (Notes: [[file:...]])
   for i = hstart, hend do
     local p = (lines[i] or ""):match("^%s*Notes:%s*%[%[file:(.-)%]%]")
     if p and p ~= "" then return xp(p) end
 
-    -- Also check for ZK ID links
+    -- Legacy fallback: check for standalone ID:: lines
     local zkid = (lines[i] or ""):match("ID::%s*%[%[zk:(%w+)%]%]")
     if zkid then
-      -- Exists, but resolution is left to ZK tooling
+      -- Legacy format exists - resolution left to ZK tooling
     end
   end
   return nil
@@ -196,6 +216,10 @@ local function scan_all_tasks()
 
           local from_archive = (filename == M.cfg.archive_file)
 
+          -- Get container type and state priority for GTD sorting
+          local container_type, container_priority = shared.get_container_type(path, filename)
+          local state_priority_val = shared.get_state_priority(state)
+
           table.insert(items, {
             kind = kind,
             path = path,
@@ -206,6 +230,7 @@ local function scan_all_tasks()
             level = level,
             state = state,
             title = title,
+            filename = filename,
             zk_path = zk,
             task_id = task_id_val,
             scheduled = scheduled,
@@ -214,6 +239,9 @@ local function scan_all_tasks()
             assigned = assigned,
             tags = tags,
             from_archive = from_archive, -- kept for backward compatibility
+            container_type = container_type,
+            container_priority = container_priority,
+            state_priority = state_priority_val,
           })
 
           ::continue_heading::
@@ -258,10 +286,12 @@ local function list_project_files()
   table.sort(files)
 
   -- Enhanced project file metadata with detailed task analysis
+  -- ONLY include files that actually have a PROJECT heading
   local enhanced = {}
   for _, path in ipairs(files) do
     local lines = readf(path)
     local first_heading = nil
+    local is_actual_project = false  -- Must have PROJECT state to be included
     local project_info = {
       path = path,
       headings = 0,
@@ -278,16 +308,21 @@ local function list_project_files()
     for i, ln in ipairs(lines) do
       if is_heading(ln) then
         project_info.headings = project_info.headings + 1
+        local state, title = parse_state_title(ln)
+        
+        -- Check if this file has a PROJECT heading (typically first heading)
+        if state == "PROJECT" then
+          is_actual_project = true
+        end
+        
         if not first_heading then
           first_heading = ln
-          local _, title = parse_state_title(ln)
           project_info.title = title
         end
 
         -- Analyze task states and dates
         local hstart, hend = subtree_range(lines, i)
         if hstart and hend then
-          local state = select(1, parse_state_title(ln))
           if state == "NEXT" then
             project_info.next_actions = project_info.next_actions + 1
             project_info.tasks = project_info.tasks + 1
@@ -313,48 +348,52 @@ local function list_project_files()
       end
     end
 
-    table.insert(enhanced, project_info)
+    -- Only include files that actually have a PROJECT heading
+    if is_actual_project then
+      table.insert(enhanced, project_info)
+    end
   end
 
   return enhanced
 end
 
--- GTD Project Sorting: Active projects first, then by urgency
+-- GTD Project Sorting: Areas (alphabetically) first, then Projects (alphabetically)
 local function sort_projects_gtd_workflow(projects)
   table.sort(projects, function(a, b)
-    -- Projects with NEXT actions get highest priority
-    if a.next_actions ~= b.next_actions then
-      return a.next_actions > b.next_actions
+    local P = paths()
+    
+    -- Determine location type and area name
+    local function get_location_info(proj)
+      local dir = vim.fn.fnamemodify(proj.path, ":h")
+      local parent = vim.fn.fnamemodify(proj.path, ":h:t")
+      local grandparent = vim.fn.fnamemodify(proj.path, ":h:h:t")
+      
+      -- Check if under Areas/
+      if grandparent == M.cfg.areas_dir or dir:find(P.areas_root, 1, true) then
+        return 1, parent  -- Areas first, sorted by area name
+      elseif dir == P.projdir or parent == M.cfg.projects_dir then
+        return 2, ""  -- Projects second
+      else
+        return 3, ""  -- Other locations last
+      end
     end
-
-    -- Projects with deadlines come before those without
-    if a.has_deadlines ~= b.has_deadlines then
-      return a.has_deadlines
+    
+    local loc_a, area_a = get_location_info(a)
+    local loc_b, area_b = get_location_info(b)
+    
+    -- First sort by location type (Areas < Projects < Other)
+    if loc_a ~= loc_b then
+      return loc_a < loc_b
     end
-
-    -- Among projects with deadlines, sort by earliest deadline
-    if a.earliest_deadline and b.earliest_deadline then
-      return a.earliest_deadline < b.earliest_deadline
+    
+    -- Within Areas, sort by area name
+    if loc_a == 1 and area_a ~= area_b then
+      return area_a < area_b
     end
-
-    -- Projects with more active tasks (TODO) come first
-    if a.todo_tasks ~= b.todo_tasks then
-      return a.todo_tasks > b.todo_tasks
-    end
-
-    -- Projects with any active tasks come before inactive ones
-    if a.tasks ~= b.tasks then
-      return a.tasks > b.tasks
-    end
-
-    -- Recently modified projects first
-    if a.last_modified ~= b.last_modified then
-      return a.last_modified > b.last_modified
-    end
-
-    -- Finally, alphabetical by title
-    local title_a = a.title or vim.fn.fnamemodify(a.path, ":t:r")
-    local title_b = b.title or vim.fn.fnamemodify(b.path, ":t:r")
+    
+    -- Finally, sort alphabetically by project title
+    local title_a = (a.title or vim.fn.fnamemodify(a.path, ":t:r")):lower()
+    local title_b = (b.title or vim.fn.fnamemodify(b.path, ":t:r")):lower()
     return title_a < title_b
   end)
 end
@@ -397,29 +436,8 @@ local function get_file_priority(item)
 end
 
 local function sort_items_gtd_workflow(items)
-  table.sort(items, function(a, b)
-    -- First by file/location priority (Inbox → Projects/Areas → Others → Archive)
-    local file_pa, file_pb = get_file_priority(a), get_file_priority(b)
-    if file_pa ~= file_pb then return file_pa < file_pb end
-
-    -- Then by state priority within same file type
-    local state_pa, state_pb = get_state_priority(a.state), get_state_priority(b.state)
-    if state_pa ~= state_pb then return state_pa < state_pb end
-
-    -- Then by deadline (sooner first)
-    if a.deadline and b.deadline then
-      return a.deadline < b.deadline
-    elseif a.deadline then return true
-    elseif b.deadline then return false
-    end
-
-    -- Then by title
-    local ta, tb = a.title or "", b.title or ""
-    if ta ~= tb then return ta < tb end
-
-    -- Finally by line number within same file
-    return (a.lnum or 0) < (b.lnum or 0)
-  end)
+  -- Use shared GTD hierarchy sorting: Inbox → Areas → Projects
+  shared.gtd_sort(items)
 end
 
 -- ------------------------ Enhanced Display Formatting ------------------------
@@ -431,22 +449,22 @@ local function format_task_display(item)
   local file_indicator = ""
 
   if filename == M.cfg.inbox_file then
-    file_indicator = "📥 Inbox"
+    file_indicator = g.container.inbox .. " Inbox"
   elseif dirname == M.cfg.projects_dir or grand == M.cfg.areas_dir then
-    file_indicator = "📂 " .. vim.fn.fnamemodify(item.path, ":t:r")
+    file_indicator = g.container.projects .. " " .. vim.fn.fnamemodify(item.path, ":t:r")
   elseif filename == M.cfg.archive_file then
-    file_indicator = "📦 Archive"
+    file_indicator = g.container.someday .. " Archive"
   else
-    file_indicator = "📄 " .. vim.fn.fnamemodify(item.path, ":t:r")
+    file_indicator = g.file.org .. " " .. vim.fn.fnamemodify(item.path, ":t:r")
   end
 
   -- State indicator
   local state_icon = ""
-  if item.state == "NEXT" then state_icon = "⚡"
-  elseif item.state == "TODO" then state_icon = "📋"
-  elseif item.state == "WAITING" then state_icon = "⏳"
-  elseif item.state == "SOMEDAY" then state_icon = "💭"
-  elseif item.state == "DONE" then state_icon = "✅"
+  if item.state == "NEXT" then state_icon = g.state.NEXT
+  elseif item.state == "TODO" then state_icon = g.state.TODO
+  elseif item.state == "WAITING" then state_icon = g.state.WAITING
+  elseif item.state == "SOMEDAY" then state_icon = g.state.SOMEDAY
+  elseif item.state == "DONE" then state_icon = g.state.DONE
   end
 
   -- Title with truncation
@@ -455,13 +473,13 @@ local function format_task_display(item)
   -- Date indicators
   local date_info = ""
   if item.deadline then
-    date_info = " 🎯" .. item.deadline
+    date_info = " " .. g.ui.warning .. item.deadline
   elseif item.scheduled then
-    date_info = " 📅" .. item.scheduled
+    date_info = " " .. g.container.calendar .. item.scheduled
   end
 
   -- ZK indicator
-  local zk_indicator = item.zk_path and " 🧠" or ""
+  local zk_indicator = item.zk_path and (" " .. g.ui.note) or ""
 
   -- Tags
   local tag_display = ""
@@ -543,7 +561,7 @@ local function archive_or_delete_zk(zk_path, action)
   if action == "delete" then
     local success = os.remove(zk_path)
     if success == nil then
-      vim.notify("⚠️  Failed to delete ZK note: " .. zk_path, vim.log.levels.WARN)
+      vim.notify(g.ui.warning .. " Failed to delete ZK note: " .. zk_path, vim.log.levels.WARN)
       return false
     end
     return true
@@ -572,6 +590,52 @@ local function archive_or_delete_zk(zk_path, action)
   return success
 end
 
+-- ------------------------ Archive Handling Helper ------------------------
+local function archive_whole_project_file(proj_path, opts)
+  opts = opts or {}
+  local P = paths()
+  local L = readf(proj_path)
+  if #L == 0 then return false end
+
+  -- Create archive entry with enhanced metadata
+  local proj_title = L[1]:match("^%*+%s+(.*)") or vim.fn.fnamemodify(proj_path, ":t:r")
+  local chunk = {
+    string.format("* PROJECT %s (archived)", proj_title),
+    ":PROPERTIES:",
+    string.format(":SOURCE:   [[file:%s][%s]]", proj_path, vim.fn.fnamemodify(proj_path, ":t")),
+    string.format(":DATE:     %s", now()),
+    string.format(":ARCHIVED_BY: %s", vim.fn.expand("$USER")),
+    ":END:",
+    "",
+  }
+
+  -- Add original content
+  for _, ln in ipairs(L) do
+    table.insert(chunk, ln)
+  end
+  table.insert(chunk, "")
+
+  if not appendf(P.archive, chunk) then
+    return false
+  end
+
+  -- Handle ZK notes
+  local zk_files = {}
+  for _, ln in ipairs(L) do
+    local p = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or
+             ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
+    if p then zk_files[xp(p)] = true end
+  end
+
+  for zk, _ in pairs(zk_files) do
+    archive_or_delete_zk(zk, opts.zk_action or "move")
+  end
+
+  -- Move project file to archive-deleted directory (ArchiveDeleted)
+  local ok, _ = move_or_delete_file(proj_path, opts.delete, P.deldir)
+  return ok
+end
+
 -- ------------------------ Enhanced Action Menus ------------------------
 local function task_actions_menu(item, on_done)
   if not have_fzf() then
@@ -596,8 +660,8 @@ local function task_actions_menu(item, on_done)
   end
 
   fzf.fzf_exec(actions, {
-    prompt = "Task Action> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    prompt = shared.colorize(g.ui.menu, "info") .. " Task Action> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
     winopts = { height = 0.30, width = 0.50, row = 0.10 },
     actions = {
       ["default"] = function(sel)
@@ -634,20 +698,20 @@ local function task_actions_menu(item, on_done)
           if archive_subtree_to_file(item.path, item.hstart, item.hend, P.archive, "task") then
             remove_subtree_from_file(item.path, item.hstart, item.hend)
             archive_or_delete_zk(item.zk_path, "move")
-            vim.notify("✅ Task marked DONE and archived", vim.log.levels.INFO)
+            vim.notify(g.state.DONE .. " Task marked DONE and archived", vim.log.levels.INFO)
           else
-            vim.notify("❌ Failed to archive task", vim.log.levels.ERROR)
+            vim.notify(g.ui.cross .. " Failed to archive task", vim.log.levels.ERROR)
           end
           if on_done then on_done() end
 
         elseif action == "Delete" then
           ui.select({ "Yes, delete permanently", "Cancel" },
-            { prompt = "⚠️  Really delete this task?" },
+            { prompt = g.ui.warning .. " Really delete this task?" },
             function(choice)
               if choice and choice:match("Yes") then
                 if remove_subtree_from_file(item.path, item.hstart, item.hend) then
                   archive_or_delete_zk(item.zk_path, "delete")
-                  vim.notify("🗑️  Task deleted permanently", vim.log.levels.INFO)
+                  vim.notify(g.container.trash .. " Task deleted permanently", vim.log.levels.INFO)
                 else
                   vim.notify("❌ Failed to delete task", vim.log.levels.ERROR)
                 end
@@ -681,6 +745,114 @@ local function task_actions_menu(item, on_done)
   })
 end
 
+-- ------------------------ Refile Project Helper ------------------------
+local function refile_project(proj_path, on_done)
+  if not have_fzf() then
+    vim.notify("fzf-lua is required for refiling", vim.log.levels.WARN)
+    return
+  end
+  
+  local P = paths()
+  local fzf = require("fzf-lua")
+  
+  -- Build list of possible destinations
+  local destinations = {}
+  
+  -- Add Projects/ directory
+  table.insert(destinations, {
+    display = g.container.projects .. " Projects/",
+    path = P.projdir,
+    type = "projects"
+  })
+  
+  -- Add each Area
+  if vim.fn.isdirectory(P.areas_root) == 1 then
+    local areas = vim.fn.glob(P.areas_root .. "/*", false, true)
+    for _, area_path in ipairs(areas) do
+      if vim.fn.isdirectory(area_path) == 1 then
+        local area_name = vim.fn.fnamemodify(area_path, ":t")
+        table.insert(destinations, {
+          display = g.container.areas .. " Areas/" .. area_name,
+          path = area_path,
+          type = "area"
+        })
+      end
+    end
+  end
+  
+  -- Sort: Areas alphabetically, then Projects
+  table.sort(destinations, function(a, b)
+    if a.type ~= b.type then
+      return a.type == "area"  -- Areas first
+    end
+    return a.display < b.display
+  end)
+  
+  local display_list = {}
+  for _, d in ipairs(destinations) do
+    table.insert(display_list, d.display)
+  end
+  
+  local current_dir = vim.fn.fnamemodify(proj_path, ":h")
+  local filename = vim.fn.fnamemodify(proj_path, ":t")
+  
+  fzf.fzf_exec(display_list, {
+    prompt = g.phase.organize .. " Move project to> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
+    winopts = { height = 0.40, width = 0.60, row = 0.15 },
+    actions = {
+      ["default"] = function(sel)
+        local choice = sel and sel[1]
+        if not choice then
+          if on_done then on_done() end
+          return
+        end
+        
+        local idx = vim.fn.index(display_list, choice) + 1
+        local dest = destinations[idx]
+        if not dest then
+          if on_done then on_done() end
+          return
+        end
+        
+        -- Don't move to same location
+        if dest.path == current_dir then
+          vim.notify("Project is already in this location", vim.log.levels.INFO)
+          if on_done then on_done() end
+          return
+        end
+        
+        -- Ensure destination exists
+        ensure_dir(j(dest.path, "dummy"))
+        
+        -- Build new path
+        local new_path = j(dest.path, filename)
+        
+        -- Handle collision
+        local counter = 1
+        while vim.fn.filereadable(new_path) == 1 do
+          local stem = vim.fn.fnamemodify(filename, ":r")
+          local ext = vim.fn.fnamemodify(filename, ":e")
+          local new_filename = stem .. "-" .. counter .. (ext ~= "" and ("." .. ext) or "")
+          new_path = j(dest.path, new_filename)
+          counter = counter + 1
+        end
+        
+        -- Move the file
+        local success = vim.fn.rename(proj_path, new_path) == 0
+        if success then
+          local dest_display = dest.display:gsub("^[^%s]+%s", "")  -- Remove icon
+          vim.notify(g.ui.check .. " Project moved to " .. dest_display, vim.log.levels.INFO)
+        else
+          vim.notify(g.ui.cross .. " Failed to move project", vim.log.levels.ERROR)
+        end
+        
+        if on_done then on_done() end
+      end,
+    },
+  })
+end
+
 local function project_actions_menu(proj_info, on_done)
   if not have_fzf() then
     vim.notify("fzf-lua is required for project management", vim.log.levels.WARN)
@@ -688,18 +860,18 @@ local function project_actions_menu(proj_info, on_done)
   end
 
   local fzf = require("fzf-lua")
-  local actions = { "Open", "Archive", "Delete", "Open ZK", "Stats", "Cancel" }
+  local actions = { "Open", "Refile", "Archive", "Delete", "Open ZK", "Stats", "Cancel" }
   local title = proj_info.title or vim.fn.fnamemodify(proj_info.path, ":t")
 
   fzf.fzf_exec(actions, {
-    prompt = "Project Action> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    prompt = shared.colorize(g.container.projects, "project") .. " Project Action> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
     winopts = {
       height = 0.30,
       width = 0.50,
       row = 0.10,
-      title = string.format("%s (%d⚡ %d📋 %d⏳)",
-        title, proj_info.next_actions, proj_info.todo_tasks, proj_info.waiting_tasks),
+      title = string.format("%s (%d%s %d%s %d%s)",
+        title, proj_info.next_actions, g.state.NEXT, proj_info.todo_tasks, g.state.TODO, proj_info.waiting_tasks, g.state.WAITING),
       title_pos = "center",
     },
     actions = {
@@ -710,15 +882,18 @@ local function project_actions_menu(proj_info, on_done)
         if action == "Open" then
           vim.cmd("edit " .. vim.fn.fnameescape(proj_info.path))
 
+        elseif action == "Refile" then
+          refile_project(proj_info.path, on_done)
+
         elseif action == "Archive" then
           ui.select({ "Yes, archive project", "Cancel" },
             { prompt = "Archive this entire project?" },
             function(choice)
               if choice and choice:match("Yes") then
                 if archive_whole_project_file(proj_info.path, { zk_action = "move" }) then
-                  vim.notify("📦 Project archived successfully", vim.log.levels.INFO)
+                  vim.notify(g.container.someday .. " Project archived successfully", vim.log.levels.INFO)
                 else
-                  vim.notify("❌ Failed to archive project", vim.log.levels.ERROR)
+                  vim.notify(g.ui.cross .. " Failed to archive project", vim.log.levels.ERROR)
                 end
                 if on_done then on_done() end
               end
@@ -755,20 +930,20 @@ local function project_actions_menu(proj_info, on_done)
 
         elseif action == "Stats" then
           local stats = {
-            string.format("📂 Project: %s", proj_info.title or vim.fn.fnamemodify(proj_info.path, ":t:r")),
-            string.format("📊 Headings: %d", proj_info.headings),
-            string.format("⚡ Next Actions: %d", proj_info.next_actions),
-            string.format("📋 TODO Tasks: %d", proj_info.todo_tasks),
-            string.format("⏳ Waiting Tasks: %d", proj_info.waiting_tasks),
-            string.format("✅ Done Tasks: %d", proj_info.done_tasks),
+            string.format("%s Project: %s", g.container.projects, proj_info.title or vim.fn.fnamemodify(proj_info.path, ":t:r")),
+            string.format("%s Headings: %d", g.ui.list, proj_info.headings),
+            string.format("%s Next Actions: %d", g.state.NEXT, proj_info.next_actions),
+            string.format("%s TODO Tasks: %d", g.state.TODO, proj_info.todo_tasks),
+            string.format("%s Waiting Tasks: %d", g.state.WAITING, proj_info.waiting_tasks),
+            string.format("%s Done Tasks: %d", g.state.DONE, proj_info.done_tasks),
           }
 
           if proj_info.earliest_deadline then
-            table.insert(stats, string.format("🎯 Earliest Deadline: %s", proj_info.earliest_deadline))
+            table.insert(stats, string.format("%s Earliest Deadline: %s", g.ui.warning, proj_info.earliest_deadline))
           end
 
-          table.insert(stats, string.format("📁 File: %s", vim.fn.fnamemodify(proj_info.path, ":~:.")))
-          table.insert(stats, string.format("📅 Modified: %s", os.date("%Y-%m-%d %H:%M", proj_info.last_modified)))
+          table.insert(stats, string.format("%s File: %s", g.file.org, vim.fn.fnamemodify(proj_info.path, ":~:.")))
+          table.insert(stats, string.format("%s Modified: %s", g.container.calendar, os.date("%Y-%m-%d %H:%M", proj_info.last_modified)))
 
           vim.notify(table.concat(stats, "\n"), vim.log.levels.INFO, { title = "Project Stats" })
           if on_done then on_done() end
@@ -820,8 +995,8 @@ local function manage_tasks_picker()
   end
 
   fzf.fzf_exec(display, {
-    prompt = "Manage Tasks> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    prompt = shared.colorize(g.ui.list, "info") .. " Manage Tasks> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
     winopts = { height = 0.60, width = 0.85, row = 0.10 },
     actions = {
       ["default"] = function(sel)
@@ -886,30 +1061,30 @@ local function manage_projects_picker()
     local status_parts = {}
 
     -- Priority indicator based on activity
-    local priority_icon = "🟢" -- Default: inactive
+    local priority_icon = g.progress.inactive -- Default: inactive
     if proj.next_actions > 0 then
-      priority_icon = "🔴" -- High: has next actions
+      priority_icon = g.progress.urgent -- High: has next actions
     elseif proj.todo_tasks > 0 then
-      priority_icon = "🟡" -- Medium: has todos
+      priority_icon = g.progress.pending -- Medium: has todos
     elseif proj.tasks > 0 then
-      priority_icon = "🟠" -- Low: has waiting/someday
+      priority_icon = g.progress.blocked -- Low: has waiting/someday
     end
 
     -- Build status info
     if proj.next_actions > 0 then
-      table.insert(status_parts, proj.next_actions .. "⚡")
+      table.insert(status_parts, proj.next_actions .. g.state.NEXT)
     end
     if proj.todo_tasks > 0 then
-      table.insert(status_parts, proj.todo_tasks .. "📋")
+      table.insert(status_parts, proj.todo_tasks .. g.state.TODO)
     end
     if proj.waiting_tasks > 0 then
-      table.insert(status_parts, proj.waiting_tasks .. "⏳")
+      table.insert(status_parts, proj.waiting_tasks .. g.state.WAITING)
     end
 
     local status_info = #status_parts > 0 and (" [" .. table.concat(status_parts, " ") .. "]") or ""
 
     -- Deadline indicator
-    local deadline_info = proj.earliest_deadline and (" 🎯" .. proj.earliest_deadline) or ""
+    local deadline_info = proj.earliest_deadline and (" " .. g.ui.warning .. proj.earliest_deadline) or ""
 
     -- Show area context for files under Areas/… (without breaking old behavior)
     local dirname  = vim.fn.fnamemodify(proj.path, ":h:t")
@@ -919,13 +1094,18 @@ local function manage_projects_picker()
       label_name = string.format("%s › %s", dirname, name)
     end
 
-    table.insert(display, string.format("%s 📂 %s%s%s",
-      priority_icon, label_name, status_info, deadline_info))
+    table.insert(display, string.format("%s %s %s%s%s",
+      priority_icon, g.container.projects, label_name, status_info, deadline_info))
   end
 
   fzf.fzf_exec(display, {
-    prompt = "Manage Projects> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    prompt = shared.colorize(g.container.projects, "project") .. " Manage Projects> ",
+    fzf_opts = {
+      ["--no-info"] = true,
+      ["--tiebreak"] = "index",
+      ["--ansi"] = true,
+      ["--header"] = "Enter: Actions • Ctrl-e: Edit • Ctrl-r: Refile • Ctrl-a: Archive • Ctrl-d: Delete",
+    },
     winopts = { height = 0.55, width = 0.75, row = 0.15 },
     actions = {
       ["default"] = function(sel)
@@ -962,54 +1142,90 @@ local function manage_projects_picker()
           end,
         })
       end,
+      ["ctrl-a"] = function(sel)
+        local choice = sel and sel[1]
+        if not choice then return end
+        local idx = vim.fn.index(display, choice) + 1
+        local proj = projects[idx]
+        if not proj then return end
+
+        local proj_name = proj.title or vim.fn.fnamemodify(proj.path, ":t:r")
+        ui.select({ "Yes, archive project + ZK notes", "Cancel" },
+          { prompt = g.container.someday .. " Archive '" .. proj_name .. "' and linked ZK notes?" },
+          function(confirm)
+            if confirm and confirm:match("Yes") then
+              if archive_whole_project_file(proj.path, { zk_action = "move" }) then
+                vim.notify(g.state.DONE .. " Project and ZK notes archived: " .. proj_name, vim.log.levels.INFO)
+              else
+                vim.notify(g.ui.cross .. " Failed to archive project", vim.log.levels.ERROR)
+              end
+              vim.schedule(function() manage_projects_picker() end)
+            end
+          end)
+      end,
+      ["ctrl-d"] = function(sel)
+        local choice = sel and sel[1]
+        if not choice then return end
+        local idx = vim.fn.index(display, choice) + 1
+        local proj = projects[idx]
+        if not proj then return end
+
+        local proj_name = proj.title or vim.fn.fnamemodify(proj.path, ":t:r")
+        ui.select({ "Yes, delete project + ZK notes", "Yes, delete project only", "Cancel" },
+          { prompt = g.ui.warning .. " Delete '" .. proj_name .. "'?" },
+          function(confirm)
+            if not confirm or confirm == "Cancel" then return end
+
+            local P = paths()
+            local delete_zk = confirm:match("ZK notes")
+
+            -- Collect ZK notes before moving project
+            local zk_files = {}
+            if delete_zk then
+              local L = readf(proj.path)
+              for _, ln in ipairs(L) do
+                local p = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or
+                         ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
+                if p then zk_files[xp(p)] = true end
+              end
+            end
+
+            -- Move project file to ArchiveDeleted
+            local ok, dst = move_or_delete_file(proj.path, false, P.deldir)
+            if ok then
+              -- Handle ZK notes
+              local zk_count = 0
+              for zk, _ in pairs(zk_files) do
+                if vim.fn.filereadable(zk) == 1 then
+                  archive_or_delete_zk(zk, "delete")
+                  zk_count = zk_count + 1
+                end
+              end
+
+              local msg = g.container.trash .. " Project moved to ArchiveDeleted: " .. proj_name
+              if zk_count > 0 then
+                msg = msg .. " (" .. zk_count .. " ZK notes deleted)"
+              end
+              vim.notify(msg, vim.log.levels.INFO)
+            else
+              vim.notify(g.ui.cross .. " Failed to delete project", vim.log.levels.ERROR)
+            end
+            vim.schedule(function() manage_projects_picker() end)
+          end)
+      end,
+      ["ctrl-r"] = function(sel)
+        local choice = sel and sel[1]
+        if not choice then return end
+        local idx = vim.fn.index(display, choice) + 1
+        local proj = projects[idx]
+        if not proj then return end
+
+        refile_project(proj.path, function()
+          vim.schedule(function() manage_projects_picker() end)
+        end)
+      end,
     },
   })
-end
-
--- ------------------------ Archive Handling Helper ------------------------
-local function archive_whole_project_file(proj_path, opts)
-  opts = opts or {}
-  local P = paths()
-  local L = readf(proj_path)
-  if #L == 0 then return false end
-
-  -- Create archive entry with enhanced metadata
-  local proj_title = L[1]:match("^%*+%s+(.*)") or vim.fn.fnamemodify(proj_path, ":t:r")
-  local chunk = {
-    string.format("* PROJECT %s (archived)", proj_title),
-    ":PROPERTIES:",
-    string.format(":SOURCE:   [[file:%s][%s]]", proj_path, vim.fn.fnamemodify(proj_path, ":t")),
-    string.format(":DATE:     %s", now()),
-    string.format(":ARCHIVED_BY: %s", vim.fn.expand("$USER")),
-    ":END:",
-    "",
-  }
-
-  -- Add original content
-  for _, ln in ipairs(L) do
-    table.insert(chunk, ln)
-  end
-  table.insert(chunk, "")
-
-  if not appendf(P.archive, chunk) then
-    return false
-  end
-
-  -- Handle ZK notes
-  local zk_files = {}
-  for _, ln in ipairs(L) do
-    local p = ln:match(":ZK_NOTE:%s*%[%[file:(.-)%]%]") or
-             ln:match("^%s*Notes:%s*%[%[file:(.-)%]%]")
-    if p then zk_files[xp(p)] = true end
-  end
-
-  for zk, _ in pairs(zk_files) do
-    archive_or_delete_zk(zk, opts.zk_action or "move")
-  end
-
-  -- Move project file to archive-deleted directory (ArchiveDeleted)
-  local ok, _ = move_or_delete_file(proj_path, opts.delete, P.deldir)
-  return ok
 end
 
 -- ------------------------ Public API ------------------------
@@ -1041,9 +1257,9 @@ function M.archive_task_at_cursor(opts)
       if archive_subtree_to_file(item.path, item.hstart, item.hend, P.archive, "task") then
         remove_subtree_from_file(item.path, item.hstart, item.hend)
         archive_or_delete_zk(item.zk_path, "move")
-        vim.notify("✅ Task archived from cursor position", vim.log.levels.INFO)
+        vim.notify(g.state.DONE .. " Task archived from cursor position", vim.log.levels.INFO)
       else
-        vim.notify("❌ Failed to archive task", vim.log.levels.ERROR)
+        vim.notify(g.ui.cross .. " Failed to archive task", vim.log.levels.ERROR)
       end
       return
     end
@@ -1095,16 +1311,16 @@ function M.help_menu()
 
   local fzf = require("fzf-lua")
   local help_items = {
-    "📋 Manage Tasks - Browse and manage all tasks",
-    "📂 Manage Projects - Browse and manage project files",
-    "📦 Archive Task at Cursor - Archive the task under cursor",
-    "🗑️  Delete Task at Cursor - Delete the task under cursor",
-    "❌ Cancel",
+    g.state.TODO .. " Manage Tasks - Browse and manage all tasks",
+    g.container.projects .. " Manage Projects - Browse and manage project files",
+    g.container.someday .. " Archive Task at Cursor - Archive the task under cursor",
+    g.container.trash .. " Delete Task at Cursor - Delete the task under cursor",
+    g.ui.cross .. " Cancel",
   }
 
   fzf.fzf_exec(help_items, {
-    prompt = "GTD Management> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    prompt = shared.colorize(g.phase.organize, "accent") .. " GTD Management (C-b=Back)> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
     winopts = { height = 0.30, width = 0.60, row = 0.10 },
     actions = {
       ["default"] = function(sel)
@@ -1120,6 +1336,12 @@ function M.help_menu()
         elseif choice:match("Delete Task at Cursor") then
           M.delete_task_at_cursor({})
         end
+      end,
+      ["ctrl-b"] = function(_)
+        vim.schedule(function()
+          local lists = safe_require("gtd-nvim.gtd.lists")
+          if lists and lists.menu then lists.menu() end
+        end)
       end,
     },
   })

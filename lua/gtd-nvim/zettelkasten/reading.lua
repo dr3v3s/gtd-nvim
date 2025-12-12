@@ -1,10 +1,10 @@
--- ~/.config/nvim/lua/utils/zettelkasten/reading.lua
+-- ~/.config/nvim/lua/gtd-nvim/zettelkasten/reading.lua
 -- Book notes and reading management module
 
 local M = {}
 
--- Get core zettelkasten module
-local core = require("gtd-nvim.zettelkasten")
+-- Get core zettelkasten module (must require core directly)
+local core = require("gtd-nvim.zettelkasten.core")
 
 ----------------------------------------------------------------------
 -- Book Note Creation

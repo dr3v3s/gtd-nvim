@@ -57,11 +57,39 @@ function M.validate(data, config)
     
     -- Validate TODO keywords
     if heading.todo_keyword then
-      local valid_keywords = vim.tbl_extend("force", 
-        config.active_keywords, 
-        config.done_keywords,
-        {"PROJECT", "RECURRING"}  -- Special GTD keywords
-      )
+      -- Build valid keywords list - ALWAYS include standard org-mode keywords
+      -- regardless of config to avoid false positives
+      local valid_keywords = {
+        -- Standard GTD/org-mode action states
+        "TODO", "NEXT", "DONE", "CANCELLED", "CANCELED",
+        -- GTD-specific states  
+        "INBOX", "WAIT", "WAITING", "SOMEDAY", "HOLD",
+        -- Special GTD heading types
+        "PROJECT", "RECURRING",
+      }
+      
+      -- Add any custom keywords from config
+      if config.active_keywords then
+        for _, kw in ipairs(config.active_keywords) do
+          if not vim.tbl_contains(valid_keywords, kw) then
+            table.insert(valid_keywords, kw)
+          end
+        end
+      end
+      if config.done_keywords then
+        for _, kw in ipairs(config.done_keywords) do
+          if not vim.tbl_contains(valid_keywords, kw) then
+            table.insert(valid_keywords, kw)
+          end
+        end
+      end
+      if config.todo_keywords then
+        for _, kw in ipairs(config.todo_keywords) do
+          if not vim.tbl_contains(valid_keywords, kw) then
+            table.insert(valid_keywords, kw)
+          end
+        end
+      end
       
       if not vim.tbl_contains(valid_keywords, heading.todo_keyword) then
         table.insert(issues, {

@@ -1,13 +1,8 @@
+-- ~/.config/nvim/lua/gtd/lists.lua
 -- Enhanced GTD Lists: Next Actions, Projects, Someday/Maybe, Waiting with rich context & search
 -- Enhanced WAITING FOR support with full metadata display and management
--- RECURRING TASKS: View and manage recurring tasks with due date tracking
--- Focused on actionable items - DONE and ARCHIVED have dedicated views
 
 local M = {}
-
--- Load shared utilities with glyph system
-local shared = require("gtd-nvim.gtd.shared")
-local g = shared.glyphs  -- Glyph shortcuts
 
 -- ---------------------------- Config ----------------------------
 M.cfg = {
@@ -35,11 +30,8 @@ local function hlevel(ln) local s=ln:match("^(%*+)%s"); return s and #s or nil e
 local function trim(s) return (s or ""):gsub("^%s+",""):gsub("%s+$","") end
 local function safe_require(name) local ok, m = pcall(require, name); return ok and m or nil end
 
--- ✅ Load GTD v2.0 utilities
-local task_id = safe_require("gtd-nvim.gtd.utils.task_id")
-local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")
-local clarify = safe_require("gtd-nvim.gtd.clarify")
-local areas_mod = safe_require("gtd-nvim.gtd.areas")
+local clarify = safe_require("gtd.clarify")
+local shared = safe_require("gtd.shared")
 
 -- Date helpers for WAITING support
 local function parse_date(date_str)
@@ -104,8 +96,12 @@ end
 local function parse_state_title(ln)
   local stars, rest = ln:match("^(%*+)%s+(.*)")
   if not rest then return nil, nil end
+  -- Try to match state with title
   local state, rest2 = rest:match("^(%u+)%s+(.*)")
   if state then return state, rest2 end
+  -- Handle state-only headings (e.g., "* WAITING" with no title)
+  local state_only = rest:match("^(%u+)$")
+  if state_only then return state_only, "" end
   return nil, rest
 end
 
@@ -247,17 +243,6 @@ local function scan_all_headings()
           waiting_data = extract_waiting_properties(L, s, e)
         end
         
-        -- Extract AREA property
-        local area = prop_in(L, s, e, "AREA")
-        
-        -- Also try to infer area from file path if not set
-        if not area then
-          local area_match = path:match("/Areas/[%d%-]+([^/]+)/")
-          if area_match then
-            area = area_match
-          end
-        end
-        
         table.insert(out, {
           path=path, lnum=i, s=s, e=e, line=ln,
           level=lv, state=state, title=title,
@@ -265,7 +250,6 @@ local function scan_all_headings()
           tags=tags, zk=zk, cb={done=cbdone,total=cbtotal},
           effort=effort, assigned=assigned, context=context,
           waiting_data=waiting_data,
-          area=area,
         })
       end
     end
@@ -274,17 +258,8 @@ local function scan_all_headings()
 end
 
 -- ---------------------------- Filters ----------------------------
--- Helper: check if item is completed or archived (not actionable)
-local function is_completed(item)
-  -- Check state OR context (items in Archive.org have context="archive")
-  return item.state == "DONE" 
-      or item.state == "ARCHIVED" 
-      or item.context == "archive"
-end
-
 local function is_next_action(item, L)
   if item.project then return false end
-  if is_completed(item) then return false end  -- Exclude DONE/ARCHIVED
   if item.state == "NEXT" then return true end
   if item.state == "TODO" then
     -- Check if it's a leaf (no sub-headings)
@@ -304,23 +279,20 @@ local function is_next_action(item, L)
 end
 
 local function is_project_item(item)
-  if is_completed(item) then return false end  -- Exclude DONE/ARCHIVED
-  return item.project or (item.level == 1 and (item.title or "") ~= "" and item.state ~= "DONE" and item.state ~= "ARCHIVED")
+  return item.project or (item.level == 1 and (item.title or "") ~= "" and item.state ~= "DONE")
 end
 
 local function is_someday_maybe(item)
-  if is_completed(item) then return false end  -- Exclude DONE/ARCHIVED
   return item.state == "SOMEDAY" and not item.project
 end
 
 local function is_waiting(item)
-  if is_completed(item) then return false end  -- Exclude DONE/ARCHIVED
   return item.state == "WAITING" and not item.project
 end
 
 local function is_stuck_project(item, L)
   if not item.project then return false end
-  if is_completed(item) then return false end  -- Exclude DONE/ARCHIVED
+  if item.state == "DONE" then return false end
   
   -- Check if project has any NEXT actions
   local counts = todo_counts(L, item.s, item.e)
@@ -329,24 +301,13 @@ end
 
 -- WAITING-specific filters
 local function is_overdue_waiting(item)
-  if is_completed(item) then return false end
   if not is_waiting(item) or not item.waiting_data then return false end
   return is_overdue(item.waiting_data.follow_up_date, M.cfg.waiting_display.days_overdue_warn)
 end
 
 local function is_urgent_waiting(item)
-  if is_completed(item) then return false end
   if not is_waiting(item) or not item.waiting_data then return false end
   return item.waiting_data.priority and (item.waiting_data.priority == "urgent" or item.waiting_data.priority == "high")
-end
-
--- NEW: Filters for DONE and ARCHIVED
-local function is_done_item(item)
-  return item.state == "DONE" and not item.project
-end
-
-local function is_archived_item(item)
-  return item.state == "ARCHIVED" or item.context == "archive"
 end
 
 -- ---------------------------- Enhanced Preview ----------------------------
@@ -436,7 +397,6 @@ local function render_preview_item(item, item_type)
   end
   table.insert(lines, "  Ctrl-s → Split open")
   table.insert(lines, "  Ctrl-t → Tab open")
-  table.insert(lines, "  Ctrl-b → Back to menu")
   
   -- Add specific actions based on item type
   if item_type == "task" then
@@ -452,11 +412,6 @@ local function render_preview_item(item, item_type)
     table.insert(lines, "  Ctrl-c → Convert from WAITING")
   elseif item_type == "stuck-project" then
     table.insert(lines, "  Ctrl-n → Add next action")
-  elseif item_type == "done" then
-    table.insert(lines, "  Ctrl-r → Restore to TODO")
-    table.insert(lines, "  Ctrl-a → Archive permanently")
-  elseif item_type == "archived" then
-    table.insert(lines, "  Ctrl-r → Restore to TODO")
   end
   table.insert(lines, "")
   
@@ -513,14 +468,13 @@ local function show_list(filter_fn, title, item_type, extra_actions)
           end
         end
         
-        -- Context indicator (using glyphs)
+        -- Context indicator
         if M.cfg.waiting_display.show_context and h.waiting_data.context then
           local context_icons = {
-            email = g.ui.note, phone = g.ui.user, meeting = g.container.calendar,
-            text = g.ui.note, slack = g.ui.link, teams = g.ui.link, 
-            verbal = g.ui.user, letter = g.container.inbox
+            email = "📧", phone = "📞", meeting = "🤝", text = "💬",
+            slack = "💻", teams = "💻", verbal = "🗣️", letter = "📮"
           }
-          local icon = context_icons[h.waiting_data.context] or g.ui.bullet
+          local icon = context_icons[h.waiting_data.context] or "📋"
           waiting_indicators = waiting_indicators .. " " .. icon
         end
         
@@ -538,17 +492,9 @@ local function show_list(filter_fn, title, item_type, extra_actions)
         end
       end
       
-      -- State indicator for DONE/ARCHIVED (using glyphs)
-      local state_indicator = ""
-      if h.state == "DONE" then
-        state_indicator = " " .. g.state.DONE
-      elseif h.state == "ARCHIVED" then
-        state_indicator = " " .. g.container.someday
-      end
-      
-      local line = string.format("%s%s  %s  [%s]%s%s%s%s%s",
+      local line = string.format("%s%s  %s  [%s]%s%s%s%s",
         ctx, vim.fn.fnamemodify(h.path, ":t"), 
-        trim(h.title or ""), h.state or "-", due, effort, tags, waiting_indicators, state_indicator)
+        trim(h.title or ""), h.state or "-", due, effort, tags, waiting_indicators)
       
       table.insert(filtered, line)
       table.insert(meta, h)
@@ -556,13 +502,16 @@ local function show_list(filter_fn, title, item_type, extra_actions)
   end
   
   if #filtered == 0 then
-    return vim.notify("No " .. title:lower() .. " found.", vim.log.levels.INFO)
+    vim.notify("No " .. title:lower() .. " found.", vim.log.levels.INFO)
+    -- Return to menu after showing message
+    vim.schedule(function() M.menu() end)
+    return
   end
   
   -- Base actions for all lists
   local base_actions = {
     -- Enter → open task for editing
-    default = function(selected)
+    ["default"] = function(selected)
       local selected_line = selected[1]
       if not selected_line then return end
       
@@ -705,7 +654,7 @@ local function show_list(filter_fn, title, item_type, extra_actions)
       vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
     end,
     
-    -- Ctrl-b → back to Lists menu
+    -- Ctrl-b → back to menu
     ["ctrl-b"] = function(_)
       vim.schedule(function() M.menu() end)
     end,
@@ -728,11 +677,32 @@ local function show_list(filter_fn, title, item_type, extra_actions)
     end
   end
   
+  -- Build header with shared styling
+  local header = ""
+  if shared and shared.fzf_header then
+    header = shared.fzf_header({ clarify = true, refile = false, archive = false, zettel = true, back = true })
+  else
+    header = "Enter: Open • Ctrl-E: Edit • Ctrl-X: Clarify • Ctrl-Z: ZK Note"
+  end
+  
+  -- Ensure valid cwd for fzf-lua
+  if shared and shared.ensure_valid_cwd then
+    shared.ensure_valid_cwd()
+  end
+  
   fzf.fzf_exec(filtered, {
-    prompt = title .. " (C-b=Back)> ",
+    prompt = title .. "> ",
+    fzf_opts = {
+      ["--ansi"] = true,  -- CRITICAL: Enable ANSI colors
+      ["--no-info"] = true,
+      ["--tiebreak"] = "index",
+      ["--header"] = header,
+    },
     winopts = {
       height = 0.85,
       width = 0.95,
+      title = " " .. title .. " ",
+      title_pos = "center",
       preview = {
         type = "cmd",
         fn = function(items)
@@ -921,646 +891,13 @@ function M.waiting_urgent()
   })
 end
 
--- ---------------------------- NEW: DONE and ARCHIVED Views ----------------------------
-
--- Show completed (DONE) tasks
-function M.done()
-  show_list(is_done_item, "Completed Tasks", "done", {
-    -- Ctrl-r → restore to TODO
-    ["ctrl-r"] = function(item)
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      if clarify and clarify.fast then
-        clarify.fast({ status = "TODO" })
-        vim.notify("Restored to TODO: " .. trim(item.title or ""), vim.log.levels.INFO)
-      end
-    end,
-    -- Ctrl-a → archive
-    ["ctrl-a"] = function(item)
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      if clarify and clarify.fast then
-        clarify.fast({ status = "ARCHIVED" })
-        vim.notify("Archived: " .. trim(item.title or ""), vim.log.levels.INFO)
-      end
-    end,
-    -- Ctrl-n → restore to NEXT
-    ["ctrl-n"] = function(item)
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      if clarify and clarify.fast then
-        clarify.fast({ status = "NEXT" })
-        vim.notify("Restored to NEXT: " .. trim(item.title or ""), vim.log.levels.INFO)
-      end
-    end,
-  })
-end
-
--- Show archived tasks
-function M.archived()
-  show_list(is_archived_item, "Archived Tasks", "archived", {
-    -- Ctrl-r → restore to TODO
-    ["ctrl-r"] = function(item)
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      if clarify and clarify.fast then
-        clarify.fast({ status = "TODO" })
-        vim.notify("Restored to TODO: " .. trim(item.title or ""), vim.log.levels.INFO)
-      end
-    end,
-    -- Ctrl-n → restore to NEXT
-    ["ctrl-n"] = function(item)
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      if clarify and clarify.fast then
-        clarify.fast({ status = "NEXT" })
-        vim.notify("Restored to NEXT: " .. trim(item.title or ""), vim.log.levels.INFO)
-      end
-    end,
-  })
-end
-
--- ---------------------------- Areas of Responsibility ----------------------------
-
--- Get all areas with their task counts
-local function get_areas_with_counts()
-  local areas = areas_mod and areas_mod.areas or {}
-  local headings = scan_all_headings()
-  
-  local area_counts = {}
-  
-  -- Initialize counts for each defined area
-  for _, a in ipairs(areas) do
-    area_counts[a.name] = {
-      name = a.name,
-      icon = a.icon or "📁",
-      dir = a.dir,
-      total = 0,
-      next = 0,
-      todo = 0,
-      waiting = 0,
-      someday = 0,
-      done = 0,
-      projects = 0,
-    }
-  end
-  
-  -- Count tasks per area
-  for _, h in ipairs(headings) do
-    local area_name = h.area
-    if area_name and area_counts[area_name] then
-      local counts = area_counts[area_name]
-      counts.total = counts.total + 1
-      
-      if h.state == "NEXT" then counts.next = counts.next + 1
-      elseif h.state == "TODO" then counts.todo = counts.todo + 1
-      elseif h.state == "WAITING" then counts.waiting = counts.waiting + 1
-      elseif h.state == "SOMEDAY" then counts.someday = counts.someday + 1
-      elseif h.state == "DONE" then counts.done = counts.done + 1
-      end
-      
-      if h.project then counts.projects = counts.projects + 1 end
-    end
-  end
-  
-  return area_counts, areas
-end
-
--- Filter for tasks belonging to a specific area
-local function make_area_filter(area_name)
-  return function(item, L)
-    if is_completed(item) then return false end
-    return item.area == area_name
-  end
-end
-
--- Render preview for area overview
-local function render_area_preview(area_data)
-  local lines = {}
-  
-  local header = string.format("%s  %s", area_data.icon, area_data.name)
-  table.insert(lines, header)
-  table.insert(lines, string.rep("─", #header + 2))
-  table.insert(lines, "")
-  
-  -- Directory
-  if area_data.dir then
-    table.insert(lines, "Directory: " .. vim.fn.expand(area_data.dir))
-    table.insert(lines, "")
-  end
-  
-  -- Task counts
-  table.insert(lines, "TASK COUNTS:")
-  table.insert(lines, string.rep("─", 20))
-  table.insert(lines, string.format("  NEXT     : %d", area_data.next or 0))
-  table.insert(lines, string.format("  TODO     : %d", area_data.todo or 0))
-  table.insert(lines, string.format("  WAITING  : %d", area_data.waiting or 0))
-  table.insert(lines, string.format("  SOMEDAY  : %d", area_data.someday or 0))
-  table.insert(lines, string.format("  DONE     : %d", area_data.done or 0))
-  table.insert(lines, string.rep("─", 20))
-  table.insert(lines, string.format("  Total    : %d", area_data.total or 0))
-  table.insert(lines, string.format("  Projects : %d", area_data.projects or 0))
-  
-  -- Active items (NEXT + TODO + WAITING)
-  local active = (area_data.next or 0) + (area_data.todo or 0) + (area_data.waiting or 0)
-  table.insert(lines, "")
-  if active > 0 then
-    table.insert(lines, string.format("🔥 Active items: %d", active))
-  else
-    table.insert(lines, "✨ No active items in this area")
-  end
-  
-  table.insert(lines, "")
-  table.insert(lines, "Actions:")
-  table.insert(lines, "  Enter   → View tasks in this area")
-  table.insert(lines, "  Ctrl-o  → Open area directory")
-  table.insert(lines, "  Ctrl-f  → Find files in area")
-  table.insert(lines, "  Ctrl-b  → Back to menu")
-  
-  return table.concat(lines, "\n")
-end
-
--- Show all Areas of Responsibility with task counts
-function M.areas()
-  local ok, fzf = pcall(require, "fzf-lua")
-  if not ok then return vim.notify("fzf-lua required", vim.log.levels.WARN) end
-  
-  local area_counts, areas = get_areas_with_counts()
-  
-  if not areas or #areas == 0 then
-    return vim.notify("No areas configured. Check areas.lua", vim.log.levels.WARN)
-  end
-  
-  -- Build display list
-  local display = {}
-  local meta = {}
-  
-  for _, a in ipairs(areas) do
-    local counts = area_counts[a.name] or { next = 0, todo = 0, waiting = 0, total = 0 }
-    local icon = a.icon or "📁"
-    local active = counts.next + counts.todo + counts.waiting
-    
-    -- Format: icon name [NEXT/TODO/WAIT] total
-    local active_str = ""
-    if active > 0 then
-      active_str = string.format(" [N:%d T:%d W:%d]", counts.next, counts.todo, counts.waiting)
-    end
-    
-    local line = string.format("%s %s%s  (%d tasks)",
-      icon, a.name, active_str, counts.total)
-    
-    table.insert(display, line)
-    table.insert(meta, {
-      name = a.name,
-      icon = icon,
-      dir = a.dir,
-      next = counts.next,
-      todo = counts.todo,
-      waiting = counts.waiting,
-      someday = counts.someday,
-      done = counts.done,
-      total = counts.total,
-      projects = counts.projects,
-    })
-  end
-  
-  fzf.fzf_exec(display, {
-    prompt = "Areas of Responsibility (C-b=Back)> ",
-    winopts = {
-      height = 0.70,
-      width = 0.80,
-      preview = {
-        type = "cmd",
-        fn = function(items)
-          local selected_line = tostring(items)
-          
-          local idx = nil
-          for i, line in ipairs(display) do
-            if line == selected_line then
-              idx = i
-              break
-            end
-          end
-          
-          if not idx or not meta[idx] then
-            return "Area not found"
-          end
-          
-          return render_area_preview(meta[idx])
-        end
-      },
-    },
-    actions = {
-      -- Enter → drill down into area tasks
-      default = function(selected)
-        local selected_line = selected[1]
-        if not selected_line then return end
-        
-        local idx = nil
-        for i, line in ipairs(display) do
-          if line == selected_line then
-            idx = i
-            break
-          end
-        end
-        
-        if not idx or not meta[idx] then return end
-        
-        local area_name = meta[idx].name
-        vim.schedule(function()
-          M.area_tasks(area_name)
-        end)
-      end,
-      
-      -- Ctrl-o → open area directory
-      ["ctrl-o"] = function(selected)
-        local selected_line = selected[1]
-        if not selected_line then return end
-        
-        local idx = nil
-        for i, line in ipairs(display) do
-          if line == selected_line then idx = i; break end
-        end
-        
-        if not idx or not meta[idx] or not meta[idx].dir then return end
-        
-        vim.cmd("edit " .. vim.fn.expand(meta[idx].dir))
-      end,
-      
-      -- Ctrl-f → find files in area
-      ["ctrl-f"] = function(selected)
-        local selected_line = selected[1]
-        if not selected_line then return end
-        
-        local idx = nil
-        for i, line in ipairs(display) do
-          if line == selected_line then idx = i; break end
-        end
-        
-        if not idx or not meta[idx] or not meta[idx].dir then return end
-        
-        local fzf_files = safe_require("fzf-lua")
-        if fzf_files then
-          fzf_files.files({ cwd = vim.fn.expand(meta[idx].dir) })
-        end
-      end,
-      
-      -- Ctrl-b → back to menu
-      ["ctrl-b"] = function(_)
-        vim.schedule(function() M.menu() end)
-      end,
-    },
-  })
-end
-
--- Show tasks for a specific area
-function M.area_tasks(area_name)
-  if not area_name then
-    return vim.notify("No area specified", vim.log.levels.WARN)
-  end
-  
-  local filter = make_area_filter(area_name)
-  local area_icon = "📁"
-  
-  -- Get icon from areas config
-  if areas_mod and areas_mod.areas then
-    for _, a in ipairs(areas_mod.areas) do
-      if a.name == area_name then
-        area_icon = a.icon or "📁"
-        break
-      end
-    end
-  end
-  
-  show_list(filter, area_icon .. " " .. area_name .. " Tasks", "area-task", {
-    -- Ctrl-n → promote to NEXT
-    ["ctrl-n"] = function(item)
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      if clarify and clarify.fast then
-        clarify.fast({ status = "NEXT" })
-        vim.notify("Promoted to NEXT: " .. trim(item.title or ""), vim.log.levels.INFO)
-      end
-    end,
-    
-    -- Ctrl-a → back to areas list
-    ["ctrl-a"] = function(_)
-      vim.schedule(function() M.areas() end)
-    end,
-  })
-end
-
--- Show all tasks with :AREA: property (orphaned or not)
-function M.all_area_tasks()
-  local function has_area(item, L)
-    if is_completed(item) then return false end
-    return item.area ~= nil
-  end
-  
-  show_list(has_area, "All Area-Tagged Tasks", "area-task", {
-    ["ctrl-n"] = function(item)
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      if clarify and clarify.fast then
-        clarify.fast({ status = "NEXT" })
-      end
-    end,
-  })
-end
-
--- Show tasks without an area (need to be assigned)
-function M.unassigned_tasks()
-  local function no_area(item, L)
-    if is_completed(item) then return false end
-    if item.project then return false end
-    return item.area == nil and item.state ~= nil
-  end
-  
-  show_list(no_area, "Unassigned Tasks (No Area)", "task", {
-    -- Ctrl-a → assign area (opens file for editing)
-    ["ctrl-a"] = function(item)
-      vim.cmd("edit " .. item.path)
-      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-      vim.notify("Add :AREA: property to assign this task", vim.log.levels.INFO)
-    end,
-  })
-end
-
 -- ---------------------------- Search & Filter ----------------------------
 function M.search_all()
   local function all_active_items(item, L)
-    -- Exclude completed items from active search
-    return item.state and not is_completed(item)
+    return item.state and item.state ~= "DONE"
   end
   
   show_list(all_active_items, "All Active Items", "item", {})
-end
-
--- ---------------------------- Recurring Tasks ----------------------------
--- Check if item is a recurring task (has :RECUR: property or +repeater in date)
-local function is_recurring(item, L)
-  if not L then L = readf(item.path) end
-  if not item.s or not item.e then return false end
-  
-  -- Check for RECUR property
-  local recur_prop = prop_in(L, item.s, item.e, "RECUR")
-  if recur_prop then return true end
-  
-  -- Check for org-mode repeater in SCHEDULED or DEADLINE
-  if item.scheduled and item.scheduled:match("%+%d+[dwmy]") then return true end
-  if item.deadline and item.deadline:match("%+%d+[dwmy]") then return true end
-  
-  -- Check for :recurring: tag
-  if item.tags then
-    for _, tag in ipairs(item.tags) do
-      if tag:lower() == "recurring" then return true end
-    end
-  end
-  
-  return false
-end
-
--- Extract recurring metadata
-local function extract_recurring_properties(L, s, e)
-  local recur_data = {}
-  recur_data.frequency = prop_in(L, s, e, "RECUR")
-  recur_data.interval = prop_in(L, s, e, "RECUR_INTERVAL")
-  recur_data.recur_from = prop_in(L, s, e, "RECUR_FROM")
-  recur_data.recur_day = prop_in(L, s, e, "RECUR_DAY")
-  recur_data.created = prop_in(L, s, e, "RECUR_CREATED")
-  recur_data.last_done = prop_in(L, s, e, "RECUR_LAST_DONE")
-  return recur_data
-end
-
--- Parse org date to extract just the date part (without repeater)
-local function parse_org_date_only(date_str)
-  if not date_str then return nil end
-  -- Extract YYYY-MM-DD from various formats
-  local date = date_str:match("(%d%d%d%d%-%d%d%-%d%d)")
-  return date
-end
-
--- Check if recurring task is due today or overdue
-local function is_recurring_due_today(item)
-  if not item.scheduled then return false end
-  local date = parse_org_date_only(item.scheduled)
-  if not date then return false end
-  
-  local today = os.date("%Y-%m-%d")
-  return date <= today
-end
-
--- Show all recurring tasks
-function M.recurring()
-  local function filter_recurring(item, L)
-    return is_recurring(item, L) and not is_completed(item)
-  end
-  
-  local ok, fzf = pcall(require, "fzf-lua")
-  if not ok then return vim.notify("fzf-lua required", vim.log.levels.WARN) end
-  
-  local headings = scan_all_headings()
-  local filtered = {}
-  
-  for _, h in ipairs(headings) do
-    local L = readf(h.path)
-    if filter_recurring(h, L) then
-      -- Add recurring-specific data
-      h.recur_data = extract_recurring_properties(L, h.s, h.e)
-      h.is_due = is_recurring_due_today(h)
-      table.insert(filtered, h)
-    end
-  end
-  
-  if #filtered == 0 then
-    return vim.notify("No recurring tasks found", vim.log.levels.INFO)
-  end
-  
-  -- Sort: due first, then by scheduled date
-  table.sort(filtered, function(a, b)
-    if a.is_due ~= b.is_due then return a.is_due end
-    local date_a = parse_org_date_only(a.scheduled) or "9999-99-99"
-    local date_b = parse_org_date_only(b.scheduled) or "9999-99-99"
-    return date_a < date_b
-  end)
-  
-  -- Build display
-  local display = {}
-  local meta = {}
-  
-  for _, h in ipairs(filtered) do
-    local state_icon = ({
-      NEXT = g.state.NEXT, TODO = g.state.TODO, WAITING = g.state.WAITING, SOMEDAY = g.state.SOMEDAY
-    })[h.state] or g.state.TODO
-    
-    local freq = h.recur_data and h.recur_data.frequency or ""
-    local freq_icon = ({
-      daily = g.container.calendar, weekly = g.container.calendar, biweekly = g.container.calendar, 
-      monthly = g.container.calendar, yearly = g.container.calendar
-    })[freq] or g.container.recurring
-    
-    local due_marker = ""
-    if h.is_due then
-      due_marker = g.state.NEXT .. " "
-    end
-    
-    local date_str = ""
-    if h.scheduled then
-      date_str = " [" .. parse_org_date_only(h.scheduled) .. "]"
-    end
-    
-    local area_str = h.area and (" @" .. h.area) or ""
-    
-    local line = string.format("%s%s %s %s%s%s  %s",
-      due_marker, freq_icon, state_icon, 
-      trim(h.title or h.line), date_str, area_str,
-      vim.fn.fnamemodify(h.path, ":t"))
-    
-    table.insert(display, line)
-    table.insert(meta, h)
-  end
-  
-  fzf.fzf_exec(display, {
-    prompt = g.container.recurring .. " Recurring Tasks (C-b=Back)> ",
-    winopts = { height = 0.70, width = 0.85 },
-    actions = {
-      default = function(selected)
-        local idx = vim.fn.index(display, selected[1]) + 1
-        local item = meta[idx]
-        if item then
-          vim.cmd("edit " .. item.path)
-          vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-        end
-      end,
-      
-      -- Ctrl-d → Mark done (org-mode handles regeneration)
-      ["ctrl-d"] = function(selected)
-        local idx = vim.fn.index(display, selected[1]) + 1
-        local item = meta[idx]
-        if item then
-          vim.cmd("edit " .. item.path)
-          vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-          -- Use org-mode's todo cycling or our clarify
-          if vim.fn.exists(":OrgTodoKeyword") == 2 then
-            vim.cmd("OrgTodoKeyword DONE")
-            vim.notify("Completed! Org-mode will regenerate next occurrence.", vim.log.levels.INFO)
-          elseif clarify and clarify.fast then
-            clarify.fast({ status = "DONE" })
-          end
-        end
-      end,
-      
-      -- Ctrl-e → Edit and return
-      ["ctrl-e"] = function(selected)
-        local idx = vim.fn.index(display, selected[1]) + 1
-        local item = meta[idx]
-        if item then
-          vim.cmd("edit " .. item.path)
-          vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-        end
-      end,
-      
-      -- Ctrl-b → back to menu
-      ["ctrl-b"] = function(_)
-        vim.schedule(function() M.menu() end)
-      end,
-    },
-  })
-end
-
--- Show recurring tasks due today (or overdue)
-function M.recurring_today()
-  local ok, fzf = pcall(require, "fzf-lua")
-  if not ok then return vim.notify("fzf-lua required", vim.log.levels.WARN) end
-  
-  local headings = scan_all_headings()
-  local filtered = {}
-  
-  for _, h in ipairs(headings) do
-    local L = readf(h.path)
-    if is_recurring(h, L) and not is_completed(h) and is_recurring_due_today(h) then
-      h.recur_data = extract_recurring_properties(L, h.s, h.e)
-      table.insert(filtered, h)
-    end
-  end
-  
-  if #filtered == 0 then
-    return vim.notify("🎉 No recurring tasks due today!", vim.log.levels.INFO)
-  end
-  
-  -- Sort by scheduled date
-  table.sort(filtered, function(a, b)
-    local date_a = parse_org_date_only(a.scheduled) or "9999-99-99"
-    local date_b = parse_org_date_only(b.scheduled) or "9999-99-99"
-    return date_a < date_b
-  end)
-  
-  -- Build display
-  local display = {}
-  local meta = {}
-  
-  local today = os.date("%Y-%m-%d")
-  
-  for _, h in ipairs(filtered) do
-    local freq = h.recur_data and h.recur_data.frequency or ""
-    local freq_icon = ({
-      daily = "📅", weekly = "📆", biweekly = "📆", monthly = "🗓️", yearly = "🎂"
-    })[freq] or "🔁"
-    
-    local date = parse_org_date_only(h.scheduled)
-    local overdue_marker = ""
-    if date and date < today then
-      local days = days_until(date)
-      overdue_marker = string.format(" ⚠️ %d days overdue", math.abs(days or 0))
-    end
-    
-    local area_str = h.area and (" @" .. h.area) or ""
-    
-    local line = string.format("%s %s%s%s  %s",
-      freq_icon, trim(h.title or h.line), overdue_marker, area_str,
-      vim.fn.fnamemodify(h.path, ":t"))
-    
-    table.insert(display, line)
-    table.insert(meta, h)
-  end
-  
-  fzf.fzf_exec(display, {
-    prompt = g.state.NEXT .. " Recurring Due Today (C-d=Done, C-b=Back)> ",
-    winopts = { height = 0.60, width = 0.80 },
-    actions = {
-      default = function(selected)
-        local idx = vim.fn.index(display, selected[1]) + 1
-        local item = meta[idx]
-        if item then
-          vim.cmd("edit " .. item.path)
-          vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-        end
-      end,
-      
-      -- Ctrl-d → Mark done
-      ["ctrl-d"] = function(selected)
-        local idx = vim.fn.index(display, selected[1]) + 1
-        local item = meta[idx]
-        if item then
-          vim.cmd("edit " .. item.path)
-          vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-          if vim.fn.exists(":OrgTodoKeyword") == 2 then
-            vim.cmd("OrgTodoKeyword DONE")
-            vim.notify("✓ Completed! Date shifted to next occurrence.", vim.log.levels.INFO)
-            -- Refresh the list
-            vim.schedule(function() M.recurring_today() end)
-          elseif clarify and clarify.fast then
-            clarify.fast({ status = "DONE" })
-          end
-        end
-      end,
-      
-      -- Ctrl-b → back to menu
-      ["ctrl-b"] = function(_)
-        vim.schedule(function() M.menu() end)
-      end,
-    },
-  })
 end
 
 -- ---------------------------- Quick Menu ----------------------------
@@ -1568,39 +905,42 @@ function M.menu()
   local ok, fzf = pcall(require, "fzf-lua")
   if not ok then return vim.notify("fzf-lua required", vim.log.levels.WARN) end
   
-  local menu_items = {
-    -- Actionable lists (GTD focus)
-    g.state.NEXT .. " Next Actions",
-    g.container.projects .. " Projects", 
-    g.state.SOMEDAY .. " Someday/Maybe",
-    g.state.WAITING .. " Waiting For",
-    g.ui.warning .. " Stuck Projects",
-    g.ui.search .. " Search All Active",
-    -- Recurring tasks
-    "────────────────",
-    g.container.recurring .. " Recurring Tasks",
-    g.state.NEXT .. " Recurring Due Today",
-    -- Areas of Responsibility
-    "────────────────",
-    g.container.areas .. " Areas of Responsibility",
-    g.ui.question .. " Unassigned Tasks",
-    -- Waiting sub-views
-    "────────────────",
-    g.ui.warning .. " Waiting - Overdue",
-    g.priority.high .. " Waiting - Urgent",
-    -- Reference/History lists
-    "────────────────",
-    g.state.DONE .. " Completed (DONE)",
-    g.container.someday .. " Archived",
+  -- Ensure valid cwd for fzf-lua
+  if shared and shared.ensure_valid_cwd then
+    shared.ensure_valid_cwd()
+  end
+  
+  -- Use shared glyphs and colors if available
+  local g = shared and shared.glyphs or {}
+  local c = shared and shared.colorize or function(t, _) return t end
+  
+  -- Build menu items with glyphs and colors
+  local menu_items = {}
+  local menu_keys = {}  -- Track which function to call
+  
+  -- Define menu structure: { key, glyph, label, color }
+  local menu_def = {
+    { key = "next",           glyph = g.state and g.state.NEXT or "⚡",      label = "Next Actions",      color = "next" },
+    { key = "projects",       glyph = g.state and g.state.PROJECT or "📂",  label = "Projects",          color = "project" },
+    { key = "someday",        glyph = g.state and g.state.SOMEDAY or "💭",  label = "Someday/Maybe",     color = "someday" },
+    { key = "waiting",        glyph = g.state and g.state.WAITING or "⏳",  label = "Waiting For",       color = "waiting" },
+    { key = "waiting_overdue",glyph = g.progress and g.progress.overdue or "⚠", label = "Waiting - Overdue", color = "error" },
+    { key = "waiting_urgent", glyph = g.progress and g.progress.urgent or "🔴", label = "Waiting - Urgent",  color = "warning" },
+    { key = "stuck",          glyph = g.progress and g.progress.blocked or "⛔", label = "Stuck Projects",    color = "error" },
+    { key = "search",         glyph = g.ui and g.ui.search or "🔍",          label = "Search All Items",  color = "info" },
   }
   
+  for _, item in ipairs(menu_def) do
+    local colored_glyph = c(item.glyph, item.color)
+    local display = colored_glyph .. "  " .. item.label
+    table.insert(menu_items, display)
+    table.insert(menu_keys, item.key)
+  end
+  
   local menu_actions = {
-    default = function(selected)
+    ["default"] = function(selected)
       local selected_line = selected[1]
       if not selected_line then return end
-      
-      -- Skip separator
-      if selected_line:match("^─+$") then return end
       
       -- Find index in menu_items
       local idx = nil
@@ -1612,29 +952,46 @@ function M.menu()
       end
       
       if not idx then return end
-      local choice = menu_items[idx]
+      local key = menu_keys[idx]
       
-      if choice == "Next Actions" then M.next_actions()
-      elseif choice == "Projects" then M.projects()
-      elseif choice == "Someday/Maybe" then M.someday_maybe()
-      elseif choice == "Waiting For" then M.waiting()
-      elseif choice == "Waiting - Overdue" then M.waiting_overdue()
-      elseif choice == "Waiting - Urgent" then M.waiting_urgent()
-      elseif choice == "Stuck Projects" then M.stuck_projects()
-      elseif choice == "Search All Active" then M.search_all()
-      elseif choice == "🔁 Recurring Tasks" then M.recurring()
-      elseif choice == "⚡ Recurring Due Today" then M.recurring_today()
-      elseif choice == "📁 Areas of Responsibility" then M.areas()
-      elseif choice == "Unassigned Tasks" then M.unassigned_tasks()
-      elseif choice == "Completed (DONE)" then M.done()
-      elseif choice == "Archived" then M.archived()
-      end
+      -- CRITICAL: Must defer to allow fzf to close before opening next picker
+      vim.schedule(function()
+        if key == "next" then M.next_actions()
+        elseif key == "projects" then M.projects()
+        elseif key == "someday" then M.someday_maybe()
+        elseif key == "waiting" then M.waiting()
+        elseif key == "waiting_overdue" then M.waiting_overdue()
+        elseif key == "waiting_urgent" then M.waiting_urgent()
+        elseif key == "stuck" then M.stuck_projects()
+        elseif key == "search" then M.search_all()
+        end
+      end)
     end,
   }
   
+  -- Build header with keyboard hints
+  local header = ""
+  if shared and shared.fzf_header then
+    header = shared.fzf_header({ back = false })
+  else
+    header = "Enter: Select • Esc: Cancel"
+  end
+  
   fzf.fzf_exec(menu_items, {
-    prompt = "GTD Lists> ",
-    winopts = { height = 0.50, width = 0.60, row = 0.20 },
+    prompt = c(g.ui and g.ui.menu or "☰", "accent") .. " GTD> ",
+    fzf_opts = {
+      ["--ansi"] = true,  -- CRITICAL: Enable ANSI colors
+      ["--no-info"] = true,
+      ["--tiebreak"] = "index",
+      ["--header"] = header,
+    },
+    winopts = { 
+      height = 0.45, 
+      width = 0.50, 
+      row = 0.25,
+      title = " GTD Lists ",
+      title_pos = "center",
+    },
     actions = menu_actions,
   })
 end
@@ -1642,11 +999,28 @@ end
 -- ---------------------------- Aliases (backward compatibility) ----------------------------
 M.list_next_actions = M.next_actions
 M.list_projects = M.projects
-M.list_done = M.done
-M.list_archived = M.archived
-M.list_areas = M.areas
-M.list_recurring = M.recurring
-M.list_recurring_today = M.recurring_today
+
+-- Debug function to help diagnose issues
+function M.debug_scan()
+  local headings = scan_all_headings()
+  local counts = { total = 0, waiting = 0, todo = 0, next = 0, someday = 0 }
+  
+  for _, h in ipairs(headings) do
+    counts.total = counts.total + 1
+    if h.state == "WAITING" then counts.waiting = counts.waiting + 1
+    elseif h.state == "TODO" then counts.todo = counts.todo + 1
+    elseif h.state == "NEXT" then counts.next = counts.next + 1
+    elseif h.state == "SOMEDAY" then counts.someday = counts.someday + 1
+    end
+  end
+  
+  vim.notify(string.format(
+    "GTD Scan: %d total headings\n  WAITING: %d\n  TODO: %d\n  NEXT: %d\n  SOMEDAY: %d",
+    counts.total, counts.waiting, counts.todo, counts.next, counts.someday
+  ), vim.log.levels.INFO)
+  
+  return headings
+end
 
 -- ---------------------------- Setup ----------------------------
 function M.setup(user_cfg)
@@ -1664,17 +1038,6 @@ function M.setup(user_cfg)
   vim.api.nvim_create_user_command("GtdWaitingUrgent",    function() M.waiting_urgent() end, {})
   vim.api.nvim_create_user_command("GtdStuckProjects",    function() M.stuck_projects() end, {})
   vim.api.nvim_create_user_command("GtdSearchAll",        function() M.search_all() end, {})
-  -- NEW: DONE and ARCHIVED commands
-  vim.api.nvim_create_user_command("GtdDone",             function() M.done() end, {})
-  vim.api.nvim_create_user_command("GtdArchived",         function() M.archived() end, {})
-  
-  -- NEW: Areas of Responsibility commands
-  vim.api.nvim_create_user_command("GtdAreas",            function() M.areas() end, {})
-  vim.api.nvim_create_user_command("GtdUnassigned",       function() M.unassigned_tasks() end, {})
-  
-  -- NEW: Recurring tasks commands
-  vim.api.nvim_create_user_command("GtdRecurring",        function() M.recurring() end, {})
-  vim.api.nvim_create_user_command("GtdRecurringToday",   function() M.recurring_today() end, {})
   
   -- Backward compatibility
   vim.api.nvim_create_user_command("GtdLists",            function() M.menu() end, {})

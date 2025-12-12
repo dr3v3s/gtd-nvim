@@ -1,13 +1,24 @@
--- Enhanced capture to Inbox.org with post-capture fzf-lua destination picker + refile
--- Integrated with utils.zettelkasten for solid note linking
--- Aligned with ZK-ID: writes :ID: and :TASK_ID: and adds "ID:: [[zk:<ID>]]"
--- QUIET MODE: Minimal notifications to reduce visual clutter
--- WAITING FOR: Enhanced support for GTD waiting-for items with proper metadata
--- AREAS: Optional Area-of-Focus selection - tags task for later refile during clarify
--- SINGLE INBOX: All captures go to main Inbox.org - no scattered area inboxes
--- RECURRING: Capture recurring tasks with org-mode repeaters (+1w, .+1m, etc.)
+-- ============================================================================
+-- GTD-NVIM CAPTURE MODULE
+-- ============================================================================
+-- Quick capture to Inbox with post-capture destination picker
+-- Features: ZK integration, quiet mode, WAITING FOR, Areas tagging, Recurring
+--
+-- @module gtd-nvim.gtd.capture
+-- @version 0.9.0
+-- @requires shared (>= 1.0.0)
+-- @todo Update to use shared.colorize() for fzf displays
+-- @todo Add --ansi to all fzf configs
+-- ============================================================================
 
 local M = {}
+
+M._VERSION = "0.9.0"
+M._UPDATED = "2024-12-08"
+
+-- Load shared utilities with glyph system
+local shared = require("gtd.shared")
+local g = shared.glyphs  -- Glyph shortcuts
 
 -- ------------------------------------------------------------
 -- Config
@@ -24,6 +35,11 @@ M.cfg = {
   -- Capture behavior
   capture_to_inbox_only = true,  -- Skip destination picker, stay in inbox for review
   ask_for_area          = true,  -- Ask which area this task relates to
+
+  -- Date defaults
+  date_defaults = {
+    due_days_after_defer = 3,    -- DUE suggestion = DEFER + N days
+  },
 
   -- WAITING FOR defaults
   waiting_defaults = {
@@ -93,8 +109,8 @@ local function safe_require(module_name)
 end
 
 -- ✅ Load GTD v2.0 utilities
-local task_id = safe_require("gtd-nvim.gtd.utils.task_id")
-local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")
+local task_id = safe_require("gtd.utils.task_id")
+local org_dates = safe_require("gtd.utils.org_dates")
 
 -- Fallback if utilities not available
 if not task_id then
@@ -121,22 +137,40 @@ local function is_valid_date(date_str)
 end
 
 -- Calculate future date
-local function future_date(days)
-  local future_time = os.time() + (days * 24 * 60 * 60)
+local function future_date(days, from_date)
+  local base_time
+  if from_date and from_date ~= "" then
+    -- Parse YYYY-MM-DD into timestamp
+    local year, month, day = from_date:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    if year and month and day then
+      base_time = os.time({ year = tonumber(year), month = tonumber(month), day = tonumber(day) })
+    else
+      base_time = os.time()
+    end
+  else
+    base_time = os.time()
+  end
+  local future_time = base_time + (days * 24 * 60 * 60)
   return os.date("%Y-%m-%d", future_time)
 end
 
 -- Quiet notification function that respects config
 local function quiet_notify(msg, level, title)
   if not M.cfg.quiet_capture then
-    vim.notify(msg, level or vim.log.levels.INFO, { title = title or "GTD Capture" })
+    local prefix = g.ui.info .. " "
+    if level == vim.log.levels.WARN then prefix = g.ui.warning .. " "
+    elseif level == vim.log.levels.ERROR then prefix = g.ui.cross .. " " end
+    vim.notify(prefix .. msg, level or vim.log.levels.INFO, { title = title or "GTD Capture" })
   end
 end
 
 -- Success-only notification (always shows unless completely silent)
 local function success_notify(msg, level, title)
   if M.cfg.show_success_only or not M.cfg.quiet_capture then
-    vim.notify(msg, level or vim.log.levels.INFO, { title = title or "GTD" })
+    local prefix = g.state.DONE .. " "
+    if level == vim.log.levels.WARN then prefix = g.ui.warning .. " "
+    elseif level == vim.log.levels.ERROR then prefix = g.ui.cross .. " " end
+    vim.notify(prefix .. msg, level or vim.log.levels.INFO, { title = title or "GTD" })
   end
 end
 
@@ -166,7 +200,7 @@ local function select_fzf(items, prompt, cb)
           if line and cb then cb(line) end
         end,
       },
-      fzf_opts = { ["--no-info"] = true },
+      fzf_opts = { ["--no-info"] = true, ["--ansi"] = true },
       winopts = { height = 0.35, width = 0.55, row = 0.15 },
     })
   else
@@ -255,7 +289,7 @@ end
 -- Areas support
 -- ------------------------------------------------------------
 local function get_areas()
-  local mod = safe_require("gtd-nvim.gtd.areas")
+  local mod = safe_require("gtd.areas")
   if mod and type(mod.areas) == "table" then
     return mod.areas
   end
@@ -278,7 +312,7 @@ local function get_all_projects()
       table.insert(projects, {
         name = name,
         path = f,
-        display = "📂 " .. name,
+        display = g.container.projects .. " " .. name,
         type = "project",
         area = nil,
       })
@@ -298,7 +332,7 @@ local function get_all_projects()
           table.insert(projects, {
             name = name,
             path = f,
-            display = "📁 " .. area_name .. "/" .. name,
+            display = g.container.areas .. " " .. area_name .. "/" .. name,
             type = "area_project",
             area = area_name,
           })
@@ -321,8 +355,8 @@ end
 -- Pick destination: Inbox or direct to Project
 local function pick_destination(cb)
   local items = {
-    "📥 Inbox (for review)",
-    "📂 Direct to Project...",
+    shared.colorize(g.container.inbox, "inbox") .. " Inbox (for review)",
+    shared.colorize(g.container.projects, "projects") .. " Direct to Project...",
   }
   
   select_fzf(items, "Capture to", function(choice)
@@ -331,10 +365,13 @@ local function pick_destination(cb)
       return
     end
     
-    if choice:match("^📥") then
+    -- Strip ANSI codes for matching
+    local stripped = choice:gsub("\27%[[%d;]*m", "")
+    
+    if stripped:match("^" .. g.container.inbox) or stripped:match("Inbox") then
       -- Inbox selected - continue with optional area tagging
       cb({ type = "inbox" })
-    elseif choice:match("^📂") then
+    elseif stripped:match("^" .. g.container.projects) or stripped:match("Project") then
       -- Project selected - show project picker
       local projects = get_all_projects()
       if #projects == 0 then
@@ -387,21 +424,29 @@ local function pick_area(cb)
     return
   end
 
-  local items = { "No specific area" }
+  local items = { shared.colorize(g.ui.cross, "muted") .. " No specific area" }
   for _, a in ipairs(areas) do
     if a.name and a.dir then
-      table.insert(items, a.name)
+      table.insert(items, shared.colorize(g.container.areas, "areas") .. " " .. a.name)
     end
   end
 
   select_fzf(items, "Area of Responsibility", function(choice)
-    if not choice or choice == "No specific area" then
+    if not choice then
+      cb(nil)
+      return
+    end
+    
+    -- Strip ANSI and glyph to get area name
+    local stripped = choice:gsub("\27%[[%d;]*m", ""):gsub("^%S+%s+", "")
+    
+    if stripped == "No specific area" then
       cb(nil)
       return
     end
 
     for _, a in ipairs(areas) do
-      if a.name == choice then
+      if a.name == stripped then
         cb(a)
         return
       end
@@ -417,8 +462,22 @@ local STATES = { "TODO", "NEXT", "WAITING", "SOMEDAY", "DONE" }
 
 local function pick_state(cb)
   if not cb then return end
-  select_fzf(STATES, "State", function(choice)
-    cb(choice or M.cfg.default_state)
+  
+  -- Create colored state items
+  local state_items = {}
+  for _, state in ipairs(STATES) do
+    local glyph = shared.colored_state_glyph(state)
+    table.insert(state_items, glyph .. " " .. state)
+  end
+  
+  select_fzf(state_items, "State", function(choice)
+    if not choice then
+      cb(M.cfg.default_state)
+      return
+    end
+    -- Extract state name (strip ANSI codes and glyph)
+    local stripped = choice:gsub("\27%[[%d;]*m", ""):gsub("^%S+%s+", "")
+    cb(stripped or M.cfg.default_state)
   end)
 end
 
@@ -441,43 +500,36 @@ local function collect_waiting_metadata(cb)
   local waiting_data = {}
 
   -- WHO are we waiting for?
-  input_nonempty({ prompt = "Waiting for WHO (person/org): " }, function(who)
+  input_nonempty({ prompt = g.state.WAITING .. " Waiting for WHO (person/org): " }, function(who)
     waiting_data.waiting_for = who
 
     -- WHAT are we waiting for?
-    input_nonempty({ prompt = "Waiting for WHAT (deliverable): " }, function(what)
+    input_nonempty({ prompt = g.state.WAITING .. " Waiting for WHAT (deliverable): " }, function(what)
       waiting_data.waiting_what = what
 
       -- WHEN was it requested?
       local today = os.date("%Y-%m-%d")
-      maybe_input({ prompt = "When requested (YYYY-MM-DD) [" .. today .. "]: " }, function(when)
-        waiting_data.requested_date = (when ~= "" and when or today)
-
-        if not is_valid_date(waiting_data.requested_date) then
-          quiet_notify("Invalid date format, using today", vim.log.levels.WARN)
-          waiting_data.requested_date = today
-        end
+      local date_hint = shared.smart_date_help()
+      maybe_input({ prompt = g.container.calendar .. " When requested [" .. today .. "] (" .. date_hint .. "): " }, function(when)
+        -- Parse smart date or use today as default
+        waiting_data.requested_date = shared.parse_smart_date_or_default(when, today)
 
         -- FOLLOW-UP date
         local default_followup = future_date(M.cfg.waiting_defaults.follow_up_days)
-        maybe_input({ prompt = "Follow up on (YYYY-MM-DD) [" .. default_followup .. "]: " }, function(followup)
-          waiting_data.follow_up_date = (followup ~= "" and followup or default_followup)
-
-          if not is_valid_date(waiting_data.follow_up_date) then
-            quiet_notify("Invalid follow-up date, using default", vim.log.levels.WARN)
-            waiting_data.follow_up_date = default_followup
-          end
+        maybe_input({ prompt = g.ui.clock .. " Follow up [" .. default_followup .. "] (" .. date_hint .. "): " }, function(followup)
+          -- Parse smart date or use default
+          waiting_data.follow_up_date = shared.parse_smart_date_or_default(followup, default_followup, waiting_data.requested_date)
 
           -- CONTEXT (how was it requested?)
-          select_fzf(WAITING_CONTEXTS, "How was it requested?", function(context)
+          select_fzf(WAITING_CONTEXTS, g.ui.link .. " How was it requested?", function(context)
             waiting_data.context = context or M.cfg.waiting_defaults.default_context
 
             -- PRIORITY/URGENCY
-            select_fzf(WAITING_PRIORITIES, "Priority level", function(priority)
+            select_fzf(WAITING_PRIORITIES, g.priority.high .. " Priority level", function(priority)
               waiting_data.priority = priority or M.cfg.waiting_defaults.default_priority
 
               -- Optional notes about the request
-              maybe_input({ prompt = "Additional notes (optional): " }, function(notes)
+              maybe_input({ prompt = g.ui.note .. " Additional notes (optional): " }, function(notes)
                 waiting_data.notes = notes or ""
                 cb(waiting_data)
               end)
@@ -816,7 +868,7 @@ local function pick_destination_fzf(selected_area, cb)
   local fzf = safe_require("fzf-lua")
   if fzf then
     fzf.fzf_exec(display, {
-      prompt = "Move to> ",
+      prompt = shared.colorize(g.phase.organize, "accent") .. " Move to> ",
       actions = {
         ["default"] = function(sel)
           local line = sel and sel[1]
@@ -828,7 +880,7 @@ local function pick_destination_fzf(selected_area, cb)
           if item then cb(item.path) end
         end,
       },
-      fzf_opts = { ["--no-info"] = true },
+      fzf_opts = { ["--no-info"] = true, ["--ansi"] = true },
       winopts = { height = 0.35, width = 0.60, row = 0.15 },
     })
   else
@@ -920,7 +972,7 @@ function M.capture_quick()
       local is_waiting = (state == "WAITING")
 
       -- 2) Title
-      input_nonempty({ prompt = "Title: " }, function(original_title)
+      input_nonempty({ prompt = g.phase.capture .. " Title: " }, function(original_title)
 
         -- 2.1) Check for duplicate/similar tasks
         local function proceed_with_capture()
@@ -937,7 +989,7 @@ function M.capture_quick()
             end
 
             -- 3) Tags
-            maybe_input({ prompt = "Tags (space sep, optional): " }, function(tags)
+            maybe_input({ prompt = g.ui.tag .. " Tags (space sep, optional): " }, function(tags)
               local id = task_id.generate()
               local scheduled, deadline = "", ""
 
@@ -992,9 +1044,12 @@ function M.capture_quick()
                   end
                 end
 
-                -- Properties + IDs
+                -- Properties + IDs (org-mode compliant)
                 table.insert(lines, ":PROPERTIES:")
-                table.insert(lines, ":TASK_ID:   " .. id)
+                table.insert(lines, ":ID:        " .. id)  -- Standard org-mode ID
+                table.insert(lines, ":TASK_ID:   " .. id)  -- GTD compatibility
+                table.insert(lines, ":ZK_LINK:   [[zk:" .. id .. "]]")  -- ZK reference (inside PROPERTIES, not standalone)
+                table.insert(lines, ":CREATED:   " .. shared.format_org_inactive_timestamp())  -- Creation timestamp
                 
                 -- ADD AREA PROPERTY when area is selected
                 if selected_area and selected_area.name then
@@ -1024,9 +1079,6 @@ function M.capture_quick()
                 end
 
                 table.insert(lines, ":END:")
-
-                -- Breadcrumb link
-                table.insert(lines, string.format("ID:: [[zk:%s]]", id))
 
                 -- Add WAITING summary as body text
                 if is_waiting and waiting_data then
@@ -1083,7 +1135,7 @@ function M.capture_quick()
                     recur_text = recur_text .. "]"
                   end
                   
-                  local icon = is_recurring and "🔁" or (destination.type == "project" and "📂" or "📥")
+                  local icon = is_recurring and g.container.recurring or (destination.type == "project" and g.container.projects or g.container.inbox)
                   success_notify(icon .. " " .. original_title .. dest_text .. area_text .. recur_text .. waiting_text .. zk_text, vim.log.levels.INFO)
                   
                   -- Clear focus
@@ -1103,7 +1155,7 @@ function M.capture_quick()
                   local zk_path = nil
 
                   if sel == "Create ZK note" then
-                    local zk = safe_require("gtd-nvim.zettelkasten")
+                    local zk = safe_require("utils.zettelkasten")
                     if zk and zk.create_note_file and zk.get_paths then
                       local paths = zk.get_paths()
                       if paths and paths.notes_dir then
@@ -1133,18 +1185,41 @@ function M.capture_quick()
                 handle_zk_creation()
               elseif want_dates and not is_waiting then
                 local today = os.date("%Y-%m-%d")
-                local plus3 = os.date("%Y-%m-%d", os.time() + 3 * 24 * 3600)
+                local date_hint = shared.smart_date_help()
 
-                maybe_input({ prompt = "Defer (YYYY-MM-DD) [Enter=" .. today .. "]: " }, function(s)
-                  scheduled = (s ~= "" and s or today)
+                maybe_input({ prompt = "Defer [" .. today .. "] (" .. date_hint .. "): " }, function(s)
+                  -- Parse smart date or use today as default
+                  scheduled = shared.parse_smart_date_or_default(s, today)
 
-                  maybe_input({ prompt = "Due (YYYY-MM-DD) [Enter=" .. plus3 .. "]: " }, function(d)
-                    deadline = (d ~= "" and d or plus3)
+                  -- Calculate DUE suggestion relative to ACTUAL defer date entered
+                  local due_days = M.cfg.date_defaults.due_days_after_defer or 3
+                  local due_suggestion = future_date(due_days, scheduled)
+
+                  -- Build DUE prompt with DEFER context
+                  local due_prompt = ("Due [after %s → %s] (%s): "):format(scheduled, due_suggestion, date_hint)
+
+                  maybe_input({ prompt = due_prompt }, function(d)
+                    -- Parse smart date or use suggestion as default
+                    deadline = shared.parse_smart_date_or_default(d, due_suggestion, scheduled)
                     handle_zk_creation()
                   end)
                 end)
+              elseif is_waiting and waiting_data then
+                -- WAITING items: follow_up_date becomes SCHEDULED, but also ask for DUE
+                local follow_up = waiting_data.follow_up_date or os.date("%Y-%m-%d")
+                local due_days = M.cfg.date_defaults.due_days_after_defer or 3
+                local due_suggestion = future_date(due_days, follow_up)
+                local date_hint = shared.smart_date_help()
+
+                -- Build DUE prompt with follow-up context
+                local due_prompt = ("Due [after %s → %s] (%s): "):format(follow_up, due_suggestion, date_hint)
+
+                maybe_input({ prompt = due_prompt }, function(d)
+                  -- Parse smart date or use suggestion as default
+                  deadline = shared.parse_smart_date_or_default(d, due_suggestion, follow_up)
+                  handle_zk_creation()
+                end)
               else
-                -- For WAITING items, we already have the follow-up date
                 -- For SOMEDAY items, we skip dates entirely
                 handle_zk_creation()
               end
@@ -1163,8 +1238,8 @@ function M.capture_quick()
         
         -- Ask if recurring (for actionable states only, not SOMEDAY/DONE)
         if state ~= "SOMEDAY" and state ~= "DONE" then
-          select_fzf({ "One-time task", "🔁 Recurring task" }, "Task type", function(task_type)
-            if task_type == "🔁 Recurring task" then
+          select_fzf({ "One-time task", g.container.recurring .. " Recurring task" }, "Task type", function(task_type)
+            if task_type == g.container.recurring .. " Recurring task" then
               -- Collect recurring metadata then continue
               collect_recurring_metadata(function(recur_data)
                 if recur_data then
@@ -1189,14 +1264,14 @@ function M.capture_quick()
         local similar = task_id.find_similar_task(original_title, M.cfg.gtd_dir)
         if similar then
           local short_file = vim.fn.fnamemodify(similar.file, ":t")
-          local msg = string.format("⚠️  Similar task exists:\n\"%s\" (%s)\nin %s\n\nCreate anyway?",
-            similar.title, similar.state or "?", short_file)
+          local msg = string.format("%s Similar task exists:\n\"%s\" (%s)\nin %s\n\nCreate anyway?",
+            g.ui.warning, similar.title, similar.state or "?", short_file)
           
-          select_fzf({ "Cancel (don't create)", "Create anyway" }, msg, function(choice)
-            if choice == "Create anyway" then
+          select_fzf({ g.ui.cross .. " Cancel (don't create)", g.state.DONE .. " Create anyway" }, msg, function(choice)
+            if choice and choice:match("Create anyway") then
               proceed_with_capture()
             else
-              vim.notify("Capture cancelled - duplicate avoided", vim.log.levels.INFO)
+              vim.notify(g.ui.info .. " Capture cancelled - duplicate avoided", vim.log.levels.INFO)
               if focus_mode and focus_mode.clear then focus_mode.clear() end
             end
           end)
@@ -1234,7 +1309,7 @@ function M.capture_recurring()
   -- 0) Optional Area-of-Focus
   pick_area(function(selected_area)
     -- 1) Title
-    input_nonempty({ prompt = "🔁 Recurring task title: " }, function(title)
+    input_nonempty({ prompt = g.container.recurring .. " Recurring task title: " }, function(title)
       
       -- 2) Tags
       maybe_input({ prompt = "Tags (space sep, optional): " }, function(tags)
@@ -1283,9 +1358,12 @@ function M.capture_recurring()
           -- SCHEDULED with org-mode repeater
           table.insert(lines, "SCHEDULED: " .. scheduled_with_repeater)
           
-          -- Properties
+          -- Properties (org-mode compliant)
           table.insert(lines, ":PROPERTIES:")
+          table.insert(lines, ":ID:        " .. id)
           table.insert(lines, ":TASK_ID:   " .. id)
+          table.insert(lines, ":ZK_LINK:   [[zk:" .. id .. "]]")
+          table.insert(lines, ":CREATED:   " .. shared.format_org_inactive_timestamp())
           
           -- Area if selected
           if selected_area and selected_area.name then
@@ -1299,9 +1377,6 @@ function M.capture_recurring()
           end
           
           table.insert(lines, ":END:")
-          
-          -- Breadcrumb link
-          table.insert(lines, string.format("ID:: [[zk:%s]]", id))
           
           -- Ensure Recurring.org exists
           local recurring_path = xp(M.cfg.recurring_file)
@@ -1317,7 +1392,7 @@ function M.capture_recurring()
               freq_text = freq_text .. " (" .. recur_data.preferred_day .. ")"
             end
             
-            success_notify("🔁 " .. title .. area_text .. " [" .. freq_text .. "]", vim.log.levels.INFO)
+            success_notify(g.container.recurring .. " " .. title .. area_text .. " [" .. freq_text .. "]", vim.log.levels.INFO)
           else
             vim.notify("Failed to capture recurring task", vim.log.levels.ERROR)
           end
@@ -1348,28 +1423,28 @@ function M.open_recurring()
 end
 
 function M.find_files()
-  local proj = safe_require("gtd-nvim.gtd.projects")
+  local proj = safe_require("gtd.projects")
   if proj and type(proj.find_files) == "function" then
     return proj.find_files()
   end
 
   local fzf = safe_require("fzf-lua")
   if fzf then
-    fzf.files({ cwd = xp(M.cfg.gtd_dir), prompt = "GTD> " })
+    fzf.files({ cwd = xp(M.cfg.gtd_dir), prompt = shared.colorize(g.file.folder_open, "project") .. " GTD> " })
   else
     silent_cmd("edit " .. xp(M.cfg.gtd_dir))
   end
 end
 
 function M.search()
-  local proj = safe_require("gtd-nvim.gtd.projects")
+  local proj = safe_require("gtd.projects")
   if proj and type(proj.search) == "function" then
     return proj.search()
   end
 
   local fzf = safe_require("fzf-lua")
   if fzf then
-    fzf.live_grep({ cwd = xp(M.cfg.gtd_dir), prompt = "GTD> " })
+    fzf.live_grep({ cwd = xp(M.cfg.gtd_dir), prompt = shared.colorize(g.ui.search, "info") .. " GTD> " })
   else
     quiet_notify("fzf-lua not available for search", vim.log.levels.WARN)
   end
@@ -1447,9 +1522,11 @@ function M.list_waiting_items()
     local file_short = vim.fn.fnamemodify(item.file, ":t")
     local priority_indicator = ""
     if item.priority == "urgent" then
-      priority_indicator = "🔴 "
+      priority_indicator = shared.colorize(g.priority.high, "error") .. " "
     elseif item.priority == "high" then
-      priority_indicator = "🟡 "
+      priority_indicator = shared.colorize(g.priority.high, "warning") .. " "
+    elseif item.priority == "medium" then
+      priority_indicator = shared.colorize(g.priority.medium, "info") .. " "
     end
 
     local follow_up_text = item.follow_up and (" [" .. item.follow_up .. "]") or ""
@@ -1462,7 +1539,7 @@ function M.list_waiting_items()
   end
 
   fzf.fzf_exec(display, {
-    prompt = "WAITING FOR> ",
+    prompt = shared.colorize(g.state.WAITING, "waiting") .. " WAITING FOR> ",
     actions = {
       ["default"] = function(sel)
         local line = sel and sel[1]
@@ -1475,7 +1552,7 @@ function M.list_waiting_items()
         end
       end,
     },
-    fzf_opts = { ["--no-info"] = true },
+    fzf_opts = { ["--no-info"] = true, ["--ansi"] = true },
     winopts = { height = 0.60, width = 0.90, row = 0.10 },
   })
 end

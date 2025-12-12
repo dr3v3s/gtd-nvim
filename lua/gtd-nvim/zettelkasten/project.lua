@@ -1,10 +1,10 @@
--- ~/.config/nvim/lua/utils/zettelkasten/project.lua
+-- ~/.config/nvim/lua/gtd-nvim/zettelkasten/project.lua
 -- Project management module
 
 local M = {}
 
--- Get core zettelkasten module
-local core = require("gtd-nvim.zettelkasten")
+-- Get core zettelkasten module (must require core directly)
+local core = require("gtd-nvim.zettelkasten.core")
 
 ----------------------------------------------------------------------
 -- Project Creation

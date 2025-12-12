@@ -1,9 +1,23 @@
--- Apple Reminders bidirectional integration for GTD system
--- Import from Reminders → GTD Inbox
--- Export GTD tasks → Reminders
--- Sync task completion status
+-- ============================================================================
+-- GTD-NVIM REMINDERS MODULE
+-- ============================================================================
+-- Apple Reminders bidirectional integration
+-- Import/Export: Reminders ↔ GTD tasks
+--
+-- @module gtd-nvim.gtd.reminders
+-- @version 0.8.0
+-- @requires shared (>= 1.0.0)
+-- @todo Use shared.colorize() for fzf displays
+-- ============================================================================
 
 local M = {}
+
+M._VERSION = "0.8.0"
+M._UPDATED = "2024-12-08"
+
+-- Load shared utilities with glyph system
+local shared = require("gtd-nvim.gtd.shared")
+local g = shared.glyphs  -- Glyph shortcuts
 
 -- ============================================================================
 -- Config
@@ -319,11 +333,11 @@ function M.import_reminders(reminders)
 end
 
 function M.import_all()
-  vim.notify("🍎 Importing from Apple Reminders...", vim.log.levels.INFO)
+  vim.notify(g.container.inbox .. " Importing from Apple Reminders...", vim.log.levels.INFO)
   
   local reminders, err = M.fetch_reminders()
   if not reminders then
-    vim.notify("❌ Failed to fetch: " .. (err or "unknown error"), vim.log.levels.ERROR)
+    vim.notify(g.ui.cross .. " Failed to fetch: " .. (err or "unknown error"), vim.log.levels.ERROR)
     return
   end
   
@@ -333,7 +347,7 @@ function M.import_all()
   end
   
   local imported, skipped = M.import_reminders(reminders)
-  vim.notify(string.format("✅ Imported %d reminders, skipped %d", imported, skipped), 
+  vim.notify(string.format(g.state.DONE .. " Imported %d reminders, skipped %d", imported, skipped), 
     vim.log.levels.INFO)
 end
 
@@ -495,7 +509,7 @@ end tell
 end
 
 function M.export_tasks()
-  vim.notify("🚀 Exporting tasks to Apple Reminders...", vim.log.levels.INFO)
+  vim.notify(g.ui.rocket .. " Exporting tasks to Apple Reminders...", vim.log.levels.INFO)
   
   local tasks = M.scan_tasks_for_export()
   if #tasks == 0 then
@@ -512,7 +526,7 @@ function M.export_tasks()
         updated = updated + 1
       else
         errors = errors + 1
-        vim.notify(string.format("⚠️  Failed to update: %s (%s)", task.title, err or "unknown"), 
+        vim.notify(string.format(g.ui.warning .. " Failed to update: %s (%s)", task.title, err or "unknown"), 
           vim.log.levels.WARN)
       end
     else
@@ -522,13 +536,13 @@ function M.export_tasks()
         M.add_apple_id_to_task(task.path, task.lnum, apple_id)
       else
         errors = errors + 1
-        vim.notify(string.format("⚠️  Failed to create: %s (%s)", task.title, err or "unknown"),
+        vim.notify(string.format(g.ui.warning .. " Failed to create: %s (%s)", task.title, err or "unknown"),
           vim.log.levels.WARN)
       end
     end
   end
   
-  vim.notify(string.format("✅ Export complete: %d created, %d updated, %d errors", 
+  vim.notify(string.format(g.state.DONE .. " Export complete: %d created, %d updated, %d errors", 
     created, updated, errors), vim.log.levels.INFO)
 end
 
@@ -564,7 +578,7 @@ end
 -- ============================================================================
 
 function M.sync_completion_status()
-  vim.notify("🔄 Syncing completion status...", vim.log.levels.INFO)
+  vim.notify("🔁 Syncing completion status...", vim.log.levels.INFO)
   
   local files = vim.fn.globpath(xp(M.cfg.gtd_root), "**/*.org", false, true)
   local completed, errors = 0, 0
@@ -597,7 +611,7 @@ function M.sync_completion_status()
 end
 
 function M.bidirectional_sync()
-  vim.notify("🔄 Starting bidirectional sync...", vim.log.levels.INFO)
+  vim.notify("🔁 Starting bidirectional sync...", vim.log.levels.INFO)
   
   M.import_all()
   M.export_tasks()
@@ -662,7 +676,7 @@ function M.clean_inbox_duplicates()
     local backup = inbox_path .. ".backup." .. os.date("%Y%m%d_%H%M%S")
     writefile(backup, lines)
     writefile(inbox_path, clean_lines)
-    vim.notify(string.format("🧹 Removed %d duplicates. Backup: %s", removed, 
+    vim.notify(string.format("🗑️ Removed %d duplicates. Backup: %s", removed, 
       vim.fn.fnamemodify(backup, ":t")), vim.log.levels.INFO)
   else
     vim.notify("No duplicates found", vim.log.levels.INFO)
@@ -670,7 +684,7 @@ function M.clean_inbox_duplicates()
 end
 
 function M.test_basic()
-  vim.notify("🧪 Testing Apple Reminders access...", vim.log.levels.INFO)
+  vim.notify("⚙️ Testing Apple Reminders access...", vim.log.levels.INFO)
   
   local result, err = safe_exec_applescript('tell application "Reminders" to return "OK"')
   
@@ -684,7 +698,7 @@ end
 
 function M.show_config()
   local info = {
-    "📋 Apple Reminders Configuration:",
+    "📝 Apple Reminders Configuration:",
     "",
     "Import:",
     "  Mark imported as completed: " .. tostring(M.cfg.mark_imported),

@@ -1,10 +1,23 @@
--- Clarify & Refile GTD org-mode tasks:
---  - Clarify at cursor / from global list (fzf-lua)
---  - Smart sorting by GTD context + dates
---  - Skips archived / DONE / deleted
---  - Refile task at cursor → any .org (including Areas)
---  - Refile any task via fzf picker
+-- ============================================================================
+-- GTD-NVIM ORGANIZE MODULE
+-- ============================================================================
+-- Clarify & Refile GTD org-mode tasks
+-- Smart sorting by GTD context + dates, Areas support
+--
+-- @module gtd-nvim.gtd.organize
+-- @version 1.0.0
+-- @requires shared (>= 1.0.0)
+-- @see 202512081430-GTD-Nvim-Shared-Module-Audit
+-- ============================================================================
+
 local M = {}
+
+M._VERSION = "1.0.0"
+M._UPDATED = "2024-12-08"
+
+-- Load shared utilities with glyph system
+local shared = require("gtd-nvim.gtd.shared")
+local g = shared.glyphs  -- Glyph shortcuts
 
 -- ---------- tiny helpers ----------
 local function buf_lines(buf) return vim.api.nvim_buf_get_lines(buf, 0, -1, false) end
@@ -78,27 +91,27 @@ local function classify_task_for_clarify(state, title, filename, scheduled, dead
   -- High-priority actionable states (need clarification most)
   if state == "NEXT" then
     base_priority = 1
-    context = "⚡ NEXT ACTION"
+    context = g.state.NEXT .. " NEXT ACTION"
   elseif state == "TODO" then
     base_priority = 2
-    context = "📋 TODO"
+    context = g.state.TODO .. " TODO"
   elseif state == "WAITING" then
     base_priority = 3
-    context = "⏳ WAITING"
+    context = g.state.WAITING .. " WAITING"
   elseif state == "SOMEDAY" or is_someday then
     base_priority = 4
-    context = "💭 SOMEDAY"
+    context = g.state.SOMEDAY .. " SOMEDAY"
   elseif state == "PROJECT" then
     base_priority = 2
-    context = "📂 PROJECT"
+    context = g.state.PROJECT .. " PROJECT"
   -- Inbox items need immediate clarification
   elseif is_inbox then
     base_priority = 1
-    context = "📥 INBOX"
+    context = g.container.inbox .. " INBOX"
   else
     -- No state - might need clarification about what it is
     base_priority = 3
-    context = "❓ NO STATE"
+    context = g.ui.question .. " NO STATE"
   end
 
   -- Apply date-based priority boost
@@ -217,6 +230,10 @@ local function scan_actionable_tasks(root)
               local clean_title = title:gsub("%s*:[%w_:%-]+:%s*$", ""):gsub("^%s+", ""):gsub("%s+$", "")
               if clean_title == "" then clean_title = "(No title)" end
 
+              -- Get container type and state priority for GTD sorting
+              local container_type, container_priority = shared.get_container_type(path, filename)
+              local state_priority = shared.get_state_priority(state)
+
               table.insert(actionable_tasks, {
                 path = path,
                 lnum = i,
@@ -229,6 +246,9 @@ local function scan_actionable_tasks(root)
                 date_info = date_info,
                 scheduled = scheduled,
                 deadline = deadline,
+                container_type = container_type,
+                container_priority = container_priority,
+                state_priority = state_priority,
               })
             end
           end
@@ -237,12 +257,8 @@ local function scan_actionable_tasks(root)
     end
   end
 
-  -- Sort by GTD priority (actionable first, date-sensitive prioritized)
-  table.sort(actionable_tasks, function(a, b)
-    if a.priority ~= b.priority then return a.priority < b.priority end
-    if a.filename ~= b.filename then return a.filename < b.filename end
-    return a.title < b.title
-  end)
+  -- Apply GTD hierarchy sorting: Inbox → Areas → Projects
+  shared.gtd_sort(actionable_tasks)
 
   return actionable_tasks
 end
@@ -281,24 +297,30 @@ local function ensure_props(lines, h_start)
   return pos, pos + 1
 end
 
--- Ensure ZK link line "ID:: [[zk:<id>]]" appears in subtree (after drawer if present)
+--- Ensure ZK_LINK property exists in PROPERTIES drawer (org-mode compliant)
+--- @param lines table Array of lines
+--- @param h_start number Heading line
+--- @param h_end number Subtree end line
+--- @param id string ZK/Task ID
 local function ensure_zk_link(lines, h_start, h_end, id)
   if not id or id == "" then return end
-  for i = h_start, h_end do
-    if (lines[i] or ""):find("%[%[zk:" .. id .. "%]%]") then return end
-  end
-  local i = h_start + 1
-  while i <= h_end and (lines[i] or ""):match("^%s*$") do i = i + 1 end
-  local p_end = nil
-  if i <= h_end and (lines[i] or ""):match("^%s*:PROPERTIES:%s*$") then
-    local j = i + 1
-    while j <= h_end do
-      if (lines[j] or ""):match("^%s*:END:%s*$") then p_end = j; break end
-      j = j + 1
+  
+  -- Check if ZK_LINK property already exists in PROPERTIES
+  local props_start, props_end = shared.find_properties_drawer(lines, h_start, h_end)
+  if props_start and props_end then
+    for i = props_start + 1, props_end - 1 do
+      local line = lines[i] or ""
+      if line:match("^%s*:ZK_LINK:") and line:find("[[zk:" .. id .. "]]", 1, true) then
+        return  -- Already has correct ZK_LINK
+      end
     end
+    
+    -- Add ZK_LINK property before :END:
+    table.insert(lines, props_end, string.format(":ZK_LINK:   [[zk:%s]]", id))
+  else
+    -- No PROPERTIES drawer - use shared helper to create one with ZK_LINK
+    shared.set_property(lines, "ZK_LINK", "[[zk:" .. id .. "]]", h_start)
   end
-  local insert_pos = (p_end and (p_end + 1)) or (h_start + 1)
-  table.insert(lines, insert_pos, ("ID:: [[zk:%s]]"):format(id))
 end
 
 -- Promote current line to a heading if no heading is found.
@@ -307,7 +329,7 @@ local function promote_line_to_heading(lines, lnum, status_kw)
   local line = lines[lnum] or ""
   if line:match("^%s*$") then
     local title = nil
-    vim.ui.input({ prompt = "Task title: " }, function(input) title = input end)
+    vim.ui.input({ prompt = g.phase.capture .. " Task title: " }, function(input) title = input end)
     title = title and title:gsub("^%s+",""):gsub("%s+$","") or ""
     if title == "" then title = "New Task" end
     lines[lnum] = ("* %s %s"):format(status, title)
@@ -449,8 +471,8 @@ local function post_actions_menu(ctx)
   for _, v in ipairs(items) do if v then table.insert(filtered, v) end end
 
   fzf.fzf_exec(filtered, {
-    prompt = "After clarify> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    prompt = shared.colorize(g.phase.clarify, "accent") .. " After clarify> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
     actions = {
       ["default"] = function(sel)
         local act = sel and sel[1]
@@ -556,16 +578,22 @@ function M.clarify(opts)
     end
     h_end = j - 1
 
-    vim.ui.input({ prompt = "Append note (optional): " }, function(note)
+    vim.ui.input({ prompt = g.ui.note .. " Append note (optional): " }, function(note)
       h_end = append_note(lines, h_start, h_end, note or "")
 
       local today = os.date("%Y-%m-%d")
-      vim.ui.input({ prompt = ("Defer/SCHEDULED (YYYY-MM-DD, empty=keep, -=clear) [e.g. %s]: "):format(today) }, function(sched_in)
-        local sched = sched_in or ""
+      local date_help = shared.smart_date_help()
+      vim.ui.input({ prompt = g.container.calendar .. (" Defer [%s] (%s): "):format(today, date_help) }, function(sched_in)
+        local sched = shared.parse_smart_date(sched_in) or ""
+        if sched_in == "-" then sched = "-" end  -- Keep clear command
 
-        local plus3 = os.date("%Y-%m-%d", os.time() + 3*24*3600)
-        vim.ui.input({ prompt = ("Due/DEADLINE (YYYY-MM-DD, empty=keep, -=clear) [e.g. %s]: "):format(plus3) }, function(dead_in)
-          local dead = dead_in or ""
+        -- Calculate intelligent due suggestion based on defer date
+        local due_base = (sched ~= "" and sched ~= "-") and sched or today
+        local due_suggestion = shared.parse_smart_date("+3d", due_base) or os.date("%Y-%m-%d", os.time() + 3*24*3600)
+        
+        vim.ui.input({ prompt = g.ui.warning .. (" Due [after %s → %s] (%s): "):format(due_base, due_suggestion, date_help) }, function(dead_in)
+          local dead = shared.parse_smart_date(dead_in, due_base) or ""
+          if dead_in == "-" then dead = "-" end  -- Keep clear command
           lines, h_end = set_dates(lines, h_start, h_end, sched, dead)
 
           ensure_zk_link(lines, h_start, h_end, id)
@@ -635,16 +663,17 @@ function M.clarify_pick_any(opts)
 
   local fzf = require("fzf-lua")
   fzf.fzf_exec(display, {
-    prompt = "GTD Clarify> ",
+    prompt = shared.colorize(g.phase.clarify, "accent") .. " GTD Clarify> ",
     winopts = {
       height = 0.80,
       width = 0.95,
-      title = " GTD Clarify - Actionable Tasks Only ",
+      title = " " .. g.phase.clarify .. " GTD Clarify - Actionable Tasks Only ",
       title_pos = "center"
     },
     fzf_opts = {
       ["--no-info"] = true,
       ["--tiebreak"] = "index",
+      ["--ansi"] = true,
       ["--header"] = string.format("Actionable: %d high, %d medium, %d low priority • No archived/done items",
         counts.high, counts.medium, counts.low),
       ["--header-lines"] = "0"
@@ -814,16 +843,17 @@ function M.refile_pick_any(opts)
 
   local fzf = require("fzf-lua")
   fzf.fzf_exec(display, {
-    prompt = "GTD Refile> ",
+    prompt = shared.colorize(g.phase.organize, "accent") .. " GTD Refile> ",
     winopts = {
       height = 0.80,
       width = 0.95,
-      title = " GTD Refile - Pick Task ",
+      title = " " .. g.phase.organize .. " GTD Refile - Pick Task ",
       title_pos = "center"
     },
     fzf_opts = {
       ["--no-info"] = true,
       ["--tiebreak"] = "index",
+      ["--ansi"] = true,
     },
     actions = {
       ["default"] = function(sel)

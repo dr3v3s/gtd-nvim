@@ -1,8 +1,23 @@
--- GTD Areas of Responsibility
--- Defines the different areas of life/work that tasks can belong to
--- Used by capture.lua to tag tasks with :AREA: property
+-- ============================================================================
+-- GTD-NVIM AREAS MODULE
+-- ============================================================================
+-- Areas of Responsibility management
+-- Tags tasks with :AREA: property during capture
+--
+-- @module gtd-nvim.gtd.areas
+-- @version 0.8.0
+-- @requires shared (>= 1.0.0)
+-- @todo Use shared.colorize() for fzf displays
+-- ============================================================================
 
 local M = {}
+
+M._VERSION = "0.8.0"
+M._UPDATED = "2024-12-08"
+
+-- Load shared utilities with glyph system
+local shared = require("gtd-nvim.gtd.shared")
+local g = shared.glyphs  -- Glyph shortcuts
 
 -- ------------------------------------------------------------
 -- Areas Configuration
@@ -191,7 +206,7 @@ function M.pick_area(callback)
   
   if fzf then
     fzf.fzf_exec(items, {
-      prompt = "Area of Responsibility> ",
+      prompt = shared.colorize(g.container.areas, "areas") .. " Area of Responsibility> ",
       actions = {
         ["default"] = function(sel)
           local choice = sel and sel[1]
@@ -213,7 +228,7 @@ function M.pick_area(callback)
           callback(nil)
         end,
       },
-      fzf_opts = { ["--no-info"] = true },
+      fzf_opts = { ["--no-info"] = true, ["--ansi"] = true },
       winopts = { height = 0.35, width = 0.50, row = 0.15 },
     })
   else

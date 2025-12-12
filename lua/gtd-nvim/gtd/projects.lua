@@ -1,16 +1,24 @@
--- GTD Projects (Org) – create, open, search, ZK integration (fzf-lua)
--- ENHANCED: Convert task to project feature
--- - Prompts for Title, Description, Defer (SCHEDULED), Due (DEADLINE)
--- - NEW: optional Area-of-Focus selection (uses gtd.areas + ~/Documents/GTD/Areas)
--- - NEW: Convert task at cursor to project with metadata preservation
--- - Seeds :PROPERTIES: with ID, Effort, ASSIGNED, ZK_NOTE (and optional :DESCRIPTION:)
--- - fzf-lua pickers for projects & ZK links (now across Areas)
--- - Open org [[file:...]] links under cursor
--- - Sync backlinks into the ZK note
+-- ============================================================================
+-- GTD-NVIM PROJECTS MODULE
+-- ============================================================================
+-- Project management: create, open, search, ZK integration
+-- Features: Area-of-Focus selection, task-to-project conversion
+--
+-- @module gtd-nvim.gtd.projects
+-- @version 0.8.0
+-- @requires shared (>= 1.0.0)
+-- @todo Import and use shared.glyphs
+-- @todo Use shared.colorize() for fzf displays
+-- ============================================================================
 
 local M = {}
 
--- ------------------------------------------------------------
+M._VERSION = "0.8.0"
+M._UPDATED = "2024-12-08"
+
+-- Load shared utilities with glyph system
+local shared = require("gtd.shared")
+local g = shared.glyphs  -- Glyph shortcuts
 -- Config
 -- ------------------------------------------------------------
 local cfg = {
@@ -19,6 +27,11 @@ local cfg = {
   default_effort   = "2:00",
   default_assigned = "",
   areas_root       = "~/Documents/GTD/Areas", -- new, used as fallback if gtd.areas is absent
+  
+  -- Date defaults
+  date_defaults = {
+    due_days_after_defer = 7,    -- DUE suggestion = DEFER + N days (projects default to 7)
+  },
 }
 
 -- ------------------------------------------------------------
@@ -30,6 +43,23 @@ local function file_exists(p) return vim.fn.filereadable(xp(p)) == 1 end
 local function readfile(p) if not file_exists(p) then return {} end return vim.fn.readfile(xp(p)) end
 local function writefile(p, L) ensure_dir(vim.fn.fnamemodify(xp(p), ":h")); vim.fn.writefile(L, xp(p)) end
 local function have_fzf() return pcall(require, "fzf-lua") end
+
+-- Calculate future date from optional base date
+local function future_date(days, from_date)
+  local base_time
+  if from_date and from_date ~= "" then
+    local year, month, day = from_date:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    if year and month and day then
+      base_time = os.time({ year = tonumber(year), month = tonumber(month), day = tonumber(day) })
+    else
+      base_time = os.time()
+    end
+  else
+    base_time = os.time()
+  end
+  local future_time = base_time + (days * 24 * 60 * 60)
+  return os.date("%Y-%m-%d", future_time)
+end
 
 local function slugify(title)
   title = tostring(title or "")
@@ -74,7 +104,7 @@ local function get_area_dirs()
   local results = {}
 
   -- 1) From gtd.areas, if present
-  local areas_mod = safe_require("gtd-nvim.gtd.areas")
+  local areas_mod = safe_require("gtd.areas")
   if areas_mod then
     local list = nil
     if type(areas_mod.get_areas) == "function" then
@@ -181,8 +211,8 @@ local function pick_area_dir(cb)
   local fzf_ok, fzf = pcall(require, "fzf-lua")
   if fzf_ok then
     fzf.fzf_exec(labels, {
-      prompt = "Area of Focus> ",
-      fzf_opts = { ["--no-info"] = true },
+      prompt = shared.colorize(g.container.areas, "areas") .. " Area of Focus> ",
+      fzf_opts = { ["--no-info"] = true, ["--ansi"] = true },
       winopts = { height = 0.40, width = 0.60, row = 0.25 },
       actions = {
         ["default"] = function(sel)
@@ -473,8 +503,8 @@ local function handle_original_task(task_data, new_project_path)
   local fzf_ok, fzf = pcall(require, "fzf-lua")
   if fzf_ok then
     fzf.fzf_exec(options, {
-      prompt = "Original task> ",
-      fzf_opts = { ["--no-info"] = true },
+      prompt = shared.colorize(g.ui.question, "warning") .. " Original task> ",
+      fzf_opts = { ["--no-info"] = true, ["--ansi"] = true },
       winopts = { height = 0.40, width = 0.70, row = 0.25 },
       actions = {
         ["default"] = function(sel)
@@ -511,7 +541,7 @@ local function handle_original_task(task_data, new_project_path)
             end
             
             writefile(task_data.file_path, new_lines)
-            vim.notify("✅ Task archived to Archive.org", vim.log.levels.INFO)
+            vim.notify((g.checkbox.checked or "") .. " Task archived to Archive.org", vim.log.levels.INFO)
             
           elseif choice:match("^Delete") then
             -- Delete permanently
@@ -523,7 +553,7 @@ local function handle_original_task(task_data, new_project_path)
             end
             
             writefile(task_data.file_path, new_lines)
-            vim.notify("🗑️ Task deleted", vim.log.levels.INFO)
+            vim.notify((g.container.trash or "") .. " Task deleted", vim.log.levels.INFO)
             
           elseif choice:match("^Mark") then
             -- Mark DONE with link
@@ -649,7 +679,6 @@ function M.create()
     maybe_input({ prompt = "Description (optional): " }, function(desc)
       -- Defer / Due with defaults (empty = skip)
       local today = os.date("%Y-%m-%d")
-      local plus7 = os.date("%Y-%m-%d", os.time() + 7 * 24 * 3600)
 
       local scheduled = ""
       local deadline  = ""
@@ -669,7 +698,7 @@ function M.create()
           deadline    = deadline,
         })
         open_and_seed(file, lines)
-        vim.notify("📂 Created project: " .. title, vim.log.levels.INFO)
+        vim.notify(g.container.projects .. " Created project: " .. title, vim.log.levels.INFO)
       end
 
       local function after_dates()
@@ -679,21 +708,23 @@ function M.create()
         end)
       end
 
-      -- Defer (SCHEDULED)
-      maybe_input({ prompt = ("Defer (YYYY-MM-DD) [Enter=skip, e.g. %s]"):format(today) }, function(d1)
-        if d1 ~= "" and not valid_yyyy_mm_dd(d1) then
-          vim.notify("Invalid date, expected YYYY-MM-DD (defer skipped).", vim.log.levels.WARN)
-          d1 = ""
-        end
-        scheduled = d1
+      -- Defer (SCHEDULED) with smart date parsing
+      local date_hint = shared.smart_date_help()
+      maybe_input({ prompt = ("Defer [skip] (%s): "):format(date_hint) }, function(d1)
+        -- Parse smart date (nil if empty/skip)
+        scheduled = shared.parse_smart_date(d1) or ""
 
-        -- Due (DEADLINE)
-        maybe_input({ prompt = ("Due   (YYYY-MM-DD) [Enter=skip, e.g. %s]"):format(plus7) }, function(d2)
-          if d2 ~= "" and not valid_yyyy_mm_dd(d2) then
-            vim.notify("Invalid date, expected YYYY-MM-DD (due skipped).", vim.log.levels.WARN)
-            d2 = ""
-          end
-          deadline = d2
+        -- Due (DEADLINE) - calculate suggestion relative to ACTUAL defer entered
+        local due_days = cfg.date_defaults.due_days_after_defer or 7
+        local due_base = (scheduled ~= "") and scheduled or today
+        local due_suggestion = future_date(due_days, due_base)
+
+        -- Build DUE prompt with DEFER context (always show what we're calculating from)
+        local due_prompt = ("Due [after %s → %s] (%s): "):format(due_base, due_suggestion, date_hint)
+
+        maybe_input({ prompt = due_prompt }, function(d2)
+          -- Parse smart date (nil if empty/skip)
+          deadline = shared.parse_smart_date(d2, due_base) or ""
           after_dates()
         end)
       end)
@@ -706,10 +737,10 @@ end
 -- ------------------------------------------------------------
 
 function M.create_from_task_at_cursor()
-  -- Load enhanced UI helpers
-  local ui = safe_require("gtd-nvim.gtd.projects_enhanced_ui")
+  -- Load UI helpers
+  local ui = safe_require("gtd.ui")
   if not ui then
-    vim.notify("❌ Enhanced UI module not found", vim.log.levels.ERROR)
+    vim.notify("❌ UI module not found", vim.log.levels.ERROR)
     return
   end
   
@@ -727,7 +758,7 @@ function M.create_from_task_at_cursor()
     
     -- Step 1/5: Project Title
     ui.enhanced_input(1, total_steps, {
-      icon = "🏷️",
+      icon = g.ui.tag,
       prompt = "Project Name",
       hint = "This becomes the main PROJECT heading",
       default = task_data.title,
@@ -756,10 +787,10 @@ function M.create_from_task_at_cursor()
           local zkpath = nil
           if task_data.zk_note and file_exists(task_data.zk_note) then
             zkpath = task_data.zk_note
-            vim.notify("♻️  Reusing existing ZK note", vim.log.levels.INFO)
+            vim.notify(g.container.recurring .. " Reusing existing ZK note", vim.log.levels.INFO)
           else
             zkpath = zk_note_for_project(title, id)
-            vim.notify("📝 Created new ZK note", vim.log.levels.INFO)
+            vim.notify(g.ui.note .. " Created new ZK note", vim.log.levels.INFO)
           end
           
           local lines = project_template({
@@ -798,35 +829,37 @@ function M.create_from_task_at_cursor()
           end)
         end
         
-        -- Step 3/5: Defer date
+        -- Step 3/5: Defer date with smart parsing
+        local date_hint = shared.smart_date_help()
         ui.enhanced_input(3, total_steps, {
-          icon = "📅",
+          icon = g.container.calendar,
           prompt = "Defer Date (SCHEDULED)",
-          hint = "When to start (YYYY-MM-DD, or press Enter to skip)",
-          example = os.date("%Y-%m-%d"),
+          hint = "When to start (" .. date_hint .. ")",
+          example = os.date("%Y-%m-%d") .. " or +7d or 25",
           default = scheduled,
           allow_empty = true,
         }, function(d1)
-          if d1 ~= "" and not valid_yyyy_mm_dd(d1) then
-            vim.notify("⚠️  Invalid date format, skipping", vim.log.levels.WARN)
-            d1 = ""
-          end
-          scheduled = d1
+          -- Parse smart date (empty allowed)
+          scheduled = shared.parse_smart_date(d1) or ""
           
-          -- Step 4/5: Due date
+          -- Step 4/5: Due date - calculate example relative to ACTUAL defer entered
+          local due_days = cfg.date_defaults.due_days_after_defer or 7
+          local due_base = (scheduled ~= "") and scheduled or os.date("%Y-%m-%d")
+          local due_example = future_date(due_days, due_base)
+          
+          -- Build hint with DEFER context (always show what we're calculating from)
+          local due_hint = ("After %s (%s)"):format(due_base, date_hint)
+          
           ui.enhanced_input(4, total_steps, {
-            icon = "🎯",
+            icon = g.phase.engage,
             prompt = "Due Date (DEADLINE)",
-            hint = "When to finish (YYYY-MM-DD, or press Enter to skip)",
-            example = os.date("%Y-%m-%d", os.time() + 7 * 24 * 3600),
+            hint = due_hint,
+            example = due_example .. " or +2w or 1-15",
             default = deadline,
             allow_empty = true,
           }, function(d2)
-            if d2 ~= "" and not valid_yyyy_mm_dd(d2) then
-              vim.notify("⚠️  Invalid date format, skipping", vim.log.levels.WARN)
-              d2 = ""
-            end
-            deadline = d2
+            -- Parse smart date with defer as base for relative calcs
+            deadline = shared.parse_smart_date(d2, due_base) or ""
             after_dates()
           end)
         end)
@@ -869,8 +902,8 @@ function M.find_files()
   end
 
   fzf.fzf_exec(display, {
-    prompt = "Projects> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    prompt = "Projects (C-b=Back)> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
     winopts = { height = 0.55, width = 0.80, row = 0.15 },
     actions = {
       ["default"] = function(sel)
@@ -880,6 +913,12 @@ function M.find_files()
         if path then
           vim.cmd("edit " .. vim.fn.fnameescape(path))
         end
+      end,
+      ["ctrl-b"] = function(_)
+        vim.schedule(function()
+          local lists = safe_require("gtd.lists")
+          if lists and lists.menu then lists.menu() end
+        end)
       end,
     },
   })
@@ -909,7 +948,7 @@ function M.search()
       "--glob", "Projects/*.org",
       "--glob", "Areas/*/*.org",
     }, " "),
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
   })
 end
 
@@ -1009,8 +1048,8 @@ function M.list_zk_links()
 
   local fzf = require("fzf-lua")
   fzf.fzf_exec(display, {
-    prompt = "ZK Links> ",
-    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index" },
+    prompt = "ZK Links (C-b=Back)> ",
+    fzf_opts = { ["--no-info"] = true, ["--tiebreak"] = "index", ["--ansi"] = true },
     winopts = { height = 0.55, width = 0.80, row = 0.15 },
     actions = {
       ["default"] = function(sel)
@@ -1033,6 +1072,12 @@ function M.list_zk_links()
         local idx = vim.fn.index(display, sel[1]) + 1
         local it = items[idx]
         if it and it.zk_path then vim.cmd("split " .. xp(it.zk_path)) end
+      end,
+      ["ctrl-b"] = function(_)
+        vim.schedule(function()
+          local lists = safe_require("gtd.lists")
+          if lists and lists.menu then lists.menu() end
+        end)
       end,
     },
   })
@@ -1233,7 +1278,7 @@ function M.link_task_to_project_at_cursor(opts)
   if fzf then
     fzf.fzf_exec(items, {
       prompt = "Link to project> ",
-      fzf_opts = { ["--no-info"] = true },
+      fzf_opts = { ["--no-info"] = true, ["--ansi"] = true },
       winopts = { height = 0.40, width = 0.60, row = 0.20 },
       actions = {
         ["default"] = function(sel)

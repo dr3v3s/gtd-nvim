@@ -1,10 +1,25 @@
--- GTD Status Module
--- Change org-mode TODO status on the heading under cursor.
+-- ============================================================================
+-- GTD-NVIM STATUS MODULE
+-- ============================================================================
+-- Change org-mode TODO status on heading under cursor
 -- Uses centralized fzf utilities for consistent UI
+--
+-- @module gtd-nvim.gtd.status
+-- @version 0.8.0
+-- @requires shared (>= 1.0.0)
+-- @todo Migrate from fzf_utils.icons to shared.glyphs
+-- ============================================================================
 
 local M = {}
 
--- Load centralized fzf utilities
+M._VERSION = "0.8.0"
+M._UPDATED = "2024-12-08"
+
+-- Load shared utilities
+local shared = require("gtd-nvim.gtd.shared")
+local g = shared.glyphs
+
+-- Load centralized fzf utilities (for backward compatibility)
 local fzf_utils = require("gtd-nvim.gtd.fzf")
 
 -- All available statuses with metadata
