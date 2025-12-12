@@ -1,10 +1,10 @@
--- ~/.config/nvim/lua/gtd-nvim/zettelkasten/capture.lua
+-- ~/.config/nvim/lua/utils/zettelkasten/capture.lua
 -- Quick capture: daily notes, quick notes, GTD capture
 
 local M = {}
 
--- Get core zettelkasten module (must require core directly)
-local core = require("gtd-nvim.zettelkasten.core")
+-- Get core zettelkasten module
+local core = require("utils.zettelkasten")
 
 ----------------------------------------------------------------------
 -- Quick Note

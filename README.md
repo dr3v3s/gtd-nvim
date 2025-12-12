@@ -7,12 +7,14 @@ Built with Lua, org-mode files, and fzf-lua for a fast, keyboard-driven workflow
 ## Features
 
 - **Capture** – Quick inbox capture with optional ZK notes
-- **Clarify** – Process tasks with status, dates, tags, WAITING metadata
+- **Clarify** – Process tasks with status, dates, tags, WAITING FOR metadata
 - **Organize** – Refile tasks to projects and areas
 - **Reflect** – GTD lists (Next Actions, Projects, Waiting, Someday, Stuck)
 - **Engage** – Task management with archive/delete operations
-- **Apple Integration** – Sync with Reminders and Calendar (macOS)
+- **Areas of Focus** – Organize projects by life area
+- **WAITING FOR** – Track delegated items with full metadata
 - **Zettelkasten** – Integrated note-taking system
+- **Health Checks** – Built-in diagnostics (`:checkhealth gtd-nvim`)
 
 ## Requirements
 

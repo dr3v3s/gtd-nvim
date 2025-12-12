@@ -166,8 +166,8 @@ function M.validate_gtd_rules(heading, issues, config)
     end
   end
   
-  -- WAIT items should have some follow-up context
-  if kw == "WAIT" then
+  -- WAIT/WAITING items should have some follow-up context
+  if kw == "WAIT" or kw == "WAITING" then
     if not heading.scheduled and not heading.properties.WAITING_FOR then
       table.insert(issues, {
         type = "info",

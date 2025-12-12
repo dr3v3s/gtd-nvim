@@ -1,450 +1,248 @@
-# 󰎞 Zettelkasten for Neovim
+# Zettelkasten Modular System
 
-**Version:** 1.0.0  
-**Updated:** 2025-12-11
+A complete note-taking, GTD integration, and knowledge management system for Neovim.
 
-A comprehensive Zettelkasten note-taking system for Neovim with GTD integration, backlinks, tags, and people management.
-
-## ✨ Features
-
-- **Note Management** — Create, find, search, and organize markdown notes
-- **GTD Integration** — Sync tasks from org-mode GTD files into daily notes
-- **Backlinks** — Automatic detection and display of note references
-- **Tag System** — Extract and browse tags across all notes
-- **People/CRM** — Track contacts, meetings, and interactions
-- **Daily Notes** — Templated daily notes with GTD task sync
-- **Quick Capture** — Fast note capture with timestamps
-- **File Operations** — Archive, delete, move notes with fzf-lua
-- **Caching** — 5-minute cache for fast repeated operations
-
-## 📦 Requirements
-
-- Neovim 0.9+
-- [fzf-lua](https://github.com/ibhagwan/fzf-lua) (primary picker)
-- [fd](https://github.com/sharkdp/fd) (file finding)
-- [ripgrep](https://github.com/BurntSushi/ripgrep) (content search)
-- [Nerd Font](https://www.nerdfonts.com/) (for glyphs)
-
-Optional:
-- [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) (fallback picker)
-
-## 📁 Directory Structure
+## Architecture
 
 ```
-~/Documents/
-├── Notes/                    # Main notes directory
-│   ├── Daily/               # Daily notes (YYYY-MM-DD.md)
-│   ├── Quick/               # Quick capture notes
-│   ├── Projects/            # Project notes
-│   ├── People/              # Contact/person notes
-│   ├── Templates/           # Note templates
-│   ├── Archive/             # Archived notes
-│   └── index.md             # Auto-generated index
-└── GTD/                      # GTD org-mode files (for integration)
+~/.config/nvim/lua/utils/
+├── zettelkasten.lua           # Core module (index, search, backlinks, tags)
+└── zettelkasten/
+    ├── init.lua               # Module loader (use this!)
+    ├── capture.lua            # Quick capture, daily notes, GTD capture
+    ├── project.lua            # Project management & dashboard
+    └── manage.lua             # Mass file operations
 ```
 
-## 🚀 Installation
+## Setup
 
-Add to your Neovim configuration:
+### In your `init.lua` or `lazy.nvim`:
 
 ```lua
--- lazy.nvim
-{
-  "your-username/gtd-nvim",
-  config = function()
-    require("gtd-nvim.zettelkasten").setup()
-  end,
-}
-```
+-- Option 1: Simple setup (loads all modules)
+require("utils.zettelkasten").setup()
 
-## ⚙️ Configuration
-
-```lua
-require("gtd-nvim.zettelkasten").setup({
-  -- Directories
-  notes_dir       = vim.fn.expand("~/Documents/Notes"),
-  daily_dir       = vim.fn.expand("~/Documents/Notes/Daily"),
-  quick_dir       = vim.fn.expand("~/Documents/Notes/Quick"),
-  templates_dir   = vim.fn.expand("~/Documents/Notes/Templates"),
-  archive_dir     = vim.fn.expand("~/Documents/Notes/Archive"),
-  gtd_dir         = vim.fn.expand("~/Documents/GTD"),
-  
-  -- File settings
-  file_ext        = ".md",
-  id_format       = "%Y%m%d%H%M",      -- Note ID format
-  date_format     = "%Y-%m-%d",
-  datetime_format = "%Y-%m-%d %H:%M:%S",
-  slug_lowercase  = false,              -- Keep case in filenames
-  
-  -- Features
-  cache = {
-    enabled = true,
-    ttl = 300,                          -- 5 minutes
-  },
-  backlinks = {
-    enabled = true,
-    show_in_buffer = true,              -- Auto-update backlinks section
-  },
+-- Option 2: Custom config
+require("utils.zettelkasten").setup({
+  notes_dir = "~/Documents/Notes",
+  gtd_dir = "~/Documents/GTD",
   gtd_integration = {
     enabled = true,
-    sync_tags = true,
-    create_note_refs = true,
   },
-  notifications = {
-    enabled = true,
-    timeout = 2000,
-  },
-  
-  -- Keymaps (optional)
-  -- false = disable keymaps
-  -- true/nil = default keymaps
-  -- { ... } = custom configuration
-  keymaps = {
-    prefix = "<leader>z",  -- Change prefix
-    -- Override specific keys (set to "" to disable)
-    -- new_note = "n",
-    -- daily_note = "d",
-  },
+  keymaps = true,  -- Set to false to disable default keymaps
 })
 ```
 
-## ⌨️ Keymaps
+## Commands
 
-All keymaps use the `<leader>z` prefix by default.
+### Core Commands (from `zettelkasten.lua`)
+- `:ZettelNew [title]` - Create new note
+- `:ZettelFind` - Fuzzy find notes
+- `:ZettelSearch` - Live grep search
+- `:ZettelSearchAll` - Search notes + GTD
+- `:ZettelRecent` - Recent notes
+- `:ZettelBacklinks` - Show backlinks for current file
+- `:ZettelTags` - Browse by tags
+- `:ZettelGTD` - Browse GTD tasks
+- `:ZettelStats` - Show statistics
+- `:ZettelClearCache` - Clear cache
 
-### Notes Creation
+### Capture Commands (from `capture.lua`)
+- `:ZettelQuick [title]` - Quick note capture
+- `:ZettelDaily` - Open/create today's daily note (with GTD sync)
+- `:ZettelCapture [text]` - Capture to GTD inbox
+- `:ZettelMeeting [title]` - Create meeting note
 
-| Key | Command | Description |
-|-----|---------|-------------|
-| `<leader>zn` | `:ZettelNew` | 󰎞 New note |
-| `<leader>zd` | `:ZettelDaily` |  Daily note |
-| `<leader>zq` | `:ZettelQuick` | 󱓧 Quick note |
-| `<leader>zp` | `:ZettelProject` |  New project |
-| `<leader>zM` | `:ZettelMeeting` | 󰤙 New meeting |
+### Project Commands (from `project.lua`)
+- `:ZettelProject [title]` - Create new project
+- `:ZettelProjectList` - List all projects
+- `:ZettelProjectDashboard` - Generate project dashboard
 
-### People
+### Management Commands (from `manage.lua`)
+- `:ZettelManage` - Mass file management with multi-select
+- `:ZettelBulkTag` - Add tag to multiple files
+- `:ZettelBulkUntag` - Remove tag from multiple files
 
-| Key | Command | Description |
-|-----|---------|-------------|
-| `<leader>zo` | `:ZettelPerson` |  New person |
-| `<leader>zO` | `:ZettelPeople` |  List people |
-| `<leader>zI` | `:ZettelInteractions` |  Recent interactions |
+## Default Keymaps
 
-### Search & Navigation
+### Core
+- `<leader>zn` - New note
+- `<leader>zf` - Find notes
+- `<leader>zs` - Search content
+- `<leader>zr` - Recent notes
+- `<leader>zb` - Show backlinks
+- `<leader>zg` - Browse GTD tasks
 
-| Key | Command | Description |
-|-----|---------|-------------|
-| `<leader>zf` | `:ZettelFind` |  Find notes (files) |
-| `<leader>zs` | `:ZettelSearch` |  Search content |
-| `<leader>za` | `:ZettelSearchAll` |  Search all (Notes+GTD) |
-| `<leader>zr` | `:ZettelRecent` |  Recent notes |
-| `<leader>zt` | `:ZettelTags` |  Browse tags |
-| `<leader>zb` | `:ZettelBacklinks` | 󰌹 Show backlinks |
-| `<leader>zg` | `:ZettelGTD` |  GTD tasks |
+### Capture
+- `<leader>zq` - Quick note
+- `<leader>zd` - Daily note
+- `<leader>zc` - GTD capture
+- `<leader>zM` - Meeting note
+
+### Projects
+- `<leader>zp` - New project
+- `<leader>zP` - List projects
+- `<leader>zD` - Project dashboard
 
 ### Management
+- `<leader>zm` - Manage notes (multi-select)
+- `<leader>zt` - Bulk tag add
+- `<leader>zT` - Bulk tag remove
 
-| Key | Command | Description |
-|-----|---------|-------------|
-| `<leader>zm` | `:ZettelManage` | 󰧑 Manage notes |
-| `<leader>zc` | `:ZettelClearCache` | 󰑐 Clear cache |
-| `<leader>zi` | `:ZettelStats` | 󰄪 Statistics |
-| `<leader>zu` | `:ZettelUpdateBacklinks` | 󰌹 Update backlinks |
+## Multi-Select in Management
 
-### Legacy (if modules available)
+When you open `:ZettelManage` (or `<leader>zm`):
 
-| Key | Command | Description |
-|-----|---------|-------------|
-| `<leader>zB` | `:ZettelBooks` |  List books |
-| `<leader>zR` | `:ZettelReadingDash` |  Reading dashboard |
-| `<leader>zP` | `:ZettelProjects` |  List projects |
-| `<leader>zD` | `:ZettelProjectDash` |  Project dashboard |
+1. **TAB** - Mark/unmark files
+2. **Shift-TAB** - Unmark file
+3. **Alt-A** - Select all
+4. **Alt-D** - Deselect all
+5. **Ctrl-D** - Delete selected files
+6. **Ctrl-A** - Archive selected files
+7. **Ctrl-R** - Move selected files
+8. **?** - Show help
 
-### Custom Keymaps
+The selection counter shows in the top right (e.g., `5/687`).
 
-```lua
-require("gtd-nvim.zettelkasten").setup({
-  keymaps = {
-    prefix = "<leader>n",     -- Use <leader>n instead of <leader>z
-    new_note = "n",           -- <leader>nn for new note
-    daily_note = "d",         -- <leader>nd for daily
-    find_notes = "f",         -- <leader>nf for find
-    search_all = "",          -- Disable search all keymap
-  },
-})
-```
+## Index Maintenance
 
-Or setup keymaps manually:
+The index file (`~/Documents/Notes/index.md`) is **automatically maintained** by all modules:
 
-```lua
-require("gtd-nvim.zettelkasten").setup({ keymaps = false })
+- Updated when notes are created
+- Updated when notes are deleted/archived/moved
+- Updated by cache invalidation
+- Shows total notes, tags, and directory breakdown
 
--- Then set your own
-local zk = require("gtd-nvim.zettelkasten")
-vim.keymap.set("n", "<leader>nn", zk.new_note, { desc = "New note" })
-vim.keymap.set("n", "<leader>nd", zk.daily_note, { desc = "Daily note" })
-```
+## Module Integration
 
-## 📋 Commands
-
-### Note Creation
-
-| Command | Description |
-|---------|-------------|
-| `:ZettelNew [title]` | Create a new note |
-| `:ZettelDaily` | Open/create today's daily note with GTD sync |
-| `:ZettelQuick [title]` | Quick capture note with timestamp |
-| `:ZettelProject [title]` | Create a project note |
-| `:ZettelReading [title]` | Create a reading/book note |
-| `:ZettelMeeting [title]` | Create a meeting note |
-
-### Search & Navigation
-
-| Command | Description |
-|---------|-------------|
-| `:ZettelFind` | Find notes by filename (fzf-lua) |
-| `:ZettelSearch` | Search note contents (ripgrep) |
-| `:ZettelSearchAll` | Search across Notes + GTD directories |
-| `:ZettelRecent` | Browse recently opened notes |
-| `:ZettelTags` | Browse all tags, then files by tag |
-| `:ZettelBacklinks` | Show backlinks for current note |
-
-### GTD Integration
-
-| Command | Description |
-|---------|-------------|
-| `:ZettelGTD` | Browse GTD tasks from org files |
-
-**GTD Picker Keys:**
-- `Enter` — Open org file at task line
-- `Ctrl-z` — Create Zettel note for task
-
-### File Management
-
-| Command | Description |
-|---------|-------------|
-| `:ZettelManage` | File manager with multi-select |
-
-**Manage Picker Keys:**
-- `Tab` — Toggle selection
-- `Enter` — Open file
-- `Ctrl-d` — Delete selected
-- `Ctrl-a` — Archive selected
-- `Ctrl-r` — Move selected to directory
-- `?` — Show help
-
-### People/CRM
-
-| Command | Description |
-|---------|-------------|
-| `:ZettelPerson [name]` | Create a person/contact note |
-| `:ZettelPeople` | Browse and manage people |
-| `:ZettelPeopleDirectory` | Generate directory by relationship |
-| `:ZettelInteractions` | Show recent interactions (30 days) |
-| `:ZettelBirthdays` | Show upcoming birthdays |
-
-**People Picker Keys:**
-- `Enter` — Open person file
-- `Ctrl-n` — Create new person
-- `Ctrl-m` — Add meeting to person
-- `Ctrl-i` — Add interaction to person
-
-### Utilities
-
-| Command | Description |
-|---------|-------------|
-| `:ZettelStats` | Show statistics (notes, tags, tasks) |
-| `:ZettelIndex` | Rebuild notes index |
-| `:ZettelClearCache` | Clear internal cache |
-| `:ZettelUpdateBacklinks` | Update backlinks in current buffer |
-
-## 🎨 Glyphs
-
-The module uses Nerd Font glyphs throughout:
-
-| Glyph | Meaning |
-|-------|---------|
-| 󰎞 | Zettel note |
-|  | Daily note |
-| 󱓧 | Quick note |
-|  | Project |
-|  | Reading/book |
-|  | Person |
-| 󰤙 | Meeting |
-|  | Search |
-|  | Link |
-| 󰌹 | Backlink |
-|  | Tag |
-| 󰧑 | Brain/manage |
-
-## 📝 Note Templates
-
-### Standard Note
-```markdown
-# {{title}}
-
-**Created:** {{created}}
-**ID:** {{id}}
-**Tags:** {{tags}}
-
-## Notes
-
-## Related
-
-## Backlinks
-```
-
-### Daily Note
-```markdown
-# 󰃭 {{date}}
-
-## Tasks
-- [ ] 
-
-## Notes
-
-## GTD Sync
-{{gtd_tasks}}
-
-## Reflections
-```
-
-### Person Note
-```markdown
-# {{name}}
-
-**Created:** {{created}}
-**Relationship:** {{relationship}}
-**Tags:** #person
-
-## Contact
-- **Email:** 
-- **Phone:** 
-- **Company:** 
-- **Location:** 
-
-## Notes
-
-## Meetings
-
-## Interactions
-```
-
-## 🔗 Backlinks
-
-Backlinks are automatically detected when notes reference each other using:
-- Wiki-style: `[[note-name]]`
-- Markdown: `[text](note-name.md)`
-- Relative paths: `[text](../folder/note.md)`
-
-Use `:ZettelBacklinks` to see all notes linking to the current file.
-
-## 🏷️ Tags
-
-Tags are extracted from note content:
-- Markdown style: `#tag`
-- Org style: `:tag:`
-
-Browse all tags with `:ZettelTags`, then select a tag to see all files using it.
-
-## 📊 GTD Integration
-
-When GTD integration is enabled, the module:
-
-1. Scans `~/Documents/GTD/` for org-mode files
-2. Extracts TODO, NEXT, WAITING tasks
-3. Syncs active tasks into daily notes
-4. Allows browsing tasks with `:ZettelGTD`
-
-Task states recognized:
-- `TODO` — Standard todo
-- `NEXT` — Next action
-- `WAITING` — Waiting for someone/something
-- `DONE` — Completed
-- `PROJ` — Project
-- `SOMEDAY` — Someday/maybe
-
-## 🗂️ Module Architecture
-
-```
-zettelkasten/
-├── init.lua          # Entry point, command registration
-├── core.lua          # Config, cache, utilities, paths
-├── notes.lua         # Note creation, templates, index
-├── search.lua        # Find, search, browse, tags
-├── gtd.lua           # GTD task extraction, browsing
-├── file_manage.lua   # Delete, archive, move operations
-├── people.lua        # Person/contact management
-├── capture.lua       # Quick capture (legacy)
-├── project.lua       # Project notes (legacy)
-├── reading.lua       # Reading notes (legacy)
-└── manage.lua        # File management (legacy)
-```
-
-### Core Dependencies
-
-```
-init.lua
-    ├── core.lua ←── All modules depend on this
-    ├── notes.lua
-    ├── search.lua
-    ├── gtd.lua
-    ├── file_manage.lua
-    └── people.lua (legacy, self-contained)
-```
-
-## 🔧 API
-
-### Lua API
+All modules integrate through the core API:
 
 ```lua
-local zk = require("gtd-nvim.zettelkasten")
+local core = require("utils.zettelkasten")
 
--- Get paths
-local paths = zk.get_paths()
--- paths.notes_dir, paths.gtd_dir, etc.
-
--- Get statistics
-local stats = zk.get_stats()
--- stats.notes_count, stats.tags_count, stats.gtd_tasks_count
-
--- Clear cache
-zk.clear_all_cache()
-
--- Create note programmatically
-zk.create_note_file({
-  title = "My Note",
-  dir = paths.notes_dir,
-  template = "note",
-  tags = "#example",
-  open = true,
-})
+-- Available API functions:
+core.get_config()                 -- Get current config
+core.notify(msg, level, opts)     -- Send notification
+core.clear_cache(key)             -- Clear cache
+core.get_gtd_tasks()              -- Get GTD tasks
+core.get_all_tags()               -- Get all tags
+core.get_all_notes()              -- Get all notes
+core.write_index()                -- Rebuild index
+core.sel_to_paths_fzf(selected)   -- Convert fzf selection to paths
 ```
 
-## 🐛 Troubleshooting
+## Templates
 
-### "fzf-lua required"
-Install fzf-lua: `{ "ibhagwan/fzf-lua" }`
+Templates are stored in `~/Documents/Notes/Templates/`:
 
-### Junk files appearing (.DS_Store, etc.)
-The module filters these automatically. If you see them, run `:ZettelClearCache`
+- `note.md` - Standard note template
+- `daily.md` - Daily note template (with `{{gtd_tasks}}` variable)
+- `quick.md` - Quick note template
+- `project.md` - Project template
+- `meeting.md` - Meeting note template
 
-### GTD tasks not syncing
-- Check `gtd_dir` points to your org files
-- Ensure files have `.org` extension
-- Tasks must start with `* TODO`, `* NEXT`, etc.
+Template variables:
+- `{{title}}` - Note title
+- `{{created}}` - Creation datetime
+- `{{date}}` - Creation date
+- `{{id}}` - Unique ID
+- `{{tags}}` - Tags
+- `{{gtd_tasks}}` - GTD tasks (daily notes only)
 
-### Backlinks not updating
-Run `:ZettelUpdateBacklinks` or save the file (auto-updates on save)
+## GTD Integration
 
-## 📄 License
+When enabled, the system:
+- Syncs tasks from `~/Documents/GTD` (org-mode files)
+- Shows tasks in daily notes
+- Allows task capture to `inbox.org`
+- Supports up to 600 tasks
+- Sorts by priority: NEXT → TODO → WAITING → PROJECT → SOMEDAY → DONE
 
-MIT License — See LICENSE file
+## Cache System
 
-## 🙏 Credits
+5-minute TTL on:
+- File discovery
+- GTD tasks
+- Backlinks
+- Tags
 
-Part of the [gtd-nvim](https://github.com/your-username/gtd-nvim) project.
+Clear manually with `:ZettelClearCache` or programmatically with `core.clear_cache()`.
 
-Built with:
-- [fzf-lua](https://github.com/ibhagwan/fzf-lua)
-- [Nerd Fonts](https://www.nerdfonts.com/)
+## File Organization
+
+```
+~/Documents/Notes/
+├── index.md                 # Auto-generated index
+├── Daily/                   # Daily notes
+├── Quick/                   # Quick captures
+├── Projects/                # Project notes
+│   ├── DASHBOARD.md        # Auto-generated dashboard
+│   └── Archive/            # Archived projects
+├── Templates/               # Note templates
+└── Archive/                 # Archived notes
+```
+
+## Examples
+
+### Create Custom Capture Workflow
+
+```lua
+local capture = require("utils.zettelkasten.capture")
+
+vim.keymap.set("n", "<leader>zi", function()
+  vim.ui.input({ prompt = "Idea: " }, function(text)
+    if text and text ~= "" then
+      capture.quick_note("Idea: " .. text)
+    end
+  end)
+end, { desc = "Capture idea" })
+```
+
+### Custom Project Workflow
+
+```lua
+local project = require("utils.zettelkasten.project")
+
+vim.keymap.set("n", "<leader>zw", function()
+  project.dashboard()  -- Open dashboard
+end, { desc = "Weekly project review" })
+```
+
+### Custom Bulk Operations
+
+```lua
+local manage = require("utils.zettelkasten.manage")
+
+-- Archive all notes older than 1 year
+function archive_old_notes()
+  local paths = require("utils.zettelkasten").get_all_notes()
+  local old_notes = {}
+  
+  for _, note in ipairs(paths) do
+    local mtime = vim.loop.fs_stat(note.path).mtime.sec
+    local age_days = (os.time() - mtime) / 86400
+    
+    if age_days > 365 then
+      table.insert(old_notes, note.path)
+    end
+  end
+  
+  if #old_notes > 0 then
+    manage.archive_notes(old_notes)
+  end
+end
+```
+
+## Philosophy
+
+This modular system follows Unix philosophy:
+- **Core** - Do one thing well (index, search, backlinks)
+- **Capture** - Fast note entry points
+- **Project** - Project lifecycle management
+- **Manage** - Bulk file operations
+
+Each module is independent but integrates through the core API.
+
+## License
+
+MIT

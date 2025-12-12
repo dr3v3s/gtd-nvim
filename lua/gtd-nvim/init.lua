@@ -5,7 +5,7 @@
 
 local M = {}
 
-M._VERSION = "2.1.0"
+M._VERSION = "2.2.0"
 
 -- Default configuration
 M.config = {

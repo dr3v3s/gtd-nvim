@@ -1,0 +1,400 @@
+*gtd-nvim.txt*  Getting Things Done for Neovim
+
+Author:   Michael Drevs <dr3v3s>
+License:  MIT
+Homepage: https://github.com/dr3v3s/gtd-nvim
+
+==============================================================================
+CONTENTS                                                    *gtd-nvim-contents*
+
+    1. Introduction ........................... |gtd-nvim-introduction|
+    2. Requirements ........................... |gtd-nvim-requirements|
+    3. Installation ........................... |gtd-nvim-installation|
+    4. Configuration .......................... |gtd-nvim-configuration|
+    5. GTD Commands ........................... |gtd-nvim-commands|
+    6. GTD Lists .............................. |gtd-nvim-lists|
+    7. Zettelkasten ........................... |gtd-nvim-zettelkasten|
+    8. Org-mode Integration ................... |gtd-nvim-org|
+    9. Areas of Focus ......................... |gtd-nvim-areas|
+    10. Waiting For ........................... |gtd-nvim-waiting|
+    11. API ................................... |gtd-nvim-api|
+    12. Health Check .......................... |gtd-nvim-health|
+
+==============================================================================
+1. INTRODUCTION                                         *gtd-nvim-introduction*
+
+GTD-Nvim is a comprehensive Getting Things Done (GTD) implementation for
+Neovim. It provides a complete workflow for capturing, clarifying, organizing,
+reflecting, and engaging with tasks using org-mode files.
+
+Key Features:~
+- Full GTD workflow implementation
+- Org-mode compliant task management
+- Zettelkasten note integration
+- Areas of Focus support
+- WAITING FOR tracking with metadata
+- Project management with ZK notes
+- fzf-lua powered fuzzy finding
+- Health checks and diagnostics
+
+==============================================================================
+2. REQUIREMENTS                                         *gtd-nvim-requirements*
+
+Required:~
+- Neovim >= 0.9.0
+- plenary.nvim
+- fzf-lua OR telescope.nvim
+
+Recommended:~
+- ripgrep (rg) for fast searching
+- fd for fast file finding
+- fzf (system binary)
+- orgmode.nvim for full org-mode support
+
+Optional:~
+- which-key.nvim for keymap discovery
+- nvim-treesitter for syntax highlighting
+
+==============================================================================
+3. INSTALLATION                                         *gtd-nvim-installation*
+
+Using lazy.nvim:~
+>lua
+    {
+      "dr3v3s/gtd-nvim",
+      dependencies = {
+        "nvim-lua/plenary.nvim",
+        "ibhagwan/fzf-lua",
+      },
+      config = function()
+        require("gtd-nvim").setup({
+          gtd_root = "~/Documents/GTD",
+          zk_root = "~/Documents/Notes",
+        })
+      end,
+    }
+<
+
+Using packer.nvim:~
+>lua
+    use {
+      "dr3v3s/gtd-nvim",
+      requires = {
+        "nvim-lua/plenary.nvim",
+        "ibhagwan/fzf-lua",
+      },
+      config = function()
+        require("gtd-nvim").setup()
+      end
+    }
+<
+
+==============================================================================
+4. CONFIGURATION                                       *gtd-nvim-configuration*
+
+Default configuration:~
+>lua
+    require("gtd-nvim").setup({
+      -- GTD directories
+      gtd_root = "~/Documents/GTD",
+      inbox_file = "Inbox.org",
+      projects_dir = "Projects",
+      areas_dir = "Areas",
+      archive_file = "Archive.org",
+
+      -- Zettelkasten directories  
+      zk_root = "~/Documents/Notes",
+      zk_projects = "Projects",
+
+      -- WAITING FOR defaults
+      waiting_defaults = {
+        follow_up_days = 7,
+        default_context = "email",
+        default_priority = "medium",
+      },
+
+      -- Capture options
+      capture = {
+        quiet_capture = true,
+        show_success_only = true,
+      },
+    })
+<
+
+Directory Structure:~
+>
+    ~/Documents/GTD/
+    ├── Inbox.org           # Capture destination
+    ├── Tickler.org         # Deferred items
+    ├── Someday.org         # Someday/Maybe items
+    ├── Archive.org         # Completed items
+    ├── Projects/           # Project files
+    │   ├── project-a.org
+    │   └── project-b.org
+    └── Areas/              # Areas of Focus
+        ├── 10-Personal/
+        ├── 20-Household/
+        └── 90-WORK/
+<
+
+==============================================================================
+5. GTD COMMANDS                                            *gtd-nvim-commands*
+
+Core GTD Commands:~
+
+:GtdCapture                                                      *:GtdCapture*
+    Capture a new item to inbox. Prompts for:
+    - State (TODO, NEXT, WAITING, SOMEDAY, DONE)
+    - Title
+    - Tags (optional)
+    - Defer date (optional)
+    - Due date (optional)
+    - Area of Focus (optional)
+    - ZK note attachment (optional)
+
+:GtdClarify [state]                                              *:GtdClarify*
+    Run clarify workflow on heading at cursor. Optional [state] argument
+    sets the initial state. Prompts for:
+    - Status selection
+    - Note (optional)
+    - Scheduled date (optional)
+    - Deadline (optional)
+    - Post-clarify actions
+
+:GtdRefile                                                        *:GtdRefile*
+    Refile current task to a project or area file.
+    Uses fzf-lua picker for destination selection.
+
+:GtdProjectNew                                                  *:GtdProjectNew*
+    Create a new project with:
+    - Title
+    - Description (optional)
+    - Defer date (optional)
+    - Due date (optional)
+    - Area of Focus (optional)
+    - Linked ZK note
+
+:GtdHealth                                                        *:GtdHealth*
+    Run GTD system health check.
+
+==============================================================================
+6. GTD LISTS                                                  *gtd-nvim-lists*
+
+List Commands:~
+
+:GtdMenu                                                          *:GtdMenu*
+    Open GTD lists menu. Provides access to all list views.
+
+:GtdNextActions                                              *:GtdNextActions*
+    Show all NEXT actions across GTD files.
+    Actions:
+    - Enter: Edit task
+    - Ctrl-x: Run clarify wizard
+    - Ctrl-f: Fast clarify
+    - Ctrl-z: Open linked ZK note
+    - Ctrl-n: Promote to NEXT
+
+:GtdProjects                                                    *:GtdProjects*
+    Show all projects.
+    Actions:
+    - Enter: Edit project
+    - Ctrl-r: Review (jump to next action)
+
+:GtdWaiting                                                      *:GtdWaiting*
+    Show all WAITING FOR items with metadata.
+    Actions:
+    - Enter: Edit item
+    - Ctrl-a: Activate (WAITING → TODO)
+    - Ctrl-w: Update WAITING details
+    - Ctrl-c: Convert from WAITING
+
+:GtdSomedayMaybe                                            *:GtdSomedayMaybe*
+    Show all SOMEDAY items.
+    Actions:
+    - Enter: Edit item
+    - Ctrl-a: Activate (SOMEDAY → TODO)
+    - Ctrl-n: Make NEXT action
+
+:GtdStuckProjects                                          *:GtdStuckProjects*
+    Show projects without NEXT actions.
+    Actions:
+    - Enter: Edit project
+    - Ctrl-n: Add next action
+
+==============================================================================
+7. ZETTELKASTEN                                          *gtd-nvim-zettelkasten*
+
+Zettelkasten Commands:~
+
+:ZkNew                                                              *:ZkNew*
+    Create a new Zettelkasten note.
+
+:ZkFind                                                            *:ZkFind*
+    Find notes by filename.
+
+:ZkSearch                                                        *:ZkSearch*
+    Search note contents with ripgrep.
+
+:ZkRecent                                                        *:ZkRecent*
+    Show recently modified notes.
+
+:ZkBacklinks                                                    *:ZkBacklinks*
+    Show notes linking to current note.
+
+:ZkDaily                                                          *:ZkDaily*
+    Open or create today's daily note.
+
+:ZkProject                                                      *:ZkProject*
+    Create a new project note.
+
+:ZkPerson                                                        *:ZkPerson*
+    Create a new person note.
+
+:ZkBook                                                            *:ZkBook*
+    Create a new book note.
+
+==============================================================================
+8. ORG-MODE INTEGRATION                                        *gtd-nvim-org*
+
+GTD-Nvim uses org-mode format for all task files. Key conventions:
+
+Task States:~
+>org
+    * TODO     - Action to be done
+    * NEXT     - Next action (immediate)
+    * WAITING  - Waiting for external input
+    * SOMEDAY  - Someday/maybe list
+    * DONE     - Completed
+    * PROJECT  - Project heading
+<
+
+Properties Drawer:~
+>org
+    * TODO Example task
+    :PROPERTIES:
+    :ID:        20231215120000
+    :TASK_ID:   20231215120000
+    :ZK_NOTE:   [[file:~/Notes/Projects/example.md][example.md]]
+    :END:
+    ID:: [[zk:20231215120000]]
+<
+
+Dates:~
+>org
+    SCHEDULED: <2023-12-20>
+    DEADLINE:  <2023-12-25>
+<
+
+==============================================================================
+9. AREAS OF FOCUS                                            *gtd-nvim-areas*
+
+Areas of Focus provide context for organizing projects and tasks.
+
+Default Areas:~
+>lua
+    areas = {
+      { name = "10-Personal",  dir = "~/Documents/GTD/Areas/10-Personal" },
+      { name = "20-Household", dir = "~/Documents/GTD/Areas/20-Household" },
+      { name = "30-Children",  dir = "~/Documents/GTD/Areas/30-Children" },
+      { name = "80-DDS",       dir = "~/Documents/GTD/Areas/80-DDS" },
+      { name = "90-WORK",      dir = "~/Documents/GTD/Areas/90-WORK" },
+    }
+<
+
+Customize in setup:~
+>lua
+    require("gtd-nvim").setup({
+      areas = {
+        { name = "Personal", dir = "~/Documents/GTD/Areas/Personal" },
+        { name = "Work",     dir = "~/Documents/GTD/Areas/Work" },
+      },
+    })
+<
+
+==============================================================================
+10. WAITING FOR                                             *gtd-nvim-waiting*
+
+WAITING FOR items track delegated tasks with full metadata.
+
+Properties:~
+>org
+    * WAITING Response from John about budget
+    :PROPERTIES:
+    :WAITING_FOR:   John Smith
+    :WAITING_WHAT:  Budget approval for Q1
+    :REQUESTED:     2023-12-10
+    :FOLLOW_UP:     2023-12-17
+    :CONTEXT:       email
+    :PRIORITY:      high
+    :WAITING_NOTES: Sent initial request via email
+    :END:
+<
+
+Context Options:~
+- email, phone, meeting, text, slack, teams, verbal, letter, other
+
+Priority Levels:~
+- low, medium, high, urgent
+
+==============================================================================
+11. API                                                          *gtd-nvim-api*
+
+Lua API:~
+>lua
+    local gtd = require("gtd-nvim")
+
+    -- Setup
+    gtd.setup(opts)
+
+    -- Core functions
+    gtd.capture(opts)           -- Capture new item
+    gtd.clarify(opts)           -- Clarify at cursor
+    gtd.refile_to_project(opts) -- Refile task
+    gtd.project_new(opts)       -- Create project
+
+    -- Lists
+    local lists = require("gtd-nvim.gtd.lists")
+    lists.menu()                -- Open lists menu
+    lists.next_actions()        -- Next actions
+    lists.projects()            -- Projects
+    lists.waiting()             -- Waiting for
+    lists.someday_maybe()       -- Someday/Maybe
+    lists.stuck_projects()      -- Stuck projects
+
+    -- Zettelkasten
+    local zk = require("gtd-nvim.zettelkasten")
+    zk.new_note()               -- New note
+    zk.find_notes()             -- Find notes
+    zk.search_notes()           -- Search notes
+    zk.daily_note()             -- Daily note
+
+    -- Audit
+    local audit = require("gtd-nvim.audit")
+    audit.audit()               -- Audit current file
+    audit.audit_all()           -- Audit all files
+<
+
+==============================================================================
+12. HEALTH CHECK                                             *gtd-nvim-health*
+
+Run health check:~
+>vim
+    :checkhealth gtd-nvim
+<
+
+Or:~
+>vim
+    :GtdHealth
+<
+
+Health check verifies:~
+- Neovim version
+- Required plugins (plenary, fzf-lua/telescope)
+- Optional plugins (which-key, orgmode, treesitter)
+- System tools (rg, fd, fzf)
+- GTD directories and files
+- Zettelkasten directories
+- Module loading status
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:

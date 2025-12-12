@@ -435,6 +435,11 @@ local function show_list(filter_fn, title, item_type, extra_actions)
   local ok, fzf = pcall(require, "fzf-lua")
   if not ok then return vim.notify("fzf-lua required", vim.log.levels.WARN) end
   
+  -- Ensure valid cwd for fzf-lua (prevents NvChad errors)
+  if shared and shared.ensure_valid_cwd then
+    shared.ensure_valid_cwd()
+  end
+  
   extra_actions = extra_actions or {}
   
   -- Filter and build display

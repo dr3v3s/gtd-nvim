@@ -415,6 +415,27 @@ function M.notify(msg, level)
 end
 
 -- ============================================================================
+-- BUFFER SAFETY HELPERS (prevent nil path errors)
+-- ============================================================================
+
+--- Safe buffer name getter (returns empty string instead of nil)
+---@param bufnr number|nil Buffer number (defaults to current buffer)
+---@return string Buffer name or empty string
+function M.safe_bufname(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  return name or ""
+end
+
+--- Check if buffer has a valid file path
+---@param bufnr number|nil Buffer number (defaults to current buffer)
+---@return boolean True if buffer has valid file path
+function M.buf_has_file(bufnr)
+  local name = M.safe_bufname(bufnr)
+  return name ~= "" and vim.fn.filereadable(name) == 1
+end
+
+-- ============================================================================
 -- ORG PARSING WITH PROPER FILTERING
 -- ============================================================================
 

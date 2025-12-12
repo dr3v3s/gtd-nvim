@@ -13,8 +13,8 @@ local reports = nil
 -- Configuration
 M.config = {
   gtd_root = vim.fn.expand("~/Documents/GTD"),
-  todo_keywords = { "INBOX", "TODO", "NEXT", "WAIT", "SOMEDAY", "DONE", "CANCELLED" },
-  active_keywords = { "INBOX", "TODO", "NEXT", "WAIT", "SOMEDAY" },
+  todo_keywords = { "INBOX", "TODO", "NEXT", "WAIT", "WAITING", "SOMEDAY", "DONE", "CANCELLED" },
+  active_keywords = { "INBOX", "TODO", "NEXT", "WAIT", "WAITING", "SOMEDAY" },
   done_keywords = { "DONE", "CANCELLED" },
   
   -- Required properties for different heading types
@@ -37,9 +37,9 @@ end
 
 -- Main audit function
 function M.audit(file_path)
-  parser = parser or require("gtd-nvim.audit.parser")
-  validators = validators or require("gtd-nvim.audit.validators")
-  reports = reports or require("gtd-nvim.audit.reports")
+  parser = parser or require("utils.gtd-audit.parser")
+  validators = validators or require("utils.gtd-audit.validators")
+  reports = reports or require("utils.gtd-audit.reports")
   
   local path = file_path or vim.fn.expand("%:p")
   
@@ -64,9 +64,9 @@ end
 
 -- Audit entire GTD directory
 function M.audit_all()
-  parser = parser or require("gtd-nvim.audit.parser")
-  validators = validators or require("gtd-nvim.audit.validators")
-  reports = reports or require("gtd-nvim.audit.reports")
+  parser = parser or require("utils.gtd-audit.parser")
+  validators = validators or require("utils.gtd-audit.validators")
+  reports = reports or require("utils.gtd-audit.reports")
   
   local gtd_files = vim.fn.globpath(M.config.gtd_root, "**/*.org", false, true)
   
@@ -94,8 +94,8 @@ end
 
 -- Show org-mode feature insights for current file
 function M.suggest_features()
-  insights = insights or require("gtd-nvim.audit.insights")
-  parser = parser or require("gtd-nvim.audit.parser")
+  insights = insights or require("utils.gtd-audit.insights")
+  parser = parser or require("utils.gtd-audit.parser")
   
   local path = vim.fn.expand("%:p")
   local parse_result = parser.parse_file(path)
@@ -108,8 +108,8 @@ end
 -- Quick fix for common issues
 function M.quick_fix()
   local path = vim.fn.expand("%:p")
-  parser = parser or require("gtd-nvim.audit.parser")
-  validators = validators or require("gtd-nvim.audit.validators")
+  parser = parser or require("utils.gtd-audit.parser")
+  validators = validators or require("utils.gtd-audit.validators")
   
   local parse_result = parser.parse_file(path)
   if not parse_result.success then

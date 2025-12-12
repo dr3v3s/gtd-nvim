@@ -182,11 +182,13 @@ function M.parse_file(filepath)
         end
         
         -- Check for malformed ID links outside properties
-        if line:match("^ID::%s*%[%[zk:") then
+        -- NOTE: ID:: [[zk:...]] is VALID as a breadcrumb link, not an error
+        -- Only flag if someone used :ID: property syntax outside the drawer
+        if line:match("^%s*:ID:%s+") and not in_properties then
           table.insert(current_heading.issues, {
-            type = "error",
+            type = "warning",
             line = lnum,
-            message = "ID link outside PROPERTIES drawer (should be inside :ID: property)",
+            message = ":ID: property syntax outside PROPERTIES drawer (use ID:: for breadcrumbs)",
           })
         end
       end

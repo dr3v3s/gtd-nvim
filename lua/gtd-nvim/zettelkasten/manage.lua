@@ -1,10 +1,10 @@
--- ~/.config/nvim/lua/gtd-nvim/zettelkasten/manage.lua
+-- ~/.config/nvim/lua/utils/zettelkasten/manage.lua
 -- File management operations module
 
 local M = {}
 
--- Get core zettelkasten module (must require core directly, not init)
-local core = require("gtd-nvim.zettelkasten.core")
+-- Get core zettelkasten module
+local core = require("utils.zettelkasten")
 
 ----------------------------------------------------------------------
 -- File Operations
@@ -190,20 +190,6 @@ function M.manage_notes()
   local header = "[TAB] Multi-Select | [Enter] Open | [Ctrl-D] Delete | [Ctrl-A] Archive | [Ctrl-R] Move | [?] Help"
   local paths = core.get_paths()
   
-  -- Build fd options - only markdown files, exclude junk
-  local fd_opts = table.concat({
-    "--type", "f",
-    "--extension", "md",
-    "--hidden",
-    "--exclude", ".DS_Store",
-    "--exclude", ".git",
-    "--exclude", "node_modules",
-    "--exclude", "Archive",
-    "--exclude", "Templates",
-    "--exclude", "'*.bak'",
-    "--exclude", "'*~'",
-  }, " ")
-  
   fzf.files({
     cwd = paths.notes_dir,
     prompt = "ZK ⟩ ",
@@ -216,7 +202,7 @@ function M.manage_notes()
       ["--pointer"] = "▶",
       ["--marker"] = "✓",
     },
-    fd_opts = fd_opts,
+    fd_opts = "--type f --hidden" .. core.get_exclude_opts_string(),
     actions = {
       ["default"] = fzf.actions.file_edit,
       ["ctrl-d"] = function(selected)
@@ -250,7 +236,7 @@ function M.manage_notes()
         local file_paths = core.sel_to_paths_fzf(selected)
         if file_paths[1] and vim.fn.filereadable(file_paths[1]) == 1 then
           local content = table.concat(vim.fn.readfile(file_paths[1]), "\n")
-          local tags = core.extract_tags(content)
+          local tags = core.extract_tags_from_content(content)
           if #tags > 0 then
             core.notify("Tags: " .. table.concat(tags, ", "))
           else
