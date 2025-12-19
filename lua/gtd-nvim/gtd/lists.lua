@@ -337,13 +337,55 @@ local function is_waiting(item)
   return item.state == "WAITING" and not item.project
 end
 
+-- A "stuck" project is a VALID GTD project (2+ actions) that has NO NEXT actions
+-- This means the project cannot make progress until someone defines the next action
 local function is_stuck_project(item, L)
-  if not item.project then return false end
-  if item.state == "DONE" then return false end
+  -- Must be a valid GTD project first
+  if not is_valid_gtd_project(item, L) then return false end
+  if item.state == "DONE" or item.state == "CANCELLED" then return false end
   
   -- Check if project has any NEXT actions
+  L = L or readf(item.path)
   local counts = todo_counts(L, item.s, item.e)
-  return counts.next == 0 and counts.todo > 0
+  return counts.next == 0
+end
+
+-- An "incomplete project" is marked as PROJECT but doesn't meet GTD requirements
+-- These need attention: either add more actions or convert to single action
+local function is_incomplete_project(item, L)
+  -- Must be marked as PROJECT
+  if not item.project then return false end
+  if item.state == "DONE" or item.state == "CANCELLED" then return false end
+  
+  -- Skip special files
+  local filename = item.path and vim.fn.fnamemodify(item.path, ":t"):lower() or ""
+  if filename == "inbox.org" or filename == "recurring.org" or filename:match("archive") then
+    return false
+  end
+  
+  -- Count actions - incomplete means 0 or 1 actions
+  L = L or readf(item.path)
+  local action_count = 0
+  local project_level = item.level or 1
+  
+  for i = item.s + 1, item.e do
+    local ln = L[i] or ""
+    if is_heading(ln) then
+      local heading_level = hlevel(ln)
+      if heading_level and heading_level > project_level then
+        local st = select(1, parse_state_title(ln))
+        if st == "TODO" or st == "NEXT" or st == "WAITING" or st == "SOMEDAY" then
+          action_count = action_count + 1
+          if action_count >= 2 then
+            return false  -- Has 2+ actions, it's a valid project
+          end
+        end
+      end
+    end
+  end
+  
+  -- 0 or 1 actions = incomplete project
+  return true
 end
 
 -- WAITING-specific filters
@@ -954,6 +996,33 @@ function M.stuck_projects()
   })
 end
 
+-- Show incomplete projects (marked PROJECT but has 0-1 actions)
+-- These need attention: either add more actions or demote to single action
+function M.incomplete_projects()
+  show_list(is_incomplete_project, "Incomplete Projects (0-1 actions)", "incomplete-project", {
+    -- Ctrl-a → add action (go to project and add TODO)
+    ["ctrl-a"] = function(item)
+      vim.cmd("edit " .. item.path)
+      vim.api.nvim_win_set_cursor(0, { item.e, 0 })
+      vim.api.nvim_put({"", "** TODO "}, "l", true, true)
+      vim.api.nvim_win_set_cursor(0, { item.e + 2, 7 })
+      vim.notify("Add action to make this a valid project", vim.log.levels.INFO)
+      vim.cmd("startinsert!")
+    end,
+    -- Ctrl-d → demote to single action (remove PROJECT marker)
+    ["ctrl-d"] = function(item)
+      vim.cmd("edit " .. item.path)
+      vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
+      -- Replace PROJECT with TODO
+      local line = vim.api.nvim_get_current_line()
+      local new_line = line:gsub("PROJECT%s+", "TODO ")
+      vim.api.nvim_set_current_line(new_line)
+      vim.cmd("write")
+      vim.notify("Demoted to single action: " .. trim(item.title or ""), vim.log.levels.INFO)
+    end,
+  })
+end
+
 -- ---------------------------- Enhanced WAITING views ----------------------------
 
 -- Show overdue WAITING items
@@ -1028,12 +1097,13 @@ function M.menu()
   -- Use Nerd Font glyphs (requires patched font)
   local menu_def = {
     { key = "next",           glyph = g.state and g.state.NEXT or "󰖦",     label = "Next Actions",      color = "next" },
-    { key = "projects",       glyph = g.state and g.state.PROJECT or "",    label = "Projects",          color = "project" },
+    { key = "projects",       glyph = g.state and g.state.PROJECT or "",    label = "Projects (2+ actions)",  color = "project" },
+    { key = "incomplete",     glyph = g.progress and g.progress.partial or "", label = "Incomplete Projects (0-1)", color = "warning" },
+    { key = "stuck",          glyph = g.progress and g.progress.blocked or "", label = "Stuck Projects (no NEXT)", color = "error" },
     { key = "someday",        glyph = g.state and g.state.SOMEDAY or "󰋊",   label = "Someday/Maybe",     color = "someday" },
     { key = "waiting",        glyph = g.state and g.state.WAITING or "",    label = "Waiting For",       color = "waiting" },
     { key = "waiting_overdue",glyph = g.progress and g.progress.overdue or "", label = "Waiting - Overdue", color = "error" },
     { key = "waiting_urgent", glyph = g.progress and g.progress.urgent or "",  label = "Waiting - Urgent",  color = "warning" },
-    { key = "stuck",          glyph = g.progress and g.progress.blocked or "", label = "Stuck Projects",    color = "error" },
     { key = "agenda",         glyph = g.container and g.container.calendar or "", label = "Today's Agenda",    color = "calendar" },
     { key = "free_slots",     glyph = g.ui and g.ui.clock or "",            label = "Free Time Slots",   color = "info" },
     { key = "search",         glyph = g.ui and g.ui.search or "",           label = "Search All Items",  color = "info" },
@@ -1073,11 +1143,12 @@ function M.menu()
       vim.schedule(function()
         if key == "next" then M.next_actions()
         elseif key == "projects" then M.projects()
+        elseif key == "incomplete" then M.incomplete_projects()
+        elseif key == "stuck" then M.stuck_projects()
         elseif key == "someday" then M.someday_maybe()
         elseif key == "waiting" then M.waiting()
         elseif key == "waiting_overdue" then M.waiting_overdue()
         elseif key == "waiting_urgent" then M.waiting_urgent()
-        elseif key == "stuck" then M.stuck_projects()
         elseif key == "agenda" then M.agenda()
         elseif key == "free_slots" then M.free_slots()
         elseif key == "search" then M.search_all()
@@ -1741,6 +1812,7 @@ function M.setup(user_cfg)
   vim.api.nvim_create_user_command("GtdWaitingOverdue",   function() M.waiting_overdue() end, { desc = "Show overdue WAITING" })
   vim.api.nvim_create_user_command("GtdWaitingUrgent",    function() M.waiting_urgent() end, { desc = "Show urgent WAITING" })
   vim.api.nvim_create_user_command("GtdStuckProjects",    function() M.stuck_projects() end, { desc = "Show stuck projects" })
+  vim.api.nvim_create_user_command("GtdIncompleteProjects", function() M.incomplete_projects() end, { desc = "Show incomplete projects (0-1 actions)" })
   vim.api.nvim_create_user_command("GtdSearchAll",        function() M.search_all() end, { desc = "Search all GTD files" })
   -- Removed: GtdListsMenu (duplicate of GtdLists), GtdNextActions (duplicate of GtdNext in init.lua)
 end
