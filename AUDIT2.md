@@ -288,10 +288,10 @@ GtdMigrate, GtdFixCompliance
 
 ## 📈 METRICS AFTER CLEANUP
 
-| Metric | Current | After Phase 1 | After All Phases |
-|--------|---------|---------------|------------------|
-| Total Commands | 58 | 47 | ~35 |
-| Duplicate Definitions | 11 | 0 | 0 |
+| Metric | Before | After Phase 1 | Target |
+|--------|--------|---------------|--------|
+| Total Commands | 58 | 54 | ~35 |
+| Duplicate Definitions | 11 | 0 ✅ | 0 |
 | Commands in init.lua | 24 | 13 | 8 |
 | Legacy Commands | 6 | 6 | 0 |
 
@@ -299,19 +299,21 @@ GtdMigrate, GtdFixCompliance
 
 ## ✅ CHECKLIST FOR CLEANUP
 
-- [ ] Remove GtdLists from init.lua (keep lists.lua)
-- [ ] Remove GtdProjects from init.lua (keep lists.lua)
-- [ ] Remove GtdWaiting from init.lua (keep lists.lua)
-- [ ] Remove GtdReviewHistory from init.lua (keep review.lua)
-- [ ] Remove GtdReviewResume from init.lua (keep review.lua)
-- [ ] Remove GtdTaskEditor from editor.lua (keep GtdEdit)
-- [ ] Remove GtdListsMenu from lists.lua (keep GtdLists)
-- [ ] Remove GtdWeeklyReview from init.lua (alias of GtdReview)
-- [ ] Remove GtdReviewIndex from review.lua (alias of GtdReviewHistory)
-- [ ] Remove GtdNextActions from lists.lua (alias of GtdNext)
+- [x] Remove GtdLists from init.lua (keep lists.lua)
+- [x] Remove GtdProjects from init.lua (keep lists.lua)
+- [x] Remove GtdWaiting from init.lua (keep lists.lua)
+- [x] Remove GtdReviewHistory from init.lua (keep review.lua)
+- [x] Remove GtdReviewResume from init.lua (keep review.lua)
+- [x] Remove GtdTaskEditor from editor.lua (keep GtdEdit)
+- [x] Remove GtdListsMenu from lists.lua (keep GtdLists)
+- [x] Remove GtdWeeklyReview from init.lua (alias of GtdReview)
+- [x] Remove GtdReviewIndex from review.lua (alias of GtdReviewHistory)
+- [x] Remove GtdNextActions from lists.lua (alias of GtdNext)
 - [ ] Update keymaps to use canonical command names
 - [ ] Update documentation
 - [ ] Run full test suite
+
+**Phase 1 completed:** 2025-12-19
 
 ---
 
