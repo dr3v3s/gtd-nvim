@@ -708,7 +708,7 @@ local function post_actions_menu(ctx)
   local items = {
     { display = shared.colorize(g.ui.check, "success") .. " Finish", action = "Finish" },
     (projects and { display = shared.colorize(g.ui.link, "project") .. " Link to project", action = "Link to project" }) or nil,
-    (organize and { display = shared.colorize(g.phase.organize, "accent") .. " Refile into project", action = "Refile into project" }) or nil,
+    (organize and { display = shared.colorize(g.phase.organize, "accent") .. " Move to...", action = "Move to" }) or nil,
     { display = shared.colorize(g.ui.note, "calendar") .. " Open ZK note", action = "Open ZK note" },
     { display = shared.colorize(g.state.DONE, "done") .. " Mark DONE", action = "Mark DONE" },
   }
@@ -760,7 +760,7 @@ local function post_actions_menu(ctx)
           vim.defer_fn(function()
             projects.link_task_to_project_at_cursor({})
           end, 50)
-        elseif act == "Refile into project" and organize and organize.refile_to_project then
+        elseif act == "Move to" and organize and organize.refile_to_project then
           vim.defer_fn(function()
             organize.refile_to_project()
           end, 50)

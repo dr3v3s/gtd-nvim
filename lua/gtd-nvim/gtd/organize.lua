@@ -463,7 +463,7 @@ local function post_actions_menu(ctx)
   local items = {
     "Finish",
     (projects and "Link to project") or nil,
-    "Refile into project",  -- Always available (function is in this module)
+    "Move to...",  -- Always available (function is in this module)
     "Open ZK note",
     "Mark DONE",
   }
@@ -478,7 +478,7 @@ local function post_actions_menu(ctx)
         local act = sel and sel[1]
         if act == "Link to project" and projects and projects.link_task_to_project_at_cursor then
           projects.link_task_to_project_at_cursor({})
-        elseif act == "Refile into project" then
+        elseif act == "Move to..." then
           M.refile_to_project()
         elseif act == "Open ZK note" then
           local id = ctx.id
@@ -832,7 +832,7 @@ local function move_subtree(bufnr, start, finish, destfile)
   elseif source_is_project and not dest_is_project then
     level_msg = " (** → *)"
   end
-  notify("Refiled task → " .. vim.fn.fnamemodify(destfile, ":.") .. level_msg, vim.log.levels.INFO)
+  notify("Moved task → " .. vim.fn.fnamemodify(destfile, ":.") .. level_msg, vim.log.levels.INFO)
 end
 
 -- Public: Refile task at cursor
@@ -840,7 +840,7 @@ function M.refile_to_project()
   local bufnr = vim.api.nvim_get_current_buf()
   local start, finish = extract_subtree(bufnr)
   if not start then
-    notify("No task heading found to refile", vim.log.levels.WARN)
+    notify("No task heading found to move", vim.log.levels.WARN)
     return
   end
 
@@ -852,7 +852,7 @@ function M.refile_to_project()
 
   local fzf = safe_require("fzf-lua")
   if not fzf then
-    vim.ui.select(targets, { prompt = "Refile to:" }, function(choice)
+    vim.ui.select(targets, { prompt = "Move to:" }, function(choice)
       if choice then move_subtree(bufnr, start, finish, choice) end
     end)
     return
@@ -864,7 +864,7 @@ function M.refile_to_project()
   end
 
   fzf.fzf_exec(display, {
-    prompt = "Refile → ",
+    prompt = "Move to → ",
     actions = {
       ["default"] = function(sel)
         local choice = sel and sel[1]
