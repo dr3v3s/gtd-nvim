@@ -1104,7 +1104,32 @@ function M.agenda(date)
     -- Track projects with NEXT actions
     local projects_with_next = {}
     
+    -- Helper to check if task should be excluded
+    local function is_excluded(t)
+      -- Skip completed/cancelled tasks
+      if t.state == "DONE" or t.state == "CANCELLED" or t.state == "CLOSED" then
+        return true
+      end
+      -- Skip archived items
+      if t.title and t.title:match("%(archived%)") then
+        return true
+      end
+      -- Skip items from Archive files/projects
+      if t.project and (t.project:lower() == "archive" or t.project:lower():match("^archive")) then
+        return true
+      end
+      if t.file and t.file:lower():match("archive") then
+        return true
+      end
+      return false
+    end
+    
     for _, t in ipairs(all_tasks) do
+      -- Skip excluded tasks
+      if is_excluded(t) then
+        goto continue_task
+      end
+      
       local sched_date = t.scheduled and t.scheduled:match("^(%d%d%d%d%-%d%d%-%d%d)")
       local dead_date = t.deadline and t.deadline:match("^(%d%d%d%d%-%d%d%-%d%d)")
       
@@ -1142,6 +1167,8 @@ function M.agenda(date)
           table.insert(stuck_projects, t)
         end
       end
+      
+      ::continue_task::
     end
     
     -- Re-filter stuck projects (some may have gotten NEXT actions)
