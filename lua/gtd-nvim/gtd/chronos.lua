@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.2.0"
+M._VERSION = "0.3.0"
 M._UPDATED = "2025-12-19"
 
 -- ============================================================================
@@ -467,21 +467,17 @@ function M.setup_commands()
   end, { desc = "Trigger Reminders sync" })
   
   -- Capture commands
-  vim.api.nvim_create_user_command("ChronosCapture", function()
-    M.capture_full()
-  end, { desc = "Full GTD capture wizard" })
-  
-  vim.api.nvim_create_user_command("ChronosCaptureQuick", function(opts)
+  vim.api.nvim_create_user_command("ChronosQuick", function(opts)
     M.capture_quick(opts.args ~= "" and opts.args or nil)
   end, { desc = "Quick capture to inbox", nargs = "?" })
   
-  vim.api.nvim_create_user_command("ChronosCaptureNext", function()
-    M.capture_next()
-  end, { desc = "Capture NEXT action" })
+  vim.api.nvim_create_user_command("ChronosCapture", function()
+    M.capture_task()
+  end, { desc = "Full task capture wizard" })
   
-  vim.api.nvim_create_user_command("ChronosCaptureReminder", function()
-    M.capture_with_reminder()
-  end, { desc = "Capture with Reminders sync" })
+  vim.api.nvim_create_user_command("ChronosProject", function()
+    M.create_project()
+  end, { desc = "Create new project" })
 end
 
 --- Setup keymaps (optional, call separately)
@@ -505,14 +501,12 @@ function M.setup_keymaps(prefix)
     vim.tbl_extend("force", opts, { desc = "Chronos reminders sync" }))
   
   -- Capture keymaps
+  map("n", prefix .. "q", "<cmd>ChronosQuick<cr>",
+    vim.tbl_extend("force", opts, { desc = "Quick capture to inbox" }))
   map("n", prefix .. "c", "<cmd>ChronosCapture<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos full capture" }))
-  map("n", prefix .. "q", "<cmd>ChronosCaptureQuick<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos quick capture" }))
-  map("n", prefix .. "a", "<cmd>ChronosCaptureNext<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos NEXT action" }))
-  map("n", prefix .. "R", "<cmd>ChronosCaptureReminder<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos capture + reminder" }))
+    vim.tbl_extend("force", opts, { desc = "Full task capture" }))
+  map("n", prefix .. "p", "<cmd>ChronosProject<cr>",
+    vim.tbl_extend("force", opts, { desc = "Create project" }))
 end
 
 -- ============================================================================
@@ -558,8 +552,10 @@ end
 -- ============================================================================
 -- CAPTURE SYSTEM
 -- ============================================================================
+-- 1. Quick capture → Inbox dump (one prompt)
+-- 2. Full task capture → Wizard with all GTD options
+-- 3. Project creation → New project file with structure
 
--- Glyphs for capture UI
 local capture_glyphs = {
   inbox = "󰇮",
   project = "󰷐",
@@ -568,26 +564,18 @@ local capture_glyphs = {
   waiting = "󰈸",
   someday = "󰋚",
   calendar = "󰃭",
-  tag = "󰓹",
-  check = "󰄳",
-  reminder = "󰂚",
+  area = "󰀼",
 }
 
---- Generate TASK_ID (YYYYMMDDHHmmss format)
----@return string
+-- Helpers
 local function generate_task_id()
   return os.date("%Y%m%d%H%M%S")
 end
 
---- Format org-mode inactive timestamp [YYYY-MM-DD Day HH:MM]
----@return string
 local function format_inactive_timestamp()
   return os.date("[%Y-%m-%d %a %H:%M]")
 end
 
---- Format org-mode active timestamp <YYYY-MM-DD Day>
----@param date_str string|nil YYYY-MM-DD format, nil for today
----@return string
 local function format_active_date(date_str)
   if date_str then
     local y, m, d = date_str:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
@@ -599,55 +587,63 @@ local function format_active_date(date_str)
   return os.date("<%Y-%m-%d %a>")
 end
 
---- Calculate future date
----@param days number Days from now
----@return string YYYY-MM-DD format
 local function future_date(days)
-  local t = os.time() + (days * 24 * 60 * 60)
-  return os.date("%Y-%m-%d", t)
+  return os.date("%Y-%m-%d", os.time() + (days * 24 * 60 * 60))
 end
 
---- Get GTD home directory
----@return string
 local function gtd_home()
-  local shared_ok, shared = pcall(require, "gtd-nvim.gtd.shared")
-  if shared_ok and shared.gtd_home then
-    return shared.gtd_home()
-  end
-  return vim.fn.expand("~/Documents/GTD")
+  local ok, shared = pcall(require, "gtd-nvim.gtd.shared")
+  return (ok and shared.gtd_home) and shared.gtd_home() or vim.fn.expand("~/Documents/GTD")
 end
 
---- Get inbox path
----@return string
 local function inbox_path()
   return gtd_home() .. "/Inbox.org"
 end
 
---- Ensure file exists with header
----@param path string
----@param title string
 local function ensure_file(path, title)
+  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
   if vim.fn.filereadable(path) == 0 then
-    vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
     vim.fn.writefile({ "#+TITLE: " .. title, "" }, path)
   end
 end
 
---- Build GTD-SPEC compliant org entry
----@param opts table Task options
----@return string[] Lines to append
-local function build_org_entry(opts)
+local function slugify(title)
+  local s = title:lower()
+  s = s:gsub("[æ]", "ae"):gsub("[ø]", "oe"):gsub("[å]", "aa")
+  s = s:gsub("[^%w%s-]", ""):gsub("%s+", "-"):gsub("%-+", "-")
+  return s:gsub("^%-", ""):gsub("%-$", "")
+end
+
+local function append_to_file(path, lines)
+  local f = io.open(path, "a")
+  if not f then return false end
+  f:write("\n" .. table.concat(lines, "\n") .. "\n")
+  f:close()
+  return true
+end
+
+local function write_file(path, lines)
+  local f = io.open(path, "w")
+  if not f then return false end
+  f:write(table.concat(lines, "\n") .. "\n")
+  f:close()
+  return true
+end
+
+--- Build GTD-SPEC compliant task entry
+local function build_task_entry(opts)
   local lines = {}
-  local task_id = opts.task_id or generate_task_id()
+  local id = opts.task_id or generate_task_id()
+  local stars = string.rep("*", opts.level or 1)
   
-  -- Heading line: * STATE Title  :tags:
-  local heading = string.format("* %s %s", opts.state or "TODO", opts.title)
+  -- Heading
+  local heading = string.format("%s %s %s", stars, opts.state or "TODO", opts.title)
   if opts.tags and #opts.tags > 0 then
     heading = heading .. "  :" .. table.concat(opts.tags, ":") .. ":"
   end
   table.insert(lines, heading)
   
-  -- SCHEDULED/DEADLINE (before PROPERTIES per GTD-SPEC)
+  -- Dates (before PROPERTIES per GTD-SPEC)
   if opts.scheduled then
     table.insert(lines, "SCHEDULED: " .. format_active_date(opts.scheduled))
   end
@@ -655,88 +651,77 @@ local function build_org_entry(opts)
     table.insert(lines, "DEADLINE: " .. format_active_date(opts.deadline))
   end
   
-  -- PROPERTIES drawer
+  -- PROPERTIES
   table.insert(lines, ":PROPERTIES:")
-  table.insert(lines, ":TASK_ID:   " .. task_id)
-  table.insert(lines, ":ID:        " .. task_id)
-  table.insert(lines, ":ZK_LINK:   [[zk:" .. task_id .. "]]")
+  table.insert(lines, ":TASK_ID:   " .. id)
+  table.insert(lines, ":ID:        " .. id)
+  table.insert(lines, ":ZK_LINK:   [[zk:" .. id .. "]]")
   table.insert(lines, ":CREATED:   " .. format_inactive_timestamp())
-  
-  -- Optional properties
-  if opts.area then
-    table.insert(lines, ":AREA:      " .. opts.area)
-  end
-  if opts.effort then
-    table.insert(lines, ":Effort:    " .. opts.effort)
-  end
-  if opts.apple_id then
-    table.insert(lines, ":APPLE_ID:  " .. opts.apple_id)
-  end
+  if opts.area then table.insert(lines, ":AREA:      " .. opts.area) end
+  if opts.effort then table.insert(lines, ":Effort:    " .. opts.effort) end
   if opts.state == "WAITING" then
-    if opts.waiting_for then
-      table.insert(lines, ":WAITING_FOR: " .. opts.waiting_for)
-    end
+    if opts.waiting_for then table.insert(lines, ":WAITING_FOR: " .. opts.waiting_for) end
     table.insert(lines, ":WAITING_SINCE: " .. format_inactive_timestamp())
-    if opts.waiting_context then
-      table.insert(lines, ":WAITING_CONTEXT: " .. opts.waiting_context)
-    end
   end
-  
   table.insert(lines, ":END:")
   
-  -- Body text
-  if opts.body and opts.body ~= "" then
-    table.insert(lines, "")
-    table.insert(lines, opts.body)
-  end
-  
-  return lines
+  return lines, id
 end
 
---- Append lines to file
----@param path string
----@param lines string[]
----@return boolean
-local function append_to_file(path, lines)
-  local file = io.open(path, "a")
-  if not file then return false end
-  file:write("\n" .. table.concat(lines, "\n") .. "\n")
-  file:close()
-  return true
+--- Build GTD-SPEC compliant project entry
+local function build_project_entry(opts)
+  local lines = {}
+  local id = opts.task_id or generate_task_id()
+  
+  local heading = "* PROJECT " .. opts.title
+  if opts.tags and #opts.tags > 0 then
+    heading = heading .. "  :" .. table.concat(opts.tags, ":") .. ":"
+  end
+  table.insert(lines, heading)
+  
+  table.insert(lines, ":PROPERTIES:")
+  table.insert(lines, ":ID:        " .. id)
+  table.insert(lines, ":TASK_ID:   " .. id)
+  table.insert(lines, ":ZK_LINK:   [[zk:" .. id .. "]]")
+  table.insert(lines, ":CREATED:   " .. format_inactive_timestamp())
+  if opts.description then table.insert(lines, ":DESCRIPTION: " .. opts.description) end
+  if opts.area then table.insert(lines, ":AREA:      " .. opts.area) end
+  table.insert(lines, ":END:")
+  
+  if opts.outcome then
+    table.insert(lines, "")
+    table.insert(lines, "** Outcome")
+    table.insert(lines, opts.outcome)
+  end
+  
+  return lines, id
 end
 
 --- Get all project files for picker
----@return table[]
 local function get_projects()
   local projects = {}
   local root = gtd_home()
   
   -- Standalone projects
-  local proj_dir = root .. "/Projects"
-  if vim.fn.isdirectory(proj_dir) == 1 then
-    for _, f in ipairs(vim.fn.glob(proj_dir .. "/*.org", false, true)) do
+  local pdir = root .. "/Projects"
+  if vim.fn.isdirectory(pdir) == 1 then
+    for _, f in ipairs(vim.fn.glob(pdir .. "/*.org", false, true)) do
       local name = vim.fn.fnamemodify(f, ":t:r")
-      table.insert(projects, {
-        name = name,
-        path = f,
-        display = capture_glyphs.project .. " " .. name,
-      })
+      table.insert(projects, { name = name, path = f, display = capture_glyphs.project .. " " .. name })
     end
   end
   
   -- Area projects
-  local areas_dir = root .. "/Areas"
-  if vim.fn.isdirectory(areas_dir) == 1 then
-    for _, area_path in ipairs(vim.fn.glob(areas_dir .. "/*", false, true)) do
-      if vim.fn.isdirectory(area_path) == 1 then
-        local area_name = vim.fn.fnamemodify(area_path, ":t")
-        for _, f in ipairs(vim.fn.glob(area_path .. "/*.org", false, true)) do
+  local adir = root .. "/Areas"
+  if vim.fn.isdirectory(adir) == 1 then
+    for _, ap in ipairs(vim.fn.glob(adir .. "/*", false, true)) do
+      if vim.fn.isdirectory(ap) == 1 then
+        local aname = vim.fn.fnamemodify(ap, ":t")
+        for _, f in ipairs(vim.fn.glob(ap .. "/*.org", false, true)) do
           local name = vim.fn.fnamemodify(f, ":t:r")
           table.insert(projects, {
-            name = name,
-            path = f,
-            area = area_name,
-            display = capture_glyphs.project .. " " .. area_name .. "/" .. name,
+            name = name, path = f, area = aname,
+            display = capture_glyphs.area .. " " .. aname .. "/" .. name
           })
         end
       end
@@ -746,18 +731,33 @@ local function get_projects()
   return projects
 end
 
---- Quick capture - minimal prompts, straight to inbox
+--- Get areas
+local function get_areas()
+  local areas = {}
+  local adir = gtd_home() .. "/Areas"
+  if vim.fn.isdirectory(adir) == 1 then
+    for _, p in ipairs(vim.fn.glob(adir .. "/*", false, true)) do
+      if vim.fn.isdirectory(p) == 1 then
+        table.insert(areas, { name = vim.fn.fnamemodify(p, ":t"), path = p })
+      end
+    end
+  end
+  return areas
+end
+
+-- ============================================================================
+-- 1. QUICK CAPTURE (Inbox dump)
+-- ============================================================================
+
+--- Quick capture - one prompt, straight to Inbox as TODO
 ---@param title string|nil Pre-filled title
 function M.capture_quick(title)
   local do_capture = function(t)
     if not t or t == "" then return end
     
-    local lines = build_org_entry({
-      title = t,
-      state = "TODO",
-    })
-    
+    local lines = build_task_entry({ title = t, state = "TODO", level = 1 })
     ensure_file(inbox_path(), "Inbox")
+    
     if append_to_file(inbox_path(), lines) then
       vim.notify(capture_glyphs.inbox .. " " .. t, vim.log.levels.INFO)
     else
@@ -768,239 +768,154 @@ function M.capture_quick(title)
   if title then
     do_capture(title)
   else
-    vim.ui.input({ prompt = capture_glyphs.inbox .. " Quick capture: " }, do_capture)
+    vim.ui.input({ prompt = capture_glyphs.inbox .. " Capture: " }, do_capture)
   end
 end
 
---- NEXT action capture - ready-to-do task
----@param opts table|nil Options: title, scheduled, project
-function M.capture_next(opts)
-  opts = opts or {}
-  
-  local function do_capture(title)
-    if not title or title == "" then return end
-    
-    local entry_opts = {
-      title = title,
-      state = "NEXT",
-      scheduled = opts.scheduled or os.date("%Y-%m-%d"),
-    }
-    
-    local target_path = inbox_path()
-    local level = "*"
-    
-    if opts.project_path then
-      target_path = opts.project_path
-      level = "**"  -- Level 2 for project tasks
-    end
-    
-    local lines = build_org_entry(entry_opts)
-    -- Adjust level if needed
-    if level == "**" then
-      lines[1] = "*" .. lines[1]
-    end
-    
-    ensure_file(target_path, vim.fn.fnamemodify(target_path, ":t:r"))
-    if append_to_file(target_path, lines) then
-      vim.notify(capture_glyphs.next .. " " .. title, vim.log.levels.INFO)
-    else
-      vim.notify("Capture failed", vim.log.levels.ERROR)
-    end
-  end
-  
-  if opts.title then
-    do_capture(opts.title)
-  else
-    vim.ui.input({ prompt = capture_glyphs.next .. " NEXT action: " }, do_capture)
-  end
-end
+-- ============================================================================
+-- 2. FULL TASK CAPTURE (Wizard)
+-- ============================================================================
 
---- Full capture wizard with all options
-function M.capture_full()
+--- Full task capture wizard
+--- Flow: Title → State → Destination → Schedule → (Extras) → Create
+function M.capture_task()
   local ok, fzf = pcall(require, "fzf-lua")
   if not ok then
-    vim.notify("fzf-lua required for full capture", vim.log.levels.ERROR)
+    vim.notify("fzf-lua required", vim.log.levels.ERROR)
     return
   end
   
-  local capture_data = {}
+  local data = {}
   
   -- Step 1: Title
-  vim.ui.input({ prompt = "󰷐 Task title: " }, function(title)
+  vim.ui.input({ prompt = capture_glyphs.todo .. " Task: " }, function(title)
     if not title or title == "" then return end
-    capture_data.title = title
+    data.title = title
     
     -- Step 2: State
-    local states = {
-      capture_glyphs.next .. " NEXT (ready to do now)",
-      capture_glyphs.todo .. " TODO (not yet actionable)",
-      capture_glyphs.waiting .. " WAITING (delegated/blocked)",
-      capture_glyphs.someday .. " SOMEDAY (maybe later)",
-    }
-    
-    fzf.fzf_exec(states, {
-      prompt = "State ❯ ",
-      actions = {
-        ["default"] = function(selected)
-          if not selected or not selected[1] then return end
-          local choice = selected[1]
-          if choice:match("NEXT") then capture_data.state = "NEXT"
-          elseif choice:match("TODO") then capture_data.state = "TODO"
-          elseif choice:match("WAITING") then capture_data.state = "WAITING"
-          elseif choice:match("SOMEDAY") then capture_data.state = "SOMEDAY"
-          else capture_data.state = "TODO" end
-          
-          vim.schedule(function()
-            -- Step 3: Destination
-            local destinations = {
-              capture_glyphs.inbox .. " Inbox (for later review)",
-              capture_glyphs.project .. " Select Project...",
-            }
-            
-            fzf.fzf_exec(destinations, {
-              prompt = "Capture to ❯ ",
-              actions = {
-                ["default"] = function(dest_sel)
-                  if not dest_sel or not dest_sel[1] then return end
-                  
-                  vim.schedule(function()
-                    if dest_sel[1]:match("Project") then
-                      -- Pick project
-                      local projects = get_projects()
-                      if #projects == 0 then
-                        vim.notify("No projects found", vim.log.levels.WARN)
-                        capture_data.path = inbox_path()
-                        capture_data.level = 1
-                      else
-                        local items = {}
-                        for _, p in ipairs(projects) do
-                          table.insert(items, p.display)
-                        end
-                        
-                        fzf.fzf_exec(items, {
-                          prompt = "Project ❯ ",
-                          actions = {
-                            ["default"] = function(proj_sel)
-                              if proj_sel and proj_sel[1] then
-                                for _, p in ipairs(projects) do
-                                  if p.display == proj_sel[1] then
-                                    capture_data.path = p.path
-                                    capture_data.level = 2
-                                    capture_data.area = p.area
-                                    break
-                                  end
-                                end
-                              else
-                                capture_data.path = inbox_path()
-                                capture_data.level = 1
-                              end
-                              vim.schedule(function() M._capture_step_date(capture_data) end)
-                            end,
-                          },
-                          winopts = { height = 0.5, width = 0.6 },
-                        })
-                        return
-                      end
-                    else
-                      capture_data.path = inbox_path()
-                      capture_data.level = 1
-                    end
-                    
-                    M._capture_step_date(capture_data)
-                  end)
-                end,
-              },
-              winopts = { height = 0.3, width = 0.5 },
-            })
-          end)
-        end,
-      },
-      winopts = { height = 0.35, width = 0.5 },
-    })
+    vim.schedule(function()
+      fzf.fzf_exec({
+        capture_glyphs.next .. " NEXT  (ready to do)",
+        capture_glyphs.todo .. " TODO  (not yet ready)",
+        capture_glyphs.waiting .. " WAITING (delegated/blocked)",
+        capture_glyphs.someday .. " SOMEDAY (maybe later)",
+      }, {
+        prompt = "State ❯ ",
+        winopts = { height = 0.3, width = 0.4 },
+        actions = {
+          ["default"] = function(sel)
+            if not sel or not sel[1] then return end
+            data.state = sel[1]:match("(%u+)%s") or "TODO"
+            vim.schedule(function() M._task_step_dest(data) end)
+          end,
+        },
+      })
+    end)
   end)
 end
 
---- Internal: Date selection step
-function M._capture_step_date(data)
-  local ok, fzf = pcall(require, "fzf-lua")
-  if not ok then
-    M._capture_finalize(data)
-    return
-  end
+--- Task wizard: Destination step
+function M._task_step_dest(data)
+  local fzf = require("fzf-lua")
   
-  local date_opts = {
-    capture_glyphs.calendar .. " Today (" .. os.date("%Y-%m-%d") .. ")",
-    capture_glyphs.calendar .. " Tomorrow (" .. future_date(1) .. ")",
-    capture_glyphs.calendar .. " Next week (" .. future_date(7) .. ")",
-    capture_glyphs.calendar .. " No date",
-    capture_glyphs.calendar .. " Custom date...",
-  }
-  
-  fzf.fzf_exec(date_opts, {
-    prompt = "Schedule ❯ ",
+  fzf.fzf_exec({
+    capture_glyphs.inbox .. " Inbox (review later)",
+    capture_glyphs.project .. " Project...",
+  }, {
+    prompt = "To ❯ ",
+    winopts = { height = 0.25, width = 0.35 },
     actions = {
-      ["default"] = function(selected)
-        if not selected or not selected[1] then
-          vim.schedule(function() M._capture_finalize(data) end)
-          return
-        end
+      ["default"] = function(sel)
+        if not sel or not sel[1] then return end
         
-        local choice = selected[1]
-        if choice:match("Today") then
-          data.scheduled = os.date("%Y-%m-%d")
-        elseif choice:match("Tomorrow") then
-          data.scheduled = future_date(1)
-        elseif choice:match("Next week") then
-          data.scheduled = future_date(7)
-        elseif choice:match("Custom") then
+        if sel[1]:match("Project") then
           vim.schedule(function()
-            vim.ui.input({ prompt = "Date (YYYY-MM-DD): " }, function(d)
-              if d and d:match("^%d%d%d%d%-%d%d%-%d%d$") then
-                data.scheduled = d
-              end
-              M._capture_finalize(data)
-            end)
+            local projects = get_projects()
+            if #projects == 0 then
+              vim.notify("No projects found", vim.log.levels.WARN)
+              data.path, data.level = inbox_path(), 1
+              vim.schedule(function() M._task_step_schedule(data) end)
+              return
+            end
+            
+            local items = {}
+            for _, p in ipairs(projects) do table.insert(items, p.display) end
+            
+            fzf.fzf_exec(items, {
+              prompt = "Project ❯ ",
+              winopts = { height = 0.5, width = 0.5 },
+              actions = {
+                ["default"] = function(proj)
+                  if proj and proj[1] then
+                    for _, p in ipairs(projects) do
+                      if p.display == proj[1] then
+                        data.path, data.level, data.area = p.path, 2, p.area
+                        break
+                      end
+                    end
+                  else
+                    data.path, data.level = inbox_path(), 1
+                  end
+                  vim.schedule(function() M._task_step_schedule(data) end)
+                end,
+              },
+            })
           end)
-          return
+        else
+          data.path, data.level = inbox_path(), 1
+          vim.schedule(function() M._task_step_schedule(data) end)
         end
-        -- No date selected = nil scheduled
-        
-        vim.schedule(function() M._capture_finalize(data) end)
       end,
     },
-    winopts = { height = 0.35, width = 0.5 },
   })
 end
 
---- Internal: Final capture step
-function M._capture_finalize(data)
-  -- Handle WAITING state extras
-  if data.state == "WAITING" then
-    vim.ui.input({ prompt = "Waiting for (person/thing): " }, function(wf)
-      data.waiting_for = wf
-      M._do_capture(data)
-    end)
-  else
-    M._do_capture(data)
-  end
+--- Task wizard: Schedule step
+function M._task_step_schedule(data)
+  local fzf = require("fzf-lua")
+  
+  fzf.fzf_exec({
+    capture_glyphs.calendar .. " Today",
+    capture_glyphs.calendar .. " Tomorrow",
+    capture_glyphs.calendar .. " Next week",
+    capture_glyphs.calendar .. " No date",
+  }, {
+    prompt = "When ❯ ",
+    winopts = { height = 0.3, width = 0.35 },
+    actions = {
+      ["default"] = function(sel)
+        if sel and sel[1] then
+          if sel[1]:match("Today") then data.scheduled = os.date("%Y-%m-%d")
+          elseif sel[1]:match("Tomorrow") then data.scheduled = future_date(1)
+          elseif sel[1]:match("week") then data.scheduled = future_date(7)
+          end
+        end
+        
+        if data.state == "WAITING" then
+          vim.schedule(function()
+            vim.ui.input({ prompt = "Waiting for: " }, function(wf)
+              data.waiting_for = wf
+              M._task_finalize(data)
+            end)
+          end)
+        else
+          vim.schedule(function() M._task_finalize(data) end)
+        end
+      end,
+    },
+  })
 end
 
---- Internal: Execute capture
-function M._do_capture(data)
-  local entry_opts = {
+--- Task wizard: Create task
+function M._task_finalize(data)
+  local lines = build_task_entry({
     title = data.title,
     state = data.state,
+    level = data.level or 1,
     scheduled = data.scheduled,
     area = data.area,
     waiting_for = data.waiting_for,
-  }
-  
-  local lines = build_org_entry(entry_opts)
-  
-  -- Adjust heading level for project files
-  if data.level == 2 then
-    lines[1] = "*" .. lines[1]
-  end
+  })
   
   local target = data.path or inbox_path()
   ensure_file(target, vim.fn.fnamemodify(target, ":t:r"))
@@ -1010,51 +925,134 @@ function M._do_capture(data)
     local dest = vim.fn.fnamemodify(target, ":t:r")
     vim.notify(string.format("%s %s → %s", icon, data.title, dest), vim.log.levels.INFO)
     
-    -- Refresh Chronos index if running
-    if M.is_running() then
-      -- The file watcher will auto-update, but we can force it
-      M.query("gtd", "refresh", nil)
-    end
+    if M.is_running() then M.query("gtd", "refresh", nil) end
   else
     vim.notify("Capture failed", vim.log.levels.ERROR)
   end
 end
 
---- Capture with Apple Reminders sync
----@param opts table|nil Options
-function M.capture_with_reminder(opts)
-  opts = opts or {}
+-- ============================================================================
+-- 3. PROJECT CREATION
+-- ============================================================================
+
+--- Create new project
+--- Flow: Name → Area → Outcome → First action → Create file
+function M.create_project()
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("fzf-lua required", vim.log.levels.ERROR)
+    return
+  end
   
-  vim.ui.input({ prompt = capture_glyphs.reminder .. " Task (syncs to Reminders): " }, function(title)
-    if not title or title == "" then return end
+  local data = {}
+  
+  -- Step 1: Name
+  vim.ui.input({ prompt = capture_glyphs.project .. " Project name: " }, function(name)
+    if not name or name == "" then return end
+    data.name = name
+    data.slug = slugify(name)
     
-    -- Create the reminder first via bridge, get APPLE_ID
-    -- For now, just capture to org - reminder sync will pick it up
-    local entry_opts = {
-      title = title,
-      state = opts.state or "NEXT",
-      scheduled = opts.scheduled or os.date("%Y-%m-%d"),
-    }
-    
-    local lines = build_org_entry(entry_opts)
-    ensure_file(inbox_path(), "Inbox")
-    
-    if append_to_file(inbox_path(), lines) then
-      vim.notify(capture_glyphs.reminder .. " " .. title .. " (sync pending)", vim.log.levels.INFO)
-      
-      -- Trigger immediate sync to create the reminder
-      if M.is_running() then
-        vim.defer_fn(function()
-          local result = M.reminders_sync()
-          if result and result.outbound_updated and result.outbound_updated > 0 then
-            vim.notify("Synced to Apple Reminders", vim.log.levels.INFO)
-          end
-        end, 500)
+    -- Step 2: Area
+    vim.schedule(function()
+      local areas = get_areas()
+      local items = { capture_glyphs.project .. " Standalone (no area)" }
+      for _, a in ipairs(areas) do
+        table.insert(items, capture_glyphs.area .. " " .. a.name)
       end
-    else
-      vim.notify("Capture failed", vim.log.levels.ERROR)
-    end
+      table.insert(items, capture_glyphs.area .. " + New area...")
+      
+      fzf.fzf_exec(items, {
+        prompt = "Area ❯ ",
+        winopts = { height = 0.4, width = 0.4 },
+        actions = {
+          ["default"] = function(sel)
+            if not sel or not sel[1] then return end
+            
+            if sel[1]:match("New area") then
+              vim.schedule(function()
+                vim.ui.input({ prompt = "New area: " }, function(aname)
+                  if aname and aname ~= "" then
+                    data.area = aname
+                    vim.fn.mkdir(gtd_home() .. "/Areas/" .. aname, "p")
+                  end
+                  vim.schedule(function() M._project_step_outcome(data) end)
+                end)
+              end)
+            elseif sel[1]:match("Standalone") then
+              data.area = nil
+              vim.schedule(function() M._project_step_outcome(data) end)
+            else
+              data.area = sel[1]:match(capture_glyphs.area .. " (.+)")
+              vim.schedule(function() M._project_step_outcome(data) end)
+            end
+          end,
+        },
+      })
+    end)
   end)
+end
+
+--- Project wizard: Outcome step
+function M._project_step_outcome(data)
+  vim.ui.input({ prompt = "Desired outcome (optional): " }, function(outcome)
+    data.outcome = (outcome and outcome ~= "") and outcome or nil
+    vim.schedule(function() M._project_step_action(data) end)
+  end)
+end
+
+--- Project wizard: First action step
+function M._project_step_action(data)
+  vim.ui.input({ prompt = capture_glyphs.next .. " First action (optional): " }, function(action)
+    data.first_action = (action and action ~= "") and action or nil
+    vim.schedule(function() M._project_finalize(data) end)
+  end)
+end
+
+--- Project wizard: Create file
+function M._project_finalize(data)
+  local path
+  if data.area then
+    path = gtd_home() .. "/Areas/" .. data.area .. "/" .. data.slug .. ".org"
+  else
+    path = gtd_home() .. "/Projects/" .. data.slug .. ".org"
+  end
+  
+  if vim.fn.filereadable(path) == 1 then
+    vim.notify("Project exists: " .. path, vim.log.levels.ERROR)
+    return
+  end
+  
+  local id = generate_task_id()
+  local file_lines = { "#+TITLE: " .. data.name, "#+FILETAGS: :project:", "" }
+  
+  local proj_lines = build_project_entry({
+    title = data.name,
+    task_id = id,
+    area = data.area,
+    outcome = data.outcome,
+  })
+  for _, l in ipairs(proj_lines) do table.insert(file_lines, l) end
+  
+  if data.first_action then
+    table.insert(file_lines, "")
+    local action_lines = build_task_entry({
+      title = data.first_action,
+      state = "NEXT",
+      level = 2,
+      scheduled = os.date("%Y-%m-%d"),
+    })
+    for _, l in ipairs(action_lines) do table.insert(file_lines, l) end
+  end
+  
+  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+  if write_file(path, file_lines) then
+    local loc = data.area and (data.area .. "/") or "Projects/"
+    vim.notify(capture_glyphs.project .. " " .. data.name .. " → " .. loc .. data.slug .. ".org", vim.log.levels.INFO)
+    vim.cmd("edit " .. vim.fn.fnameescape(path))
+    if M.is_running() then M.query("gtd", "refresh", nil) end
+  else
+    vim.notify("Failed to create project", vim.log.levels.ERROR)
+  end
 end
 
 return M
