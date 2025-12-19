@@ -455,6 +455,32 @@ function M.xp(p)
   return vim.fn.expand(p or "")
 end
 
+--- Check if file exists and is readable
+---@param path string Path to check
+---@return boolean True if file exists and readable
+function M.file_exists(path)
+  if not path or path == "" then return false end
+  return vim.fn.filereadable(M.xp(path)) == 1
+end
+
+--- Check if directory exists
+---@param path string Path to check
+---@return boolean True if directory exists
+function M.dir_exists(path)
+  if not path or path == "" then return false end
+  return vim.fn.isdirectory(M.xp(path)) == 1
+end
+
+--- Ensure directory exists, creating parent directories as needed
+---@param path string Directory path to create
+---@return string Expanded directory path
+function M.ensure_dir(path)
+  if not path or path == "" then return "" end
+  local expanded = M.xp(path)
+  vim.fn.mkdir(expanded, "p")
+  return expanded
+end
+
 function M.read_file(path)
   if not path then
     return {}
@@ -467,6 +493,75 @@ function M.read_file(path)
   end
 end
 
+--- Write lines to file, creating parent directories if needed
+---@param path string File path to write
+---@param lines table Lines to write
+---@return boolean True if successful
+function M.write_file(path, lines)
+  if not path or not lines then return false end
+  local expanded = M.xp(path)
+  M.ensure_dir(vim.fn.fnamemodify(expanded, ":h"))
+  local ok, result = pcall(vim.fn.writefile, lines, expanded)
+  return ok and result == 0
+end
+
+--- Append lines to file, creating parent directories if needed
+---@param path string File path to append to
+---@param lines table Lines to append
+---@return boolean True if successful
+function M.append_file(path, lines)
+  if not path or not lines then return false end
+  local expanded = M.xp(path)
+  M.ensure_dir(vim.fn.fnamemodify(expanded, ":h"))
+  local ok, result = pcall(vim.fn.writefile, lines, expanded, "a")
+  return ok and result == 0
+end
+
+--- Join path components with proper separator handling
+---@param ... string Path components to join
+---@return string Joined path
+function M.join_path(...)
+  local parts = {...}
+  if #parts == 0 then return "" end
+  if #parts == 1 then return parts[1] end
+  
+  local result = parts[1]:gsub("/+$", "")
+  for i = 2, #parts do
+    local part = parts[i]:gsub("^/+", ""):gsub("/+$", "")
+    if part ~= "" then
+      result = result .. "/" .. part
+    end
+  end
+  return result
+end
+
+--- Get relative path from current working directory
+---@param path string Absolute or relative path
+---@return string Relative path
+function M.relative_path(path)
+  if not path then return "" end
+  return vim.fn.fnamemodify(path, ":.")
+end
+
+--- Get filename without extension
+---@param path string File path
+---@return string Filename without extension
+function M.basename_no_ext(path)
+  if not path then return "" end
+  return vim.fn.fnamemodify(path, ":t:r")
+end
+
+--- Convert string to URL-safe slug
+---@param str string String to slugify
+---@return string URL-safe slug
+function M.slugify(str)
+  if not str or str == "" then return "" end
+  local s = str:gsub("[/%\\%:%*%?%\"%<%>%|]", "-")
+  s = s:gsub("%s+", "-")
+  s = s:gsub("^%-+", ""):gsub("%-+$", "")
+  return s ~= "" and s or ("item-" .. os.date("%Y%m%d%H%M%S"))
+end
+
 function M.have_fzf()
   return pcall(require, "fzf-lua")
 end
@@ -474,6 +569,150 @@ end
 function M.notify(msg, level)
   local levels = { INFO = vim.log.levels.INFO, WARN = vim.log.levels.WARN, ERROR = vim.log.levels.ERROR }
   vim.notify(msg, levels[level] or vim.log.levels.INFO)
+end
+
+--- Show info notification with consistent formatting
+---@param msg string Message to display
+---@param title string|nil Optional title (defaults to "GTD")
+function M.info(msg, title)
+  vim.notify(msg, vim.log.levels.INFO, { title = title or "GTD" })
+end
+
+--- Show warning notification with consistent formatting
+---@param msg string Message to display  
+---@param title string|nil Optional title (defaults to "GTD")
+function M.warn(msg, title)
+  vim.notify(msg, vim.log.levels.WARN, { title = title or "GTD" })
+end
+
+--- Show error notification with consistent formatting
+---@param msg string Message to display
+---@param title string|nil Optional title (defaults to "GTD")
+function M.error(msg, title)
+  vim.notify(msg, vim.log.levels.ERROR, { title = title or "GTD" })
+end
+
+-- ============================================================================
+-- DATE AND TIME UTILITIES
+-- ============================================================================
+
+--- Generate timestamp ID (YYYYMMDDHHMMSS format)
+---@return string Timestamp-based ID
+function M.gen_id()
+  return os.date("%Y%m%d%H%M%S")
+end
+
+-- Alias for backward compatibility
+M.now_id = M.gen_id
+
+--- Get current date in YYYY-MM-DD format
+---@param offset_days number|nil Days to offset from today (default 0)
+---@return string Date string
+function M.today(offset_days)
+  local time = os.time() + ((offset_days or 0) * 24 * 3600)
+  return os.date("%Y-%m-%d", time)
+end
+
+--- Validate date string in YYYY-MM-DD format
+---@param date_str string Date string to validate
+---@return boolean True if valid date format
+function M.is_valid_date(date_str)
+  if not date_str or date_str == "" then return true end
+  return date_str:match("^%d%d%d%d%-%d%d%-%d%d$") ~= nil
+end
+
+--- Get current timestamp for logging/archiving
+---@return string Formatted timestamp
+function M.now_timestamp()
+  return os.date("%Y-%m-%d %H:%M:%S")
+end
+
+--- Parse org-mode date string <YYYY-MM-DD> or [YYYY-MM-DD]
+---@param str string String potentially containing org date
+---@return string|nil Date in YYYY-MM-DD format or nil
+function M.parse_org_date(str)
+  if not str then return nil end
+  local date = str:match("[<[](%d%d%d%d%-%d%d%-%d%d)[^>%]]*[>%]]")
+  return date
+end
+
+--- Calculate days between two dates
+---@param date1 string Date in YYYY-MM-DD format
+---@param date2 string|nil Date in YYYY-MM-DD format (defaults to today)
+---@return number|nil Days difference (negative if date1 is before date2)
+function M.days_between(date1, date2)
+  if not date1 then return nil end
+  date2 = date2 or M.today()
+  
+  local y1, m1, d1 = date1:match("(%d+)-(%d+)-(%d+)")
+  local y2, m2, d2 = date2:match("(%d+)-(%d+)-(%d+)")
+  if not (y1 and y2) then return nil end
+  
+  local t1 = os.time({ year = tonumber(y1), month = tonumber(m1), day = tonumber(d1) })
+  local t2 = os.time({ year = tonumber(y2), month = tonumber(m2), day = tonumber(d2) })
+  
+  return math.floor((t1 - t2) / 86400)
+end
+
+-- ============================================================================
+-- INPUT HELPERS (consistent UI patterns)
+-- ============================================================================
+
+--- Basic input wrapper (delegates to vim.ui.input)
+---@param opts table Input options
+---@param cb function Callback function
+function M.input(opts, cb)
+  vim.ui.input(opts or {}, cb)
+end
+
+--- Input with non-empty validation
+---@param opts table Input options (same as vim.ui.input)
+---@param cb function Callback called only with non-empty input
+function M.input_required(opts, cb)
+  M.input(opts, function(input)
+    if input and input:gsub("^%s+", ""):gsub("%s+$", "") ~= "" then
+      cb(input:gsub("^%s+", ""):gsub("%s+$", ""))
+    end
+  end)
+end
+
+--- Input with optional callback (passes empty string if cancelled)
+---@param opts table Input options
+---@param cb function Callback receives input or empty string
+function M.input_optional(opts, cb)
+  M.input(opts, function(input)
+    cb(input or "")
+  end)
+end
+
+--- Select with fzf-lua (falls back to vim.ui.select)
+---@param items table Items to select from
+---@param opts table Options (prompt, winopts, etc.)
+---@param cb function Callback with selected item
+function M.select(items, opts, cb)
+  opts = opts or {}
+  local ok, fzf = pcall(require, "fzf-lua")
+  if ok then
+    local display = vim.tbl_map(function(x)
+      return type(x) == "table" and (x.display or x[1] or tostring(x)) or tostring(x)
+    end, items)
+
+    fzf.fzf_exec(display, {
+      prompt = (opts.prompt or "Select") .. "> ",
+      actions = {
+        ["default"] = function(sel)
+          local line = sel and sel[1]
+          if not line then return end
+          local idx = vim.fn.index(display, line) + 1
+          cb(items[idx])
+        end,
+      },
+      fzf_opts = { ["--no-info"] = true },
+      winopts = opts.winopts or { height = 0.35, width = 0.50, row = 0.15 },
+    })
+  else
+    vim.ui.select(items, opts, cb)
+  end
 end
 
 -- ============================================================================
