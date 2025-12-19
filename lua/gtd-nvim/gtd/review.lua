@@ -102,6 +102,10 @@ local function setup_review_highlights()
   hl(0, "GtdMetricProjects", { fg = colors.mauve })
   hl(0, "GtdMetricStuck", { fg = colors.red, bold = true })
   
+  -- Calendar events (muted, not distracting)
+  hl(0, "GtdCalendarEvent", { fg = colors.overlay2 })  -- Soft gray-blue
+  hl(0, "GtdCalendarTime", { fg = colors.subtext0 })   -- Even more muted for times
+  
   -- Shortcuts
   hl(0, "GtdShortcutKey", { fg = colors.mauve, bold = true })
   hl(0, "GtdShortcutDesc", { fg = colors.subtext0 })
@@ -1637,7 +1641,7 @@ local function render_right(content)
       vim.api.nvim_buf_add_highlight(buf, ns, "GtdMetricStuck", row, 0, -1)
     -- Calendar events
     elseif line:match(gc.calendar or "") then
-      vim.api.nvim_buf_add_highlight(buf, ns, "GtdMetricProjects", row, 0, -1)
+      vim.api.nvim_buf_add_highlight(buf, ns, "GtdCalendarEvent", row, 0, -1)
     -- Bullet points
     elseif line:match("^%s+" .. (gu.bullet or "")) then
       vim.api.nvim_buf_add_highlight(buf, ns, "GtdContentBullet", row, 0, 4)

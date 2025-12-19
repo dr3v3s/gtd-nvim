@@ -114,7 +114,7 @@ M.colors = {
   projects = { fg = "#cba6f7" },                -- Purple (same as project state)
   areas    = { fg = "#89dceb" },                -- Cyan
   someday_container = { fg = "#a6adc8" },       -- Muted gray
-  calendar = { fg = "#f9e2af" },                -- Yellow
+  calendar = { fg = "#9399b2" },                -- Muted gray-blue (was bright yellow)
   recurring = { fg = "#94e2d5" },               -- Teal
   archive  = { fg = "#585b70" },                -- Dark gray
   reference = { fg = "#74c7ec" },               -- Light blue
@@ -203,7 +203,8 @@ function M.setup_highlights()
   hl(0, "GtdInbox", { fg = "#f38ba8", bold = true })
   hl(0, "GtdProjects", { fg = "#cba6f7" })
   hl(0, "GtdAreas", { fg = "#89dceb" })
-  hl(0, "GtdCalendar", { fg = "#f9e2af" })
+  hl(0, "GtdCalendar", { fg = "#9399b2" })       -- Muted gray-blue (was bright yellow)
+  hl(0, "GtdCalendarEvent", { fg = "#9399b2" })  -- Same muted color for events
   hl(0, "GtdRecurring", { fg = "#94e2d5" })
   hl(0, "GtdArchive", { fg = "#585b70" })
   hl(0, "GtdReference", { fg = "#74c7ec" })
