@@ -103,8 +103,8 @@ local function setup_review_highlights()
   hl(0, "GtdMetricStuck", { fg = colors.red, bold = true })
   
   -- Calendar events (muted, not distracting)
-  hl(0, "GtdCalendarEvent", { fg = colors.overlay2 })  -- Soft gray-blue
-  hl(0, "GtdCalendarTime", { fg = colors.subtext0 })   -- Even more muted for times
+  hl(0, "GtdCalendarEvent", { fg = colors.overlay1 })  -- Muted gray
+  hl(0, "GtdCalendarTime", { fg = colors.overlay0 })   -- Even more muted for times
   
   -- Shortcuts
   hl(0, "GtdShortcutKey", { fg = colors.mauve, bold = true })
@@ -1619,6 +1619,9 @@ local function render_right(content)
   local ns = vim.api.nvim_create_namespace("gtd_review_right")
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
   
+  -- Get calendar glyph for matching
+  local cal_glyph = gc.calendar or "󰃭"
+  
   for i, line in ipairs(lines) do
     local row = i - 1
     -- Title (# header)
@@ -1627,6 +1630,9 @@ local function render_right(content)
     -- Section header (##)
     elseif line:match("^%s+## ") then
       vim.api.nvim_buf_add_highlight(buf, ns, "GtdReviewSubtitle", row, 0, -1)
+    -- Calendar events (check FIRST - match calendar glyph)
+    elseif line:find(cal_glyph, 1, true) then
+      vim.api.nvim_buf_add_highlight(buf, ns, "GtdCalendarEvent", row, 0, -1)
     -- NEXT tasks
     elseif line:match(gs.NEXT or "󱥦") then
       vim.api.nvim_buf_add_highlight(buf, ns, "GtdMetricNext", row, 0, -1)
@@ -1639,9 +1645,6 @@ local function render_right(content)
     -- Stuck/blocked
     elseif line:match(gp.blocked or "") then
       vim.api.nvim_buf_add_highlight(buf, ns, "GtdMetricStuck", row, 0, -1)
-    -- Calendar events
-    elseif line:match(gc.calendar or "") then
-      vim.api.nvim_buf_add_highlight(buf, ns, "GtdCalendarEvent", row, 0, -1)
     -- Bullet points
     elseif line:match("^%s+" .. (gu.bullet or "")) then
       vim.api.nvim_buf_add_highlight(buf, ns, "GtdContentBullet", row, 0, 4)
@@ -1870,6 +1873,7 @@ function M.rebuild_cockpit()
   local left_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_option(left_buf, "buftype", "nofile")
   vim.api.nvim_buf_set_option(left_buf, "bufhidden", "wipe")
+  vim.api.nvim_buf_set_option(left_buf, "syntax", "")  -- Disable syntax highlighting
   vim.api.nvim_buf_set_name(left_buf, "GTD-Review-Steps")
   vim.api.nvim_set_current_buf(left_buf)
   vim.wo.number = false
@@ -1881,6 +1885,7 @@ function M.rebuild_cockpit()
   local right_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_option(right_buf, "buftype", "nofile")
   vim.api.nvim_buf_set_option(right_buf, "bufhidden", "wipe")
+  vim.api.nvim_buf_set_option(right_buf, "syntax", "")  -- Disable syntax highlighting
   vim.api.nvim_buf_set_name(right_buf, "GTD-Review-Content")
   vim.api.nvim_set_current_buf(right_buf)
   vim.wo.number = false
@@ -2175,6 +2180,7 @@ function M.resume()
     local left_buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_buf_set_option(left_buf, "buftype", "nofile")
     vim.api.nvim_buf_set_option(left_buf, "bufhidden", "wipe")
+    vim.api.nvim_buf_set_option(left_buf, "syntax", "")  -- Disable syntax highlighting
     vim.api.nvim_buf_set_name(left_buf, "GTD-Review-Steps")
     vim.api.nvim_set_current_buf(left_buf)
     vim.wo.number = false
@@ -2187,6 +2193,7 @@ function M.resume()
     local right_buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_buf_set_option(right_buf, "buftype", "nofile")
     vim.api.nvim_buf_set_option(right_buf, "bufhidden", "wipe")
+    vim.api.nvim_buf_set_option(right_buf, "syntax", "")  -- Disable syntax highlighting
     vim.api.nvim_buf_set_name(right_buf, "GTD-Review-Content")
     vim.api.nvim_set_current_buf(right_buf)
     vim.wo.number = false
@@ -2530,6 +2537,7 @@ function M.start(opts)
   local left_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_option(left_buf, "buftype", "nofile")
   vim.api.nvim_buf_set_option(left_buf, "bufhidden", "wipe")
+  vim.api.nvim_buf_set_option(left_buf, "syntax", "")  -- Disable syntax highlighting
   vim.api.nvim_buf_set_name(left_buf, "GTD-Review-Steps")
   vim.api.nvim_set_current_buf(left_buf)
   vim.wo.number = false
@@ -2543,6 +2551,7 @@ function M.start(opts)
   local right_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_option(right_buf, "buftype", "nofile")
   vim.api.nvim_buf_set_option(right_buf, "bufhidden", "wipe")
+  vim.api.nvim_buf_set_option(right_buf, "syntax", "")  -- Disable syntax highlighting
   vim.api.nvim_buf_set_name(right_buf, "GTD-Review-Content")
   vim.api.nvim_set_current_buf(right_buf)
   vim.wo.number = false

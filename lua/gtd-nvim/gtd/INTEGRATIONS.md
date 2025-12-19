@@ -8,7 +8,7 @@ Complete guide for Apple Reminders and Calendar integration with your GTD system
 
 **First Time Setup:**
 1. Open **System Settings** → **Privacy & Security** → **Automation**
-2. Find your terminal app (iTerm, Terminal, Alacritty, etc.)
+2. Find your terminal app (,Ghostty, Alacritty, Terminal.app etc.)
 3. Enable both:
    - ✅ **Reminders**
    - ✅ **Calendar**
