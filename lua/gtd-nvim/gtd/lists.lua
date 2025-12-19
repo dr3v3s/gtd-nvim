@@ -1359,16 +1359,21 @@ function M.agenda(date)
       return
     end
     
-    -- Helper to find item by stripping ANSI and matching
+    -- Helper to strip ANSI escape codes
+    local function strip_ansi(s)
+      if not s then return "" end
+      -- Strip all ANSI escape sequences (colors, formatting, etc.)
+      return s:gsub("\27%[[%d;]*m", ""):gsub("\27%[[%d;]*[A-Za-z]", "")
+    end
+    
+    -- Helper to find item by matching display lines
     local function find_item_index(selected)
+      if not selected then return nil end
       -- fzf returns selection with ANSI codes, try direct match first
       for i, line in ipairs(display) do
         if line == selected then return i end
       end
       -- Strip ANSI codes and try again
-      local strip_ansi = function(s)
-        return s:gsub("\27%[[%d;]*m", "")
-      end
       local stripped_sel = strip_ansi(selected)
       for i, line in ipairs(display) do
         if strip_ansi(line) == stripped_sel then return i end
@@ -1395,9 +1400,17 @@ function M.agenda(date)
           ["default"] = function(sel)
             if not sel or not sel[1] then return end
             local idx = find_item_index(sel[1])
-            if not idx then return end
+            if not idx then
+              vim.notify("Could not find selected item", vim.log.levels.WARN)
+              return
+            end
             
             local item = meta[idx]
+            if not item then
+              vim.notify("No meta item at index " .. idx, vim.log.levels.WARN)
+              return
+            end
+            
             if item.type == "task" and item.data and item.data.raw then
               local t = item.data.raw
               local filepath = t.file or t.path
@@ -1405,8 +1418,11 @@ function M.agenda(date)
               if filepath then
                 vim.cmd("edit " .. vim.fn.fnameescape(filepath))
                 if linenum then
-                  vim.api.nvim_win_set_cursor(0, { linenum, 0 })
+                  pcall(vim.api.nvim_win_set_cursor, 0, { linenum, 0 })
+                  vim.cmd("normal! zz")  -- Center on screen
                 end
+              else
+                vim.notify("Task has no file path", vim.log.levels.WARN)
               end
             elseif item.type == "event" and item.data and item.data.raw then
               local e = item.data.raw
@@ -1423,9 +1439,17 @@ function M.agenda(date)
           ["ctrl-e"] = function(sel)
             if not sel or not sel[1] then return end
             local idx = find_item_index(sel[1])
-            if not idx then return end
+            if not idx then
+              vim.notify("Could not find selected item for edit", vim.log.levels.WARN)
+              return
+            end
             
             local item = meta[idx]
+            if not item then
+              vim.notify("No meta item at index " .. idx, vim.log.levels.WARN)
+              return
+            end
+            
             if item.type == "task" and item.data and item.data.raw then
               local t = item.data.raw
               local filepath = t.file or t.path
@@ -1433,7 +1457,8 @@ function M.agenda(date)
               if filepath then
                 vim.cmd("edit " .. vim.fn.fnameescape(filepath))
                 if linenum then
-                  vim.api.nvim_win_set_cursor(0, { linenum, 0 })
+                  pcall(vim.api.nvim_win_set_cursor, 0, { linenum, 0 })
+                  vim.cmd("normal! zz")  -- Center on screen
                 end
                 -- Set up return to agenda
                 local bufnr = vim.api.nvim_get_current_buf()
