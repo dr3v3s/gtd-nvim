@@ -5,20 +5,18 @@
 -- Features: ZK integration, quiet mode, WAITING FOR, Areas tagging, Recurring
 --
 -- @module gtd-nvim.gtd.capture
--- @version 0.9.0
--- @requires shared (>= 1.0.0)
--- @todo Update to use shared.colorize() for fzf displays
--- @todo Add --ansi to all fzf configs
+-- @version 1.0.0
+-- @requires shared (>= 1.1.0)
 -- ============================================================================
 
 local M = {}
 
-M._VERSION = "0.9.0"
-M._UPDATED = "2024-12-08"
+M._VERSION = "1.0.0"
+M._UPDATED = "2024-12-19"
 
--- Load shared utilities with glyph system
+-- Load shared utilities (single source of truth)
 local shared = require("gtd.shared")
-local g = shared.glyphs  -- Glyph shortcuts
+local g = shared.glyphs
 
 -- ------------------------------------------------------------
 -- Config
@@ -57,42 +55,8 @@ M.cfg = {
 }
 
 -- ------------------------------------------------------------
--- Helpers
+-- Helpers (Focus mode integration)
 -- ------------------------------------------------------------
-
-local function xp(p) return vim.fn.expand(p) end
-
-local function ensure_dir(p)
-  local expanded = xp(p)
-  vim.fn.mkdir(expanded, "p")
-  return expanded
-end
-
-local function file_exists(p)
-  return vim.fn.filereadable(xp(p)) == 1
-end
-
-local function readfile(p)
-  if not file_exists(p) then return {} end
-  return vim.fn.readfile(xp(p))
-end
-
-local function writefile(p, lines)
-  local expanded = xp(p)
-  ensure_dir(vim.fn.fnamemodify(expanded, ":h"))
-  return vim.fn.writefile(lines, expanded) == 0
-end
-
-local function append_lines(p, lines)
-  local expanded = xp(p)
-  ensure_dir(vim.fn.fnamemodify(expanded, ":h"))
-  -- Ensure file exists
-  if not file_exists(expanded) then
-    writefile(expanded, { "" })
-  end
-  vim.fn.writefile({ "" }, expanded, "a")
-  return vim.fn.writefile(lines, expanded, "a") == 0
-end
 
 -- Focus-mode integration (Sketchybar HUD)
 local focus_mode = (function()
@@ -257,7 +221,7 @@ end
 
 local function glob_orgs(dir)
   local list = {}
-  local pattern = xp(dir) .. "/*.org"
+  local pattern = shared.xp(dir) .. "/*.org"
   local files = vim.fn.glob(pattern, false, true)
   for _, f in ipairs(files) do
     table.insert(list, f)
@@ -311,7 +275,7 @@ end
 -- ------------------------------------------------------------
 local function get_all_projects()
   local projects = {}
-  local gtd_root = xp(M.cfg.gtd_dir)
+  local gtd_root = shared.xp(M.cfg.gtd_dir)
   
   -- 1) Standalone Projects (Projects/*.org)
   local projects_dir = gtd_root .. "/Projects"
@@ -788,13 +752,13 @@ local function list_destinations(selected_area)
   local items = {}
 
   -- Always offer "Stay in Inbox"
-  table.insert(items, { display = "Stay in Inbox", path = xp(M.cfg.inbox_file) })
+  table.insert(items, { display = "Stay in Inbox", path = shared.xp(M.cfg.inbox_file) })
 
   local areas = get_areas()
 
   -- If an Area is selected: only offer that Area's files (excluding any Inbox.org)
   if selected_area and selected_area.dir then
-    local area_dir = xp(selected_area.dir)
+    local area_dir = shared.xp(selected_area.dir)
 
     -- Recursively collect all .org files under this area
     local files = scan_orgs_recursive(area_dir)
@@ -818,8 +782,8 @@ local function list_destinations(selected_area)
 
   -- Add main GTD files (top-level .org under gtd_dir, excluding Inbox)
   for _, f in ipairs(glob_orgs(M.cfg.gtd_dir)) do
-    local expanded = xp(f)
-    if expanded ~= xp(M.cfg.inbox_file) then
+    local expanded = shared.xp(f)
+    if expanded ~= shared.xp(M.cfg.inbox_file) then
       table.insert(items, {
         display = vim.fn.fnamemodify(f, ":t"),
         path = f,
@@ -840,7 +804,7 @@ local function list_destinations(selected_area)
   if areas and not vim.tbl_isempty(areas) then
     for _, a in ipairs(areas) do
       if a.dir then
-        local area_dir = xp(a.dir)
+        local area_dir = shared.xp(a.dir)
         local files = scan_orgs_recursive(area_dir)
 
         local area_label = a.name or vim.fn.fnamemodify(area_dir, ":t")
@@ -907,12 +871,12 @@ end
 local function refile_captured_id(id, dest_path)
   if not id or not dest_path then return false end
 
-  dest_path = xp(dest_path)
-  local inbox_path = xp(M.cfg.inbox_file)
+  dest_path = shared.xp(dest_path)
+  local inbox_path = shared.xp(M.cfg.inbox_file)
 
   if dest_path == inbox_path then return true end
 
-  local lines = readfile(inbox_path)
+  local lines = shared.read_file(inbox_path)
   if #lines == 0 then return false end
 
   for i = 1, #lines do
@@ -934,8 +898,8 @@ local function refile_captured_id(id, dest_path)
               for k = e + 1, #lines do
                 table.insert(new, lines[k])
               end
-              writefile(inbox_path, new)
-              append_lines(dest_path, chunk)
+              shared.write_file(inbox_path, new)
+              shared.append_file(dest_path, chunk)
               return true
             end
           end
@@ -1104,8 +1068,8 @@ function M.capture_quick()
                 end
 
                 -- Ensure directories exist
-                ensure_dir(M.cfg.gtd_dir)
-                ensure_dir(M.cfg.projects_dir)
+                shared.ensure_dir(M.cfg.gtd_dir)
+                shared.ensure_dir(M.cfg.projects_dir)
 
                 -- Choose destination based on: destination type + recurring
                 local final_target = target_file  -- from outer scope (project path or inbox)
@@ -1120,14 +1084,14 @@ function M.capture_quick()
                 
                 -- Ensure recurring file exists
                 if is_recurring then
-                  local recurring_path = xp(M.cfg.recurring_file)
-                  if not file_exists(recurring_path) then
-                    writefile(recurring_path, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
+                  local recurring_path = shared.xp(M.cfg.recurring_file)
+                  if not shared.file_exists(recurring_path) then
+                    shared.write_file(recurring_path, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
                   end
                 end
 
                 -- Write to target file
-                if append_lines(final_target, lines) then
+                if shared.append_file(final_target, lines) then
                   -- Build success message
                   local dest_text = ""
                   if destination.type == "project" and not is_recurring then
@@ -1392,13 +1356,13 @@ function M.capture_recurring()
           table.insert(lines, ":END:")
           
           -- Ensure Recurring.org exists
-          local recurring_path = xp(M.cfg.recurring_file)
-          if not file_exists(recurring_path) then
-            writefile(recurring_path, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
+          local recurring_path = shared.xp(M.cfg.recurring_file)
+          if not shared.file_exists(recurring_path) then
+            shared.write_file(recurring_path, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
           end
           
           -- Append to Recurring.org
-          if append_lines(M.cfg.recurring_file, lines) then
+          if shared.append_file(M.cfg.recurring_file, lines) then
             local area_text = selected_area and (" [" .. selected_area.name .. "]") or ""
             local freq_text = recur_data.frequency
             if recur_data.preferred_day then
@@ -1444,12 +1408,12 @@ function M.capture_instant()
     }
     
     -- Ensure inbox exists
-    ensure_dir(vim.fn.fnamemodify(xp(M.cfg.inbox_file), ":h"))
-    if not file_exists(M.cfg.inbox_file) then
-      writefile(M.cfg.inbox_file, { "#+TITLE: Inbox", "" })
+    shared.ensure_dir(vim.fn.fnamemodify(shared.xp(M.cfg.inbox_file), ":h"))
+    if not shared.file_exists(M.cfg.inbox_file) then
+      shared.write_file(M.cfg.inbox_file, { "#+TITLE: Inbox", "" })
     end
     
-    if append_lines(M.cfg.inbox_file, lines) then
+    if shared.append_file(M.cfg.inbox_file, lines) then
       success_notify(g.container.inbox .. " " .. title, vim.log.levels.INFO)
       refresh_external_displays()
     else
@@ -1520,12 +1484,12 @@ function M.capture_clipboard()
     end
     
     -- Ensure inbox exists
-    ensure_dir(vim.fn.fnamemodify(xp(M.cfg.inbox_file), ":h"))
-    if not file_exists(M.cfg.inbox_file) then
-      writefile(M.cfg.inbox_file, { "#+TITLE: Inbox", "" })
+    shared.ensure_dir(vim.fn.fnamemodify(shared.xp(M.cfg.inbox_file), ":h"))
+    if not shared.file_exists(M.cfg.inbox_file) then
+      shared.write_file(M.cfg.inbox_file, { "#+TITLE: Inbox", "" })
     end
     
-    if append_lines(M.cfg.inbox_file, lines) then
+    if shared.append_file(M.cfg.inbox_file, lines) then
       success_notify(g.container.inbox .. " " .. final_title, vim.log.levels.INFO)
       refresh_external_displays()
     else
@@ -1538,13 +1502,13 @@ end
 -- Utilities
 -- ------------------------------------------------------------
 function M.open_inbox()
-  vim.cmd("edit " .. xp(M.cfg.inbox_file))
+  vim.cmd("edit " .. shared.xp(M.cfg.inbox_file))
 end
 
 function M.open_recurring()
-  local recurring_path = xp(M.cfg.recurring_file)
-  if not file_exists(recurring_path) then
-    writefile(recurring_path, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
+  local recurring_path = shared.xp(M.cfg.recurring_file)
+  if not shared.file_exists(recurring_path) then
+    shared.write_file(recurring_path, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
   end
   vim.cmd("edit " .. recurring_path)
 end
@@ -1557,9 +1521,9 @@ function M.find_files()
 
   local fzf = safe_require("fzf-lua")
   if fzf then
-    fzf.files({ cwd = xp(M.cfg.gtd_dir), prompt = shared.colorize(g.file.folder_open, "project") .. " GTD> " })
+    fzf.files({ cwd = shared.xp(M.cfg.gtd_dir), prompt = shared.colorize(g.file.folder_open, "project") .. " GTD> " })
   else
-    silent_cmd("edit " .. xp(M.cfg.gtd_dir))
+    silent_cmd("edit " .. shared.xp(M.cfg.gtd_dir))
   end
 end
 
@@ -1571,7 +1535,7 @@ function M.search()
 
   local fzf = safe_require("fzf-lua")
   if fzf then
-    fzf.live_grep({ cwd = xp(M.cfg.gtd_dir), prompt = shared.colorize(g.ui.search, "info") .. " GTD> " })
+    fzf.live_grep({ cwd = shared.xp(M.cfg.gtd_dir), prompt = shared.colorize(g.ui.search, "info") .. " GTD> " })
   else
     quiet_notify("fzf-lua not available for search", vim.log.levels.WARN)
   end
@@ -1605,7 +1569,7 @@ function M.list_waiting_items()
   local waiting_items = {}
 
   for _, file in ipairs(files) do
-    local lines = readfile(file)
+    local lines = shared.read_file(file)
     local current_item = nil
 
     for i, line in ipairs(lines) do
@@ -1693,18 +1657,18 @@ function M.setup(opts)
   end
 
   -- Ensure directories exist
-  ensure_dir(M.cfg.gtd_dir)
-  ensure_dir(M.cfg.projects_dir)
-  ensure_dir(vim.fn.fnamemodify(xp(M.cfg.inbox_file), ":h"))
+  shared.ensure_dir(M.cfg.gtd_dir)
+  shared.ensure_dir(M.cfg.projects_dir)
+  shared.ensure_dir(vim.fn.fnamemodify(shared.xp(M.cfg.inbox_file), ":h"))
 
   -- Ensure inbox file exists
-  if not file_exists(M.cfg.inbox_file) then
-    writefile(M.cfg.inbox_file, { "#+TITLE: Inbox", "" })
+  if not shared.file_exists(M.cfg.inbox_file) then
+    shared.write_file(M.cfg.inbox_file, { "#+TITLE: Inbox", "" })
   end
   
   -- Ensure recurring file exists
-  if not file_exists(M.cfg.recurring_file) then
-    writefile(M.cfg.recurring_file, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
+  if not shared.file_exists(M.cfg.recurring_file) then
+    shared.write_file(M.cfg.recurring_file, { "#+TITLE: Recurring Tasks", "#+FILETAGS: :recurring:", "" })
   end
 
   -- Optionally set vim to be quieter during operations
