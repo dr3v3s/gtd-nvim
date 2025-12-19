@@ -485,9 +485,9 @@ function M.setup_commands()
 end
 
 --- Setup keymaps (optional, call separately)
----@param prefix string|nil Keymap prefix (default: <leader>C)
+---@param prefix string|nil Keymap prefix (default: <leader>x)
 function M.setup_keymaps(prefix)
-  prefix = prefix or "<leader>C"
+  prefix = prefix or "<leader>x"
   local map = vim.keymap.set
   local opts = { silent = true }
   

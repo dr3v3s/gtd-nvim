@@ -644,7 +644,7 @@ function M.setup(user_cfg)
   -- Setup Chronos daemon integration (GTD orchestration engine)
   pcall(function()
     if chronos and chronos.setup then
-      chronos.setup { keymaps = "<leader>C" }
+      chronos.setup { keymaps = "<leader>x" }
     end
   end)
 
