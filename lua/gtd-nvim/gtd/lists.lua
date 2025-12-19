@@ -1162,13 +1162,26 @@ function M.agenda(date)
             if not idx then return end
             
             local item = meta[idx]
-            if item.type == "task" and item.data and item.data.path then
-              vim.cmd("edit " .. vim.fn.fnameescape(item.data.path))
-              if item.data.lnum then
-                vim.api.nvim_win_set_cursor(0, { item.data.lnum, 0 })
+            if item.type == "task" and item.data then
+              -- Kairos uses 'file' and 'line', not 'path' and 'lnum'
+              local filepath = item.data.file or item.data.path
+              local linenum = item.data.line or item.data.lnum
+              if filepath then
+                vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+                if linenum then
+                  vim.api.nvim_win_set_cursor(0, { linenum, 0 })
+                end
               end
-            else
-              vim.notify("Calendar event: " .. item.title, vim.log.levels.INFO)
+            elseif item.type == "event" then
+              -- Show event details for calendar items
+              local details = item.title
+              if item.location and item.location ~= "" then
+                details = details .. "\nLocation: " .. item.location
+              end
+              if item.calendar then
+                details = details .. "\nCalendar: " .. item.calendar
+              end
+              vim.notify(details, vim.log.levels.INFO)
             end
           end,
           ["ctrl-b"] = function(_)

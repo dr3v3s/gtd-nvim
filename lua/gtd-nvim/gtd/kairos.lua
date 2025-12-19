@@ -702,9 +702,21 @@ function M.build_agenda_async(date, callback)
     if pending == 0 then
       -- Ensure tables (may be nil/userdata from JSON)
       local events = type(agenda.events) == "table" and agenda.events or {}
-      local tasks = type(agenda.tasks) == "table" and agenda.tasks or {}
+      local all_tasks = type(agenda.tasks) == "table" and agenda.tasks or {}
       
-      -- Merge and sort
+      -- Filter tasks: only those scheduled for this specific date
+      local tasks = {}
+      for _, t in ipairs(all_tasks) do
+        if t.scheduled then
+          -- Extract date portion (YYYY-MM-DD) from scheduled timestamp
+          local task_date = t.scheduled:match("^(%d%d%d%d%-%d%d%-%d%d)")
+          if task_date == date then
+            table.insert(tasks, t)
+          end
+        end
+      end
+      
+      -- Merge calendar events
       for _, e in ipairs(events) do
         table.insert(agenda.merged, {
           type = "event",
@@ -717,10 +729,11 @@ function M.build_agenda_async(date, callback)
         })
       end
       
+      -- Merge scheduled tasks
       for _, t in ipairs(tasks) do
         local time = "00:00"
         if t.scheduled then
-          time = t.scheduled:match("(%d%d:%d%d)") or "00:00"
+          time = t.scheduled:match("T(%d%d:%d%d)") or "00:00"
         end
         table.insert(agenda.merged, {
           type = "task",
@@ -748,8 +761,8 @@ function M.build_agenda_async(date, callback)
     check_done()
   end)
   
-  -- Fetch scheduled GTD tasks for today
-  M.query_async("gtd", "tasks", { scheduled = date }, function(tasks, err)
+  -- Fetch all GTD tasks (will be filtered client-side)
+  M.query_async("gtd", "tasks", {}, function(tasks, err)
     if tasks then
       agenda.tasks = tasks
     end
