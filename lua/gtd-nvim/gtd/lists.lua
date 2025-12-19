@@ -1087,12 +1087,15 @@ function M.agenda(date)
   -- Force refresh GTD data to ensure we have latest changes
   if has_kairos then
     kairos.refresh("gtd")
+    -- Small delay to let refresh complete
+    vim.wait(50, function() return false end)
   end
   
   -- Collect all data asynchronously
   local pending = has_kairos and 2 or 1  -- calendar (if available) + tasks
   local calendar_events = {}
   local all_tasks = {}
+  local data_received = false  -- Track if we got any data
   
   local function build_agenda()
     pending = pending - 1
@@ -1384,8 +1387,13 @@ function M.agenda(date)
     -- ═══════════════════════════════════════════════════════════════
     
     if #display == 0 then
-      vim.notify("No agenda items for " .. date .. " - enjoy your free day!", vim.log.levels.INFO)
-      return  -- Don't fallback to menu, just return
+      -- Debug: show what we got
+      local debug_msg = string.format(
+        "Agenda empty. Tasks received: %d, Kairos: %s, Next: %d, Someday: %d, Overdue: %d",
+        #all_tasks, tostring(has_kairos), #next_actions, #someday, #overdue
+      )
+      vim.notify(debug_msg, vim.log.levels.WARN)
+      return
     end
     
     -- Show in fzf
@@ -1537,8 +1545,24 @@ function M.agenda(date)
     
     -- Fetch all GTD tasks via kairos
     kairos.query_async("gtd", "tasks", {}, function(tasks, err)
-      if tasks and type(tasks) == "table" then
+      if tasks and type(tasks) == "table" and #tasks > 0 then
         all_tasks = tasks
+        data_received = true
+      else
+        -- Kairos returned empty, try fallback
+        local items = shared.scan_gtd_files_robust({ root = vim.fn.expand("~/Documents/GTD") })
+        for _, item in ipairs(items) do
+          table.insert(all_tasks, {
+            state = item.state,
+            title = item.title,
+            file = item.path,
+            line = item.lnum,
+            project = item.filename:gsub("%.org$", ""),
+            scheduled = nil,
+            deadline = nil,
+          })
+        end
+        if #all_tasks > 0 then data_received = true end
       end
       build_agenda()
     end)
@@ -1553,10 +1577,11 @@ function M.agenda(date)
           file = item.path,
           line = item.lnum,
           project = item.filename:gsub("%.org$", ""),
-          scheduled = nil,  -- Would need to parse from file
+          scheduled = nil,
           deadline = nil,
         })
       end
+      if #all_tasks > 0 then data_received = true end
       build_agenda()
     end)
   end
