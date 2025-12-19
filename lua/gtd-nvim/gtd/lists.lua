@@ -1115,18 +1115,27 @@ function M.agenda(date)
         return true
       end
       -- Skip items from Archive files/projects
-      if t.project and (t.project:lower() == "archive" or t.project:lower():match("^archive")) then
+      if t.project and t.project:lower() == "archive" then
         return true
       end
-      if t.file and t.file:lower():match("archive") then
-        return true
+      -- Skip files in Archive or ArchiveDeleted directories
+      if t.file then
+        local file_lower = t.file:lower()
+        if file_lower:match("/archive/") or file_lower:match("/archivedeleted/") or file_lower:match("/archive%.org$") then
+          return true
+        end
       end
       return false
     end
     
+    -- Debug: count tasks
+    local debug_total = #all_tasks
+    local debug_excluded = 0
+    
     for _, t in ipairs(all_tasks) do
       -- Skip excluded tasks
       if is_excluded(t) then
+        debug_excluded = debug_excluded + 1
         goto continue_task
       end
       
@@ -1179,6 +1188,14 @@ function M.agenda(date)
       end
     end
     stuck_projects = really_stuck
+    
+    -- Debug info
+    local debug_counts = string.format(
+      "Tasks: %d total, %d excluded, sched=%d, due=%d, overdue=%d, next=%d, someday=%d",
+      debug_total, debug_excluded,
+      #scheduled_today, #due_today, #overdue, #next_actions, #someday
+    )
+    vim.notify(debug_counts, vim.log.levels.INFO)
     
     -- Build display with Catppuccin Mocha colors (ANSI)
     local display = {}
