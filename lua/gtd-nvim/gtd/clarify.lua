@@ -393,22 +393,62 @@ local function ensure_zk_link(lines, h_start, h_end, id)
   end
 end
 
-local function promote_line_to_heading(lines, lnum, status_kw)
+-- Determine appropriate heading level based on context
+-- If we're inside a PROJECT file or under a PROJECT heading, use level 2 (**)
+-- Otherwise use level 1 (*)
+local function determine_heading_level(lines, lnum, filepath)
+  -- Check if file is in Projects or Areas directory
+  local is_project_file = false
+  if filepath then
+    local lower_path = filepath:lower()
+    is_project_file = lower_path:match("/projects/") or lower_path:match("/areas/")
+  end
+  
+  -- Look backwards for a PROJECT heading at level 1
+  local has_parent_project = false
+  for i = lnum, 1, -1 do
+    local ln = lines[i] or ""
+    local level = shared.heading_level(ln)
+    if level then
+      -- Found a heading - check if it's a level 1 PROJECT
+      if level == 1 then
+        if ln:match("^%*%s+PROJECT%s") then
+          has_parent_project = true
+        end
+        break  -- Stop at first level-1 heading
+      end
+    end
+  end
+  
+  -- If we're in a project file AND there's a PROJECT heading above us, use level 2
+  if is_project_file and has_parent_project then
+    return 2, "**"
+  end
+  
+  -- Default to level 1
+  return 1, "*"
+end
+
+local function promote_line_to_heading(lines, lnum, status_kw, filepath)
   local status = status_kw or "TODO"
   local line = lines[lnum] or ""
+  
+  -- Determine appropriate heading level
+  local level, stars = determine_heading_level(lines, lnum, filepath)
+  
   if line:match("^%s*$") then
     local title = nil
     vim.ui.input({ prompt = g.phase.capture .. " Task title: " }, function(input) title = input end)
     title = title and title:gsub("^%s+",""):gsub("%s+$","") or ""
     if title == "" then title = "New Task" end
-    lines[lnum] = ("* %s %s"):format(status, title)
+    lines[lnum] = ("%s %s %s"):format(stars, status, title)
   else
-    lines[lnum] = ("* %s %s"):format(status, line:gsub("^%s+",""))
+    lines[lnum] = ("%s %s %s"):format(stars, status, line:gsub("^%s+",""))
   end
   if (lines[lnum + 1] or "") ~= "" then
     table.insert(lines, lnum + 1, "")
   end
-  return lnum, lnum, 1
+  return lnum, lnum, level
 end
 
 local function set_dates(lines, h_start, h_end, scheduled, deadline)
@@ -765,11 +805,12 @@ function M.fast(opts)
   local buf = vim.api.nvim_get_current_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   local lines = buf_lines(buf)
+  local filepath = vim.api.nvim_buf_get_name(buf)
 
   local h_start, h_end, lvl = find_heading(lines, lnum)
   if not h_start then
     if opts.promote_if_needed then
-      h_start, h_end, lvl = promote_line_to_heading(lines, lnum, opts.status or "TODO")
+      h_start, h_end, lvl = promote_line_to_heading(lines, lnum, opts.status or "TODO", filepath)
     else
       shared.notify("Clarify: no org heading at/above cursor (won't promote).", "WARN")
       return
@@ -810,10 +851,11 @@ function M.clarify(opts)
   local buf = vim.api.nvim_get_current_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   local lines = buf_lines(buf)
+  local filepath = vim.api.nvim_buf_get_name(buf)
 
   local h_start, h_end, lvl = find_heading(lines, lnum)
   if not h_start then
-    h_start, h_end, lvl = promote_line_to_heading(lines, lnum, "TODO")
+    h_start, h_end, lvl = promote_line_to_heading(lines, lnum, "TODO", filepath)
   end
 
   local p_start, p_end = ensure_props(lines, h_start)
