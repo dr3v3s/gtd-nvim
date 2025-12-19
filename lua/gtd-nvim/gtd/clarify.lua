@@ -1104,7 +1104,9 @@ function M.convert_from_waiting_at_cursor()
   end)
 end
 
--- ---------- FIXED clarify picker (no DONE, no notes) ----------
+-- ---------- SMART clarify picker ----------
+-- If cursor is on an org heading → clarify it directly
+-- If cursor is NOT on a heading → open picker with all tasks
 
 function M.clarify_pick_any(opts)
   opts = opts or {}
@@ -1114,6 +1116,16 @@ function M.clarify_pick_any(opts)
     focus_mode.set("gtd")
   end
 
+  -- SMART: Check if cursor is already on an org heading
+  local current_line = vim.api.nvim_get_current_line()
+  if current_line:match("^%*+%s") then
+    -- Cursor is on a heading - clarify it directly!
+    shared.notify("Clarifying task at cursor...", "INFO")
+    M.clarify(opts)
+    return
+  end
+
+  -- Not on a heading - show picker
   if not shared.have_fzf() then
     shared.notify("fzf-lua required for clarify_pick_any()", "WARN")
     return
