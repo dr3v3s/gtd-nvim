@@ -80,6 +80,53 @@ local function get_property(lines, start_idx, end_idx, key)
   return nil
 end
 
+-- Check if a file is a project file (has * PROJECT heading at level 1)
+local function is_project_file(filepath)
+  local lines = readfile(filepath)
+  if #lines == 0 then return false end
+  for i = 1, math.min(10, #lines) do
+    if lines[i]:match("^%* PROJECT%s") then
+      return true
+    end
+  end
+  return false
+end
+
+-- Check if source buffer is a project file
+local function is_buffer_project_file(bufnr)
+  local filepath = vim.api.nvim_buf_get_name(bufnr or 0)
+  if not filepath or filepath == "" then return false end
+  return is_project_file(filepath)
+end
+
+-- Adjust heading levels based on source and destination file types
+-- Rules:
+--   Non-project → Project:      * → **  (add star)
+--   Project → Non-project:      ** → *  (remove star)
+--   Project → Project:          ** → ** (keep)
+--   Non-project → Non-project:  * → *   (keep)
+local function adjust_heading_levels_smart(subtree, source_is_project, dest_is_project)
+  local adjusted = {}
+  for _, line in ipairs(subtree) do
+    if line:match("^%*+%s") then
+      if not source_is_project and dest_is_project then
+        -- Moving TO project: add one star (* → **)
+        table.insert(adjusted, "*" .. line)
+      elseif source_is_project and not dest_is_project then
+        -- Moving FROM project to non-project: remove one star (** → *)
+        local new_line = line:gsub("^%*%*", "*")
+        table.insert(adjusted, new_line)
+      else
+        -- Same type: keep as is
+        table.insert(adjusted, line)
+      end
+    else
+      table.insert(adjusted, line)
+    end
+  end
+  return adjusted
+end
+
 -- ============================================================================
 -- DESTINATION SCANNING
 -- ============================================================================
@@ -192,18 +239,10 @@ function M.refile_by_id(source_path, task_id, dest_path)
     table.insert(subtree, source_lines[i])
   end
 
-  -- Adjust heading level to 1 (top-level in destination)
-  local orig_level = heading_level(subtree[1]) or 1
-  if orig_level > 1 then
-    local diff = orig_level - 1
-    for i, line in ipairs(subtree) do
-      local stars = line:match("^(%*+)")
-      if stars then
-        local new_stars = string.rep("*", math.max(1, #stars - diff))
-        subtree[i] = new_stars .. line:sub(#stars + 1)
-      end
-    end
-  end
+  -- Smart heading level adjustment based on source and destination types
+  local source_is_project = is_project_file(source_path)
+  local dest_is_project = is_project_file(dest_path)
+  subtree = adjust_heading_levels_smart(subtree, source_is_project, dest_is_project)
 
   -- Read destination and append
   local dest_lines = readfile(dest_path)
@@ -298,10 +337,10 @@ function M.to_project_at_cursor(config)
 
   -- Show picker
   fzf.fzf_exec(display, {
-    prompt = "Refile to> ",
+    prompt = "Move to> ",
     fzf_opts = {
       ["--no-info"] = true,
-      ["--header"] = "Enter: Refile │ Ctrl-B: Cancel",
+      ["--header"] = "Enter: Move │ Ctrl-B: Cancel",
     },
     winopts = { height = 0.50, width = 0.60, row = 0.15 },
     actions = {
@@ -310,14 +349,24 @@ function M.to_project_at_cursor(config)
         if not choice or not dest_map[choice] then return end
 
         local dest = dest_map[choice]
+        local source_is_project = is_project_file(path)
+        local dest_is_project = is_project_file(dest.path)
+        
         local ok, msg = M.refile_by_id(path, tid, dest.path)
 
         if ok then
-          vim.notify("Refiled to: " .. dest.display, vim.log.levels.INFO)
+          -- Build level info message
+          local level_msg = ""
+          if not source_is_project and dest_is_project then
+            level_msg = " (* → **)"
+          elseif source_is_project and not dest_is_project then
+            level_msg = " (** → *)"
+          end
+          vim.notify("Moved to: " .. dest.display .. level_msg, vim.log.levels.INFO)
           -- Reload buffer
           vim.cmd("edit!")
         else
-          vim.notify("Refile failed: " .. msg, vim.log.levels.ERROR)
+          vim.notify("Move failed: " .. msg, vim.log.levels.ERROR)
         end
       end,
     },
@@ -366,17 +415,10 @@ function M.refile_subtree_at_cursor(dest_path)
     table.insert(subtree, lines[i])
   end
 
-  -- Adjust heading level
-  local orig_level = heading_level(subtree[1]) or 1
-  if orig_level > 1 then
-    local diff = orig_level - 1
-    for i, line in ipairs(subtree) do
-      local stars = line:match("^(%*+)")
-      if stars then
-        subtree[i] = string.rep("*", math.max(1, #stars - diff)) .. line:sub(#stars + 1)
-      end
-    end
-  end
+  -- Smart heading level adjustment based on source and destination types
+  local source_is_project = is_project_file(path)
+  local dest_is_project = is_project_file(dest_path)
+  subtree = adjust_heading_levels_smart(subtree, source_is_project, dest_is_project)
 
   -- Append to destination
   local dest_lines = readfile(dest_path)
@@ -396,7 +438,15 @@ function M.refile_subtree_at_cursor(dest_path)
   for i = h_end + 1, #lines do table.insert(new_lines, lines[i]) end
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, new_lines)
-  vim.notify("Refiled successfully", vim.log.levels.INFO)
+  
+  -- Build level info message
+  local level_msg = ""
+  if not source_is_project and dest_is_project then
+    level_msg = " (* → **)"
+  elseif source_is_project and not dest_is_project then
+    level_msg = " (** → *)"
+  end
+  vim.notify("Moved successfully" .. level_msg, vim.log.levels.INFO)
   return true
 end
 

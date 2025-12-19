@@ -116,7 +116,61 @@ function M.validate(data, config)
     end
   end
   
+  -- Validate heading levels across the file (needs full context)
+  M.validate_heading_levels(data, issues, config)
+  
   return issues
+end
+
+-- Validate heading levels in project files
+-- Rule: In files with * PROJECT at level 1, all actions should be level 2+
+function M.validate_heading_levels(data, issues, config)
+  local filepath = data.filepath or ""
+  local filename = vim.fn.fnamemodify(filepath, ":t")
+  
+  -- Skip Inbox.org and Recurring.org - they use level 1 headings
+  if filename == "Inbox.org" or filename == "Recurring.org" then
+    return
+  end
+  
+  -- Check if this is a project file (has * PROJECT at level 1)
+  local has_project_heading = false
+  local project_line = nil
+  for _, heading in ipairs(data.headings) do
+    if heading.todo_keyword == "PROJECT" and heading.level == 1 then
+      has_project_heading = true
+      project_line = heading.line
+      break
+    end
+  end
+  
+  if not has_project_heading then
+    return  -- Not a project file, no level validation needed
+  end
+  
+  -- Check that all actionable tasks are level 2 or deeper
+  local action_keywords = { "TODO", "NEXT", "WAITING", "WAIT", "SOMEDAY", "DONE", "CANCELLED" }
+  
+  for _, heading in ipairs(data.headings) do
+    if heading.line ~= project_line then  -- Skip the PROJECT heading itself
+      if vim.tbl_contains(action_keywords, heading.todo_keyword) then
+        if heading.level < 2 then
+          table.insert(issues, {
+            type = "error",
+            line = heading.line,
+            heading_line = heading.line,
+            heading_title = heading.title,
+            message = string.format(
+              "Action '%s %s' should be level 2 (**) under PROJECT, not level %d",
+              heading.todo_keyword, heading.title:sub(1, 30),
+              heading.level
+            ),
+            fixable = true,
+          })
+        end
+      end
+    end
+  end
 end
 
 -- GTD-specific validation rules
