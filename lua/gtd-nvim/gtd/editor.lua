@@ -40,11 +40,20 @@ local gp = g.priority or {}
 -- ============================================================================
 
 M.cfg = {
-  gtd_root = "~/Documents/GTD",
+  -- Settings (not paths)
   id_cache_file = vim.fn.stdpath("data") .. "/gtd/task_id_cache.json",
   left_panel_width = 45,
-  zk_root = "~/Documents/Notes/Zettelkasten",
+  zk_subdir = "Zettelkasten",
 }
+
+-- Runtime path accessors
+local function gtd_root()
+  return shared.gtd_home()
+end
+
+local function zk_root()
+  return shared.notes_home() .. "/" .. M.cfg.zk_subdir
+end
 
 -- ============================================================================
 -- STATE
@@ -145,8 +154,8 @@ end
 
 -- Scan all org files for existing TASK_IDs
 local function scan_all_task_ids()
-  local gtd_root = xp(M.cfg.gtd_root)
-  local files = vim.fn.globpath(gtd_root, "**/*.org", false, true)
+  local root = gtd_root()
+  local files = vim.fn.globpath(root, "**/*.org", false, true)
   if type(files) == "string" then files = { files } end
   
   local ids = {}
@@ -314,8 +323,8 @@ function M.extract_task_at_cursor()
   
   -- Determine area from file path
   local area = nil
-  local areas_root = xp("~/Documents/GTD/Areas")
-  if filepath:find(areas_root, 1, true) then
+  local areas_path = gtd_root() .. "/Areas"
+  if filepath:find(areas_path, 1, true) then
     area = filepath:match("/Areas/([^/]+)/")
   end
   
@@ -925,9 +934,9 @@ end
 
 function M.pick_project()
   -- Get list of projects
-  local gtd_root = xp(M.cfg.gtd_root)
-  local project_files = vim.fn.globpath(gtd_root .. "/Projects", "*.org", false, true)
-  local area_projects = vim.fn.globpath(gtd_root .. "/Areas", "*/*.org", false, true)
+  local root = gtd_root()
+  local project_files = vim.fn.globpath(root .. "/Projects", "*.org", false, true)
+  local area_projects = vim.fn.globpath(root .. "/Areas", "*/*.org", false, true)
   
   if type(project_files) == "string" then project_files = { project_files } end
   if type(area_projects) == "string" then area_projects = { area_projects } end
@@ -982,11 +991,11 @@ function M.create_or_open_zk()
       prompt = "ZK Note",
     }, function(choice)
       if choice == "Create new ZK note" then
-        local zk_root = xp(M.cfg.zk_root)
+        local zk_path = zk_root()
         local timestamp = os.date("%Y%m%d%H%M")
         local slug = data.title:lower():gsub("[^%w]+", "-"):sub(1, 30)
         local filename = timestamp .. "-" .. slug .. ".md"
-        local filepath = zk_root .. "/" .. filename
+        local filepath = zk_path .. "/" .. filename
         
         -- Create note content
         local content = {

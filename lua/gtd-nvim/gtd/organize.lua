@@ -146,7 +146,7 @@ end
 
 -- ---------- FIXED: Enhanced scan with proper filtering ----------
 local function scan_actionable_tasks(root)
-  root = root or vim.fn.expand("~/Documents/GTD")
+  root = root or shared.gtd_home()
   local files = vim.fn.globpath(root, "**/*.org", false, true)
   if type(files) == "string" then files = {files} end
   table.sort(files)
@@ -626,7 +626,7 @@ function M.clarify_pick_any(opts)
     return
   end
 
-  local root = opts.root or vim.fn.expand("~/Documents/GTD")
+  local root = opts.root or shared.gtd_home()
   local actionable_tasks = scan_actionable_tasks(root)
 
   if #actionable_tasks == 0 then
@@ -694,9 +694,9 @@ end
 
 -- ---------- Refile helpers & public API ----------
 
--- List possible refile targets (all non-archived .org files under ~/Documents/GTD)
+-- List possible refile targets (all non-archived .org files under GTD root)
 local function list_target_files()
-  local root = vim.fn.expand("~/Documents/GTD")
+  local root = shared.gtd_home()
   local files = vim.fn.globpath(root, "**/*.org", false, true)
   if type(files) == "string" then files = { files } end
 
@@ -885,7 +885,7 @@ function M.refile_pick_any(opts)
     return
   end
 
-  local root = opts.root or vim.fn.expand("~/Documents/GTD")
+  local root = opts.root or shared.gtd_home()
   local actionable_tasks = scan_actionable_tasks(root)
 
   if #actionable_tasks == 0 then

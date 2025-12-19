@@ -18,19 +18,35 @@ M._UPDATED = "2024-12-19"
 local shared = require("gtd.shared")
 local g = shared.glyphs
 
--- Config
+-- Config (these are fallback defaults - use shared.gtd_home() etc. for runtime paths)
 local cfg = {
-  projects_dir     = "~/Documents/GTD/Projects",
-  zk_project_root  = "~/Documents/Notes/Projects",
+  -- Relative paths (under gtd_home/notes_home)
+  projects_subdir  = "Projects",
+  zk_projects_subdir = "Projects",
+  areas_subdir     = "Areas",
+  
+  -- Defaults
   default_effort   = "2:00",
   default_assigned = "",
-  areas_root       = "~/Documents/GTD/Areas",
   
   -- Date defaults
   date_defaults = {
     due_days_after_defer = 7,
   },
 }
+
+-- Runtime path accessors (use these!)
+local function projects_dir()
+  return shared.gtd_home() .. "/" .. cfg.projects_subdir
+end
+
+local function zk_project_root()
+  return shared.notes_home() .. "/" .. cfg.zk_projects_subdir
+end
+
+local function areas_root()
+  return shared.gtd_home() .. "/" .. cfg.areas_subdir
+end
 
 -- ------------------------------------------------------------
 -- Helpers (delegating to shared.lua)
@@ -113,8 +129,8 @@ local function get_area_dirs()
     end
   end
 
-  -- 2) Fallback: scan cfg.areas_root/* as Area dirs
-  local root = shared.xp(cfg.areas_root)
+  -- 2) Fallback: scan areas_root()/* as Area dirs
+  local root = areas_root()
   if vim.fn.isdirectory(root) == 1 then
     local dirs = vim.fn.glob(root .. "/*", false, true)
     for _, d in ipairs(dirs) do
@@ -140,7 +156,7 @@ end
 -- All project directories: legacy Projects dir + all Areas dirs
 local function get_all_project_dirs()
   local dirs = {}
-  local projects_root = shared.xp(cfg.projects_dir)
+  local projects_root = projects_dir()
   if vim.fn.isdirectory(projects_root) == 1 then
     table.insert(dirs, projects_root)
   end
@@ -177,7 +193,7 @@ local function pick_area_dir(cb)
   local dirs = {}
   local labels = {}
 
-  local projects_root = shared.xp(cfg.projects_dir)
+  local projects_root = projects_dir()
   table.insert(labels, "No Area (Projects root)")
   table.insert(dirs, projects_root)
 
@@ -226,9 +242,9 @@ end
 -- ZK notes
 -- ------------------------------------------------------------
 local function zk_note_for_project(title, id)
-  shared.ensure_dir(cfg.zk_project_root)
+  shared.ensure_dir(zk_project_root())
   local fname = id .. "-" .. shared.slugify(title) .. ".md"
-  local path = shared.xp(cfg.zk_project_root .. "/" .. fname)
+  local path = shared.xp(zk_project_root() .. "/" .. fname)
   if not shared.file_exists(path) then
     shared.write_file(path, {
       "# " .. title,
@@ -668,7 +684,7 @@ function M.create()
       local deadline  = ""
 
       local function finalize(area_dir)
-        area_dir = area_dir or shared.xp(cfg.projects_dir)
+        area_dir = area_dir or projects_dir()
         shared.ensure_dir(area_dir)
         local slug   = shared.slugify(title)
         local file   = shared.xp(area_dir .. "/" .. slug .. ".org")
@@ -761,7 +777,7 @@ function M.create_from_task_at_cursor()
         local deadline = task_data.deadline or ""
         
         local function finalize(area_dir)
-          area_dir = area_dir or (task_data.area and task_data.area.dir) or shared.xp(cfg.projects_dir)
+          area_dir = area_dir or (task_data.area and task_data.area.dir) or projects_dir()
           shared.ensure_dir(area_dir)
           
           local slug = shared.slugify(title)
@@ -806,7 +822,7 @@ function M.create_from_task_at_cursor()
             elseif choice == "choose" then
               pick_area_dir(finalize)
             elseif choice == "root" then
-              finalize(shared.xp(cfg.projects_dir))
+              finalize(projects_dir())
             else
               pick_area_dir(finalize)
             end
@@ -857,12 +873,12 @@ end
 -- ------------------------------------------------------------
 function M.open_project_dir()
   -- If Areas exist, open Areas root; otherwise legacy projects dir
-  local areas_root = shared.xp(cfg.areas_root)
+  local areas_path = areas_root()
   local root
-  if vim.fn.isdirectory(areas_root) == 1 then
-    root = areas_root
+  if vim.fn.isdirectory(areas_path) == 1 then
+    root = areas_path
   else
-    root = shared.xp(cfg.projects_dir)
+    root = projects_dir()
   end
   vim.cmd("edit " .. root)
 end
@@ -916,7 +932,7 @@ function M.search()
   end
 
   -- Search within GTD root, but constrain ripgrep to project .org files
-  local projects_root = shared.xp(cfg.projects_dir)
+  local projects_root = projects_dir()
   local gtd_root = vim.fn.fnamemodify(projects_root, ":h") -- usually ~/Documents/GTD
 
   fzf.live_grep({
@@ -1189,7 +1205,7 @@ local function get_project_files()
   local results = {}
   
   -- Main projects directory
-  local main_dir = shared.xp(cfg.projects_dir)
+  local main_dir = projects_dir()
   if vim.fn.isdirectory(main_dir) == 1 then
     local files = vim.fn.glob(main_dir .. "/*.org", false, true)
     if type(files) == "string" then files = {files} end
@@ -1333,8 +1349,8 @@ end
 -- ------------------------------------------------------------
 function M.setup(opts)
   cfg = vim.tbl_deep_extend("force", cfg, opts or {})
-  shared.ensure_dir(cfg.projects_dir)
-  shared.ensure_dir(cfg.zk_project_root)
+  shared.ensure_dir(projects_dir())
+  shared.ensure_dir(zk_project_root())
   -- areas_root is only used if it exists, so no mkdir here
 end
 

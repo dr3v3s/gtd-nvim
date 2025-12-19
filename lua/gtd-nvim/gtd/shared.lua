@@ -15,20 +15,20 @@ local M = {}
 -- VERSION INFORMATION
 -- ============================================================================
 M.VERSION = {
-  major = 1,
-  minor = 1,
+  major = 2,
+  minor = 0,
   patch = 0,
   pre = "alpha",  -- "alpha", "beta", "rc1", or nil for release
-  string = "1.1.0-alpha",
-  date = "2024-12-18",
+  string = "2.0.0-alpha",
+  date = "2025-12-19",
 }
 
 -- Module versions (updated when module changes significantly)
 M.MODULE_VERSIONS = {
-  shared    = "1.1.0",  -- This file - foundation, context glyphs
-  capture   = "0.9.0",  -- Needs glyph/color update
-  clarify   = "0.9.0",  -- Needs glyph/color update
-  organize  = "1.0.0",  -- Updated with gtd_sort
+  shared    = "2.0.0",  -- Config system, canonical parsing functions
+  capture   = "0.9.0",  -- Needs config update
+  clarify   = "1.0.0",  -- Updated with bidirectional level adjustment
+  organize  = "1.1.0",  -- Updated with level adjustment in refile
   manage    = "1.0.0",  -- Updated with gtd_sort
   lists     = "1.0.0",  -- Updated: Kairos integration, glyphs
   review    = "1.0.0",  -- Updated: Kairos past/future calendar
@@ -40,6 +40,7 @@ M.MODULE_VERSIONS = {
   ui        = "0.8.0",  -- Needs audit (may merge to shared)
   status    = "1.0.0",  -- Updated: uses shared.glyphs
   init      = "1.2.0",  -- All modules wired up
+  config    = "1.0.0",  -- NEW: User configuration system
   -- DELETED: calendar.lua (replaced by kairos.lua)
   -- DELETED: icalbuddy.lua (replaced by kairos.lua)
   -- DELETED: fzf.lua (consolidated into shared.lua)
@@ -47,6 +48,29 @@ M.MODULE_VERSIONS = {
 
 -- Changelog entries (latest first)
 M.CHANGELOG = {
+  ["2.0.0-alpha"] = {
+    date = "2025-12-19",
+    changes = {
+      "BREAKING: Added centralized config system (~/.config/gtd-nvim/config.lua)",
+      "Added GTD-SPEC.md - canonical org-mode structure specification",
+      "Added config/defaults.lua - all default values",
+      "Added config/init.lua - config loader with accessors",
+      "Added config/example.lua - user config template",
+      "Added canonical parsing functions (GTD-SPEC Section 8):",
+      "  - is_project_file(), is_project_buffer()",
+      "  - parse_org_heading_full() with tags, priority, progress",
+      "  - get_subtree_range()",
+      "  - adjust_heading_level(), adjust_subtree_levels()",
+      "  - determine_heading_level(), heading_stars()",
+      "  - upsert_property() alias for set_property()",
+      "Added config accessors: gtd_home(), notes_home(), gtd_path()",
+      "Added data accessors: get_areas(), get_contexts(), get_people()",
+      "Updated clarify.lua with bidirectional heading level adjustment",
+      "Updated organize.lua with smart refile level handling",
+      "All hardcoded paths now use config system",
+    },
+    zk_note = "202512191500-GTD-Nvim-Config-System",
+  },
   ["1.2.0-alpha"] = {
     date = "2024-12-19",
     changes = {
@@ -93,6 +117,84 @@ M.CHANGELOG = {
     zk_note = "202512081430-GTD-Nvim-Shared-Module-Audit",
   },
 }
+
+-- ============================================================================
+-- CONFIGURATION SYSTEM
+-- ============================================================================
+
+-- Lazy-load config module to avoid circular dependencies
+local _config = nil
+local function get_config()
+  if not _config then
+    local ok, cfg = pcall(require, "gtd-nvim.config")
+    if ok then
+      _config = cfg
+    end
+  end
+  return _config
+end
+
+-- Configuration accessors (use these instead of hardcoded paths!)
+function M.gtd_home()
+  local cfg = get_config()
+  if cfg then return cfg.gtd_home() end
+  return vim.fn.expand("~/Documents/GTD")
+end
+
+function M.notes_home()
+  local cfg = get_config()
+  if cfg then return cfg.notes_home() end
+  return vim.fn.expand("~/Documents/Notes")
+end
+
+function M.gtd_path(key)
+  local cfg = get_config()
+  if cfg then return cfg.gtd_path(key) end
+  local paths = {
+    inbox = "Inbox.org",
+    recurring = "Recurring.org",
+    projects = "Projects",
+    areas = "Areas",
+    archive = "Archive",
+  }
+  return vim.fn.expand("~/Documents/GTD/" .. (paths[key] or ""))
+end
+
+function M.get_user_config()
+  local cfg = get_config()
+  if cfg then return cfg.get() end
+  return {}
+end
+
+function M.get_areas()
+  local cfg = get_config()
+  if cfg then return cfg.areas() end
+  return {}
+end
+
+function M.get_contexts()
+  local cfg = get_config()
+  if cfg then return cfg.contexts() end
+  return {}
+end
+
+function M.get_people()
+  local cfg = get_config()
+  if cfg then return cfg.people() end
+  return {}
+end
+
+function M.get_effort_options()
+  local cfg = get_config()
+  if cfg then return cfg.effort_options() end
+  return {}
+end
+
+function M.get_waiting_contexts()
+  local cfg = get_config()
+  if cfg then return cfg.waiting_contexts() end
+  return {}
+end
 
 -- ============================================================================
 -- COLOR SYSTEM (ANSI for fzf-lua, highlight groups for buffers)
@@ -802,6 +904,182 @@ function M.is_actionable_task(state, title, line)
 end
 
 -- ============================================================================
+-- CANONICAL PARSING FUNCTIONS (GTD-SPEC.md Section 8)
+-- All modules MUST use these for consistency
+-- ============================================================================
+
+--- Check if a file is a project file (has * PROJECT heading in first 10 lines)
+--- @param filepath string Path to the org file
+--- @return boolean
+function M.is_project_file(filepath)
+  local lines = M.read_file(filepath)
+  if not lines or #lines == 0 then return false end
+  for i = 1, math.min(10, #lines) do
+    if lines[i]:match("^%* PROJECT%s") then
+      return true
+    end
+  end
+  return false
+end
+
+--- Check if current buffer is a project file
+--- @param bufnr number|nil Buffer number (default: current)
+--- @return boolean
+function M.is_project_buffer(bufnr)
+  bufnr = bufnr or 0
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, 10, false)
+  for _, line in ipairs(lines) do
+    if line:match("^%* PROJECT%s") then
+      return true
+    end
+  end
+  return false
+end
+
+--- Parse org heading into structured data
+--- @param line string The heading line
+--- @return table|nil Parsed heading data or nil
+function M.parse_org_heading_full(line)
+  if not line then return nil end
+  local stars, rest = line:match("^(%*+)%s+(.*)")
+  if not stars then return nil end
+  
+  local level = #stars
+  local keyword, title = rest:match("^([A-Z]+)%s+(.*)")
+  local tags = {}
+  local priority = nil
+  local progress = nil
+  
+  -- If no keyword matched, title is the whole rest
+  if not keyword then
+    keyword = nil
+    title = rest
+  end
+  
+  -- Extract tags from end of title
+  if title then
+    local title_clean, tag_str = title:match("^(.-)%s+(:.+:)%s*$")
+    if tag_str then
+      title = title_clean
+      for tag in tag_str:gmatch(":([^:]+)") do
+        table.insert(tags, tag)
+      end
+    end
+    
+    -- Extract priority [#A], [#B], [#C]
+    local prio, rest_title = title:match("^%[#([ABC])%]%s*(.*)")
+    if prio then
+      priority = prio
+      title = rest_title
+    end
+    
+    -- Extract progress [2/5] or [50%]
+    local done, total = title:match("%[(%d+)/(%d+)%]")
+    if done and total then
+      progress = { done = tonumber(done), total = tonumber(total) }
+    else
+      local pct = title:match("%[(%d+)%%%]")
+      if pct then
+        progress = { percent = tonumber(pct) }
+      end
+    end
+  end
+  
+  return {
+    level = level,
+    keyword = keyword,
+    title = title,
+    tags = tags,
+    priority = priority,
+    progress = progress,
+    raw = line,
+  }
+end
+
+--- Get subtree range (start line to end line, inclusive)
+--- @param lines table Array of file lines
+--- @param heading_idx number Line index of heading (1-based)
+--- @return number, number start_idx, end_idx
+function M.get_subtree_range(lines, heading_idx)
+  local heading = lines[heading_idx]
+  if not heading then return heading_idx, heading_idx end
+  
+  local stars = heading:match("^(%*+)%s")
+  if not stars then return heading_idx, heading_idx end
+  
+  local level = #stars
+  local end_idx = heading_idx
+  
+  for i = heading_idx + 1, #lines do
+    local next_stars = lines[i]:match("^(%*+)%s")
+    if next_stars and #next_stars <= level then
+      break
+    end
+    end_idx = i
+  end
+  
+  return heading_idx, end_idx
+end
+
+--- Adjust heading level for refile operations
+--- Handles bidirectional adjustment based on source/destination file types
+--- @param line string The heading line to adjust
+--- @param source_is_project boolean Whether source file is a project file
+--- @param dest_is_project boolean Whether destination file is a project file
+--- @return string Adjusted heading line
+function M.adjust_heading_level(line, source_is_project, dest_is_project)
+  if not line:match("^%*+%s") then return line end
+  
+  if not source_is_project and dest_is_project then
+    -- Non-project → Project: add star (* → **)
+    return "*" .. line
+  elseif source_is_project and not dest_is_project then
+    -- Project → Non-project: remove star (** → *)
+    return line:gsub("^%*%*", "*")
+  end
+  -- Same type: no change
+  return line
+end
+
+--- Adjust all lines in a subtree for refile
+--- @param lines table Array of subtree lines
+--- @param source_is_project boolean
+--- @param dest_is_project boolean
+--- @return table Adjusted lines
+function M.adjust_subtree_levels(lines, source_is_project, dest_is_project)
+  if source_is_project == dest_is_project then
+    return lines -- No adjustment needed
+  end
+  
+  local adjusted = {}
+  for _, line in ipairs(lines) do
+    if line:match("^%*+%s") then
+      table.insert(adjusted, M.adjust_heading_level(line, source_is_project, dest_is_project))
+    else
+      table.insert(adjusted, line)
+    end
+  end
+  return adjusted
+end
+
+--- Determine correct heading level for new tasks based on destination
+--- @param dest_path string Destination file path
+--- @return number Heading level (1 or 2)
+function M.determine_heading_level(dest_path)
+  if M.is_project_file(dest_path) then
+    return 2  -- ** for project files
+  end
+  return 1    -- * for standalone files
+end
+
+--- Generate heading stars for a given level
+--- @param level number Heading level
+--- @return string Stars string
+function M.heading_stars(level)
+  return string.rep("*", level)
+end
+
+-- ============================================================================
 -- GTD HIERARCHY SORTING (System-wide consistent ordering)
 -- ============================================================================
 -- Order: 1. Inbox  2. Areas (alphabetical)  3. Projects (alphabetical)
@@ -903,7 +1181,7 @@ end
 
 function M.scan_gtd_files_robust(opts)
   opts = opts or {}
-  local root = opts.root or vim.fn.expand("~/Documents/GTD")
+  local root = opts.root or M.gtd_home()
 
   local files = vim.fn.globpath(root, "**/*.org", false, true)
   if type(files) == "string" then
@@ -1003,7 +1281,7 @@ local function get_safe_cwd()
     return cwd
   end
   -- Fallback to GTD root
-  local gtd_root = vim.fn.expand("~/Documents/GTD")
+  local gtd_root = M.gtd_home()
   if vim.fn.isdirectory(gtd_root) == 1 then
     return gtd_root
   end
@@ -1558,6 +1836,9 @@ function M.set_property(lines, key, value, heading_line)
   return lines
 end
 
+--- Alias for set_property (spec-compliant name)
+M.upsert_property = M.set_property
+
 --- Ensure PROPERTIES drawer exists and has required fields
 --- @param lines table Array of lines (modified in place)
 --- @param heading_line number Line of the heading
@@ -1898,11 +2179,12 @@ function M.resolve_zk_id(zk_id)
   if not zk_id or zk_id == "" then return nil end
   
   -- Common ZK note directories to search
+  local notes_root = M.notes_home()
   local search_dirs = {
-    vim.fn.expand("~/Documents/Notes"),
-    vim.fn.expand("~/Documents/Notes/Projects"),
-    vim.fn.expand("~/Documents/Notes/Zettelkasten"),
-    vim.fn.expand("~/Documents/Notes/Daily"),
+    notes_root,
+    notes_root .. "/Projects",
+    notes_root .. "/Zettelkasten",
+    notes_root .. "/Daily",
   }
   
   -- Search for files starting with the ZK ID

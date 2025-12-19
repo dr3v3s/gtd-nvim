@@ -129,15 +129,39 @@ local function setup_review_highlights()
 end
 
 M.cfg = {
-  gtd_root = "~/Documents/GTD",
-  zk_root = "~/Documents/Notes",
-  reviews_dir = "~/Documents/Notes/Reviews",
-  review_history_file = "~/Documents/GTD/.review_history.json",
-  custom_checklists_file = "~/Documents/GTD/.review_checklists.json",
+  -- Relative paths
+  reviews_subdir = "Reviews",
+  review_history_file = ".review_history.json",
+  custom_checklists_file = ".review_checklists.json",
+  
+  -- Review settings
   calendar_days_back = 7,
   calendar_days_forward = 14,
   left_panel_width = 38,
 }
+
+-- Runtime path accessors
+local function gtd_root()
+  if shared and shared.gtd_home then return shared.gtd_home() end
+  return vim.fn.expand("~/Documents/GTD")
+end
+
+local function zk_root()
+  if shared and shared.notes_home then return shared.notes_home() end
+  return vim.fn.expand("~/Documents/Notes")
+end
+
+local function reviews_dir()
+  return zk_root() .. "/" .. M.cfg.reviews_subdir
+end
+
+local function review_history_file()
+  return gtd_root() .. "/" .. review_history_file()
+end
+
+local function custom_checklists_file()
+  return gtd_root() .. "/" .. custom_checklists_file()
+end
 
 local lists = safe_require("gtd-nvim.gtd.lists")
 local capture = safe_require("gtd-nvim.gtd.capture")
@@ -218,7 +242,7 @@ end
 local function get_review_note_path(review_id, week_id)
   week_id = week_id or get_week_id()
   review_id = review_id or generate_review_id()
-  local reviews_dir = xp(M.cfg.reviews_dir)
+  local reviews_dir = reviews_dir()
   vim.fn.mkdir(reviews_dir, "p")
   -- Format: WeeklyReview-2025-W49-20251210103045.md
   return reviews_dir .. "/WeeklyReview-" .. week_id .. "-" .. review_id .. ".md"
@@ -227,12 +251,12 @@ end
 -- Legacy: Get note path by week only (for backward compatibility when scanning)
 local function get_legacy_review_note_path(week_id)
   week_id = week_id or get_week_id()
-  local reviews_dir = xp(M.cfg.reviews_dir)
+  local reviews_dir = reviews_dir()
   return reviews_dir .. "/WeeklyReview-" .. week_id .. ".md"
 end
 
 local function collect_metrics()
-  local gtd_root = xp(M.cfg.gtd_root)
+  local gtd_root = gtd_root()
   local m = { inbox = 0, next = 0, todo = 0, waiting = 0, someday = 0, projects = 0, stuck = 0 }
   
   local handle = io.popen(string.format("find %q -type f -name '*.org' ! -name 'Archive.org' 2>/dev/null", gtd_root))
@@ -330,7 +354,7 @@ end
 -- ============================================================================
 
 local function fetch_tasks_by_state(states, exclude_done)
-  local gtd_root = xp(M.cfg.gtd_root)
+  local gtd_root = gtd_root()
   local tasks = {}
   
   local state_set = {}
@@ -379,7 +403,7 @@ local function fetch_tasks_by_state(states, exclude_done)
 end
 
 local function fetch_projects()
-  local gtd_root = xp(M.cfg.gtd_root)
+  local gtd_root = gtd_root()
   local projects = {}
   
   local projects_dir = gtd_root .. "/Projects"
@@ -430,7 +454,7 @@ local function fetch_projects()
 end
 
 local function fetch_inbox()
-  local inbox_path = xp(M.cfg.gtd_root) .. "/Inbox.org"
+  local inbox_path = gtd_root() .. "/Inbox.org"
   local items = {}
   
   if vim.fn.filereadable(inbox_path) ~= 1 then return items end
@@ -457,12 +481,12 @@ end
 -- Scan all reviews from history file
 -- Returns list sorted by date (newest first)
 local function scan_reviews()
-  local history = read_json(M.cfg.review_history_file)
+  local history = read_json(review_history_file())
   local reviews = {}
   local current_week = get_week_id()
   
   -- Also scan for files without history entries (legacy files)
-  local reviews_dir = xp(M.cfg.reviews_dir)
+  local reviews_dir = reviews_dir()
   local known_paths = {}
   
   -- First, add all history entries
@@ -768,14 +792,14 @@ function M.index()
               end
               -- Remove from history
               if entry.review_id then
-                local history = read_json(M.cfg.review_history_file)
+                local history = read_json(review_history_file())
                 local new_history = {}
                 for _, h in ipairs(history) do
                   if h.review_id ~= entry.review_id then
                     table.insert(new_history, h)
                   end
                 end
-                write_json(M.cfg.review_history_file, new_history)
+                write_json(review_history_file(), new_history)
               end
               vim.notify((gu.bullet or "") .. " Deleted " .. label, vim.log.levels.INFO)
               -- Refresh index
@@ -801,7 +825,7 @@ end
 function M.archive_completed()
   local reviews = scan_reviews()
   local current_week = get_week_id()
-  local reviews_dir = xp(M.cfg.reviews_dir)
+  local reviews_dir = reviews_dir()
   local archive_dir = reviews_dir .. "/archive"
   
   -- Find reviews to archive (complete, not current week)
@@ -1010,7 +1034,7 @@ end
 -- ============================================================================
 
 local function load_checklists()
-  local data = read_json(M.cfg.custom_checklists_file)
+  local data = read_json(custom_checklists_file())
   if vim.tbl_isempty(data) then
     data = {
       weekly = { 
@@ -1051,7 +1075,7 @@ local function load_checklists()
         }
       },
     }
-    write_json(M.cfg.custom_checklists_file, data)
+    write_json(custom_checklists_file(), data)
   end
   return data
 end
@@ -1061,12 +1085,12 @@ end
 -- ============================================================================
 
 local function get_last_review()
-  local history = read_json(M.cfg.review_history_file)
+  local history = read_json(review_history_file())
   return history[#history]
 end
 
 local function save_review_history()
-  local history = read_json(M.cfg.review_history_file)
+  local history = read_json(review_history_file())
   
   -- Validate week_id - must be YYYY-Www format
   local function validate_week(wid)
@@ -1117,12 +1141,12 @@ local function save_review_history()
   
   -- Keep last 100 reviews (not just 52 weeks)
   while #history > 100 do table.remove(history, 1) end
-  write_json(M.cfg.review_history_file, history)
+  write_json(review_history_file(), history)
 end
 
 -- Helper to load saved progress for a specific review session
 local function load_saved_progress(review_id, week_id)
-  local history = read_json(M.cfg.review_history_file)
+  local history = read_json(review_history_file())
   
   -- First try exact review_id match
   if review_id then
@@ -1147,7 +1171,7 @@ end
 
 -- Find the most recent incomplete review (any week)
 local function find_incomplete_review()
-  local history = read_json(M.cfg.review_history_file)
+  local history = read_json(review_history_file())
   -- Search from most recent
   for i = #history, 1, -1 do
     local entry = history[i]
@@ -1781,7 +1805,7 @@ function M.execute_step_action()
     M.setup_return_keymap()
     vim.notify((gu.note or "󰝗") .. " Edit note - Ctrl-B to return", vim.log.levels.INFO)
   elseif action == "inbox_file" then
-    M.open_file_in_right_panel(xp(M.cfg.gtd_root) .. "/Inbox.org")
+    M.open_file_in_right_panel(gtd_root() .. "/Inbox.org")
     vim.cmd("wincmd l")
     M.setup_return_keymap()
     vim.notify((gc.inbox or "") .. " Process inbox - Ctrl-B to return", vim.log.levels.INFO)
@@ -2038,7 +2062,7 @@ function M.checklist_action()
       if zettelkasten and zettelkasten.find then
         zettelkasten.find()
       else
-        vim.cmd("edit " .. xp(M.cfg.zk_root))
+        vim.cmd("edit " .. zk_root())
       end
     end, "Reviewing Notes")
   end
@@ -2572,14 +2596,14 @@ function M.setup(opts)
     for k, v in pairs(opts) do M.cfg[k] = v end
   end
   
-  vim.fn.mkdir(xp(M.cfg.reviews_dir), "p")
+  vim.fn.mkdir(reviews_dir(), "p")
   
   vim.api.nvim_create_user_command("GtdReview", function() M.start() end, { desc = "GTD Weekly Review" })
   vim.api.nvim_create_user_command("GtdReviewHistory", function() M.index() end, { desc = "Browse past reviews" })
   vim.api.nvim_create_user_command("GtdReviewResume", function() M.resume() end, { desc = "Resume review" })
   -- Removed: GtdReviewIndex (duplicate of GtdReviewHistory)
   vim.api.nvim_create_user_command("GtdReviewChecklists", function()
-    vim.cmd("edit " .. xp(M.cfg.custom_checklists_file))
+    vim.cmd("edit " .. xp(custom_checklists_file()))
   end, { desc = "Edit review checklists" })
 end
 

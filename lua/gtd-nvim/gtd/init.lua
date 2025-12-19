@@ -5,17 +5,19 @@
 -- Keeps config minimal and stable. Safe requires; friendly health checks.
 --
 -- @module gtd-nvim.gtd
--- @version 1.1.0
+-- @version 1.2.0
 -- @see 202512181430-Kairos-Integration
 -- ============================================================================
 
 local M = {}
 
 -- Version information
-M._VERSION = "1.2.0"
-M._UPDATED = "2024-12-18"
+M._VERSION = "1.3.0"
+M._UPDATED = "2024-12-19"
 
 -- ------------------------ Config ------------------------
+-- NOTE: These are fallback defaults. Use config module for user settings!
+-- Access via shared.gtd_home(), shared.notes_home(), etc.
 M.cfg = {
   gtd_root = "~/Documents/GTD",
   zk_root = "~/Documents/Notes",
@@ -23,6 +25,16 @@ M.cfg = {
   projects_dir = "Projects", -- under gtd_root
   zk_projects = "Projects", -- under zk_root
 }
+
+-- Load config module (lazy)
+local _config = nil
+local function get_config()
+  if not _config then
+    local ok, cfg = pcall(require, "gtd-nvim.config")
+    if ok then _config = cfg end
+  end
+  return _config
+end
 
 -- ------------------------ Helpers ------------------------
 local function xp(p)
@@ -38,14 +50,27 @@ local function writef(p, L)
   return vim.fn.writefile(L, p) == 0
 end
 
+-- Path helpers using config
+local function gtd_root()
+  local cfg = get_config()
+  if cfg then return cfg.gtd_home() end
+  return xp(M.cfg.gtd_root)
+end
+
+local function zk_root()
+  local cfg = get_config()
+  if cfg then return cfg.notes_home() end
+  return xp(M.cfg.zk_root)
+end
+
 local function inbox_path()
-  return j(xp(M.cfg.gtd_root), M.cfg.inbox_file)
+  return j(gtd_root(), M.cfg.inbox_file)
 end
 local function projects_org_dir()
-  return j(xp(M.cfg.gtd_root), M.cfg.projects_dir)
+  return j(gtd_root(), M.cfg.projects_dir)
 end
 local function projects_note_dir()
-  return j(xp(M.cfg.zk_root), M.cfg.zk_projects)
+  return j(zk_root(), M.cfg.zk_projects)
 end
 
 -- Safe require (don't explode on startup)

@@ -5,27 +5,24 @@
 -- Features: ZK integration, quiet mode, WAITING FOR, Areas tagging, Recurring
 --
 -- @module gtd-nvim.gtd.capture
--- @version 1.0.0
+-- @version 1.1.0
 -- @requires shared (>= 1.1.0)
 -- ============================================================================
 
 local M = {}
 
-M._VERSION = "1.0.0"
+M._VERSION = "1.1.0"
 M._UPDATED = "2024-12-19"
 
 -- Load shared utilities (single source of truth)
-local shared = require("gtd.shared")
+local shared = require("gtd-nvim.gtd.shared")
 local g = shared.glyphs
 
 -- ------------------------------------------------------------
--- Config
+-- Config (paths loaded dynamically from user config)
 -- ------------------------------------------------------------
 M.cfg = {
-  gtd_dir           = "~/Documents/GTD",
-  inbox_file        = "~/Documents/GTD/Inbox.org",
-  recurring_file    = "~/Documents/GTD/Recurring.org",
-  projects_dir      = "~/Documents/GTD/Projects",
+  -- Paths are resolved dynamically via get_path() below
   default_state     = "TODO",
   quiet_capture     = true,  -- Minimize notifications during capture
   show_success_only = true,  -- Only show final success message
@@ -53,6 +50,29 @@ M.cfg = {
     recur_from        = "scheduled",  -- scheduled, completion, or deadline
   },
 }
+
+-- Dynamic path resolution (uses user config)
+local function get_path(key)
+  if key == "gtd_dir" then
+    return shared.gtd_home()
+  elseif key == "inbox_file" then
+    return shared.gtd_path("inbox")
+  elseif key == "recurring_file" then
+    return shared.gtd_path("recurring")
+  elseif key == "projects_dir" then
+    return shared.gtd_path("projects")
+  end
+  return nil
+end
+
+-- Legacy compatibility: access M.cfg.inbox_file etc
+setmetatable(M.cfg, {
+  __index = function(_, key)
+    local path = get_path(key)
+    if path then return path end
+    return rawget(M.cfg, key)
+  end
+})
 
 -- ------------------------------------------------------------
 -- Helpers (Focus mode integration)

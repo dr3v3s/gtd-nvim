@@ -28,31 +28,36 @@ local g = shared.glyphs  -- Glyph shortcuts
 -- Config
 -- ============================================================================
 M.cfg = {
-  gtd_root = "~/Documents/GTD",
+  -- Relative paths (under gtd_root)
   inbox_file = "Inbox.org",
   projects_dir = "Projects",
   default_state = "TODO",
   
   -- Import settings
-  mark_imported = false,           -- Mark reminders as complete after import
-  skip_completed = true,            -- Skip completed reminders on import
-  import_lists = {},                -- Empty = all lists
-  excluded_lists = {"Completed"},  -- Lists to skip
+  mark_imported = false,
+  skip_completed = true,
+  import_lists = {},
+  excluded_lists = {"Completed"},
   
   -- Export settings
-  export_list = "GTD",              -- Default list for exported tasks
-  export_states = {"TODO", "NEXT", "WAITING"}, -- States to export
-  sync_completion = true,           -- Mark reminders complete when task is DONE
+  export_list = "GTD",
+  export_states = {"TODO", "NEXT", "WAITING"},
+  sync_completion = true,
   
   -- Priority mapping
-  map_high_priority = "NEXT",      -- Priority 9 → NEXT
-  map_medium_priority = "TODO",    -- Priority 5-8 → TODO  
-  map_low_priority = "SOMEDAY",    -- Priority 1-4 → SOMEDAY
+  map_high_priority = "NEXT",
+  map_medium_priority = "TODO",
+  map_low_priority = "SOMEDAY",
   
   -- Advanced
   create_zk_notes = false,
   auto_sync_on_save = false,
 }
+
+-- Runtime path accessor
+local function gtd_root()
+  return shared.gtd_home()
+end
 
 -- ============================================================================
 -- Helpers

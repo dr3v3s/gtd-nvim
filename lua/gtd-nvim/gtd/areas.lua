@@ -3,73 +3,65 @@
 -- ============================================================================
 -- Areas of Responsibility management
 -- Tags tasks with :AREA: property during capture
+-- Reads areas from user config (~/.config/gtd-nvim/config.lua)
 --
 -- @module gtd-nvim.gtd.areas
--- @version 0.8.0
--- @requires shared (>= 1.0.0)
--- @todo Use shared.colorize() for fzf displays
+-- @version 1.0.0
+-- @requires shared (>= 1.1.0)
 -- ============================================================================
 
 local M = {}
 
-M._VERSION = "0.8.0"
-M._UPDATED = "2024-12-08"
+M._VERSION = "1.0.0"
+M._UPDATED = "2024-12-19"
 
--- Load shared utilities with glyph system
+-- Load shared utilities
 local shared = require("gtd-nvim.gtd.shared")
-local g = shared.glyphs  -- Glyph shortcuts
+local g = shared.glyphs
 
 -- ------------------------------------------------------------
--- Areas Configuration
--- ------------------------------------------------------------
--- Each area has:
---   name: Display name (used in :AREA: property)
---   dir:  Directory path for area-specific files
---   icon: Optional emoji for display
+-- Areas Access (from config)
 -- ------------------------------------------------------------
 
-M.areas = {
-  {
-    name = "Personal",
-    dir  = "~/Documents/GTD/Areas/10-Personal",
-    icon = "",  -- nf-fa-user
-  },
-  {
-    name = "Ditte",
-    dir  = "~/Documents/GTD/Areas/11-Ditte",
-    icon = "",  -- nf-fa-heart
-  },
-  {
-    name = "Household",
-    dir  = "~/Documents/GTD/Areas/20-Household",
-    icon = "",  -- nf-fa-home
-  },
-  {
-    name = "Kids",
-    dir  = "~/Documents/GTD/Areas/30-Kids",
-    icon = "󰀈",  -- nf-md-account_child
-  },
-  {
-    name = "Friends",
-    dir  = "~/Documents/GTD/Areas/40-Friends",
-    icon = "󰡉",  -- nf-md-account_group
-  },
-  {
-    name = "GTD",
-    dir  = "~/Documents/GTD/Areas/50-GTD",
-    icon = "",  -- nf-fa-check
-  },
-  {
-    name = "DDS",
-    dir  = "~/Documents/GTD/Areas/80-DDS",
-    icon = "",  -- nf-fa-building
-  },
-  {
-    name = "Work",
-    dir  = "~/Documents/GTD/Areas/90-Work",
-    icon = "",  -- nf-fa-briefcase
-  },
-}
+--- Get all areas from config
+---@return table[] Array of area definitions
+function M.get_areas()
+  local config_areas = shared.get_areas()
+  local areas = {}
+  
+  -- Build full paths from config
+  local gtd_home = shared.gtd_home()
+  local areas_root = gtd_home .. "/Areas"
+  
+  for _, area in ipairs(config_areas) do
+    local full_dir = area.dir
+    -- If dir is relative (no ~/), prepend areas_root
+    if not full_dir:match("^[~/]") then
+      full_dir = areas_root .. "/" .. area.dir
+    end
+    
+    table.insert(areas, {
+      id = area.id,
+      name = area.name,
+      icon = area.icon or g.container.area,
+      color = area.color,
+      dir = full_dir,
+    })
+  end
+  
+  return areas
+end
+
+-- Legacy compatibility: M.areas property
+-- Returns areas from config (for modules that access M.areas directly)
+setmetatable(M, {
+  __index = function(_, key)
+    if key == "areas" then
+      return M.get_areas()
+    end
+    return nil
+  end
+})
 
 -- ------------------------------------------------------------
 -- Helpers
@@ -82,8 +74,21 @@ local function xp(p) return vim.fn.expand(p) end
 ---@return table|nil Area table or nil if not found
 function M.get_area(name)
   if not name then return nil end
-  for _, area in ipairs(M.areas) do
+  for _, area in ipairs(M.get_areas()) do
     if area.name == name then
+      return area
+    end
+  end
+  return nil
+end
+
+--- Get area by ID
+---@param id string Area ID to find
+---@return table|nil Area table or nil if not found
+function M.get_area_by_id(id)
+  if not id then return nil end
+  for _, area in ipairs(M.get_areas()) do
+    if area.id == id then
       return area
     end
   end
@@ -97,7 +102,7 @@ function M.get_area_for_path(path)
   if not path then return nil end
   local expanded = xp(path)
   
-  for _, area in ipairs(M.areas) do
+  for _, area in ipairs(M.get_areas()) do
     local area_dir = xp(area.dir)
     if expanded:find(area_dir, 1, true) then
       return area
@@ -106,226 +111,172 @@ function M.get_area_for_path(path)
   return nil
 end
 
---- Get all area names
----@return table List of area names
-function M.get_area_names()
+--- Get list of area names
+---@return string[] List of area names
+function M.list_names()
   local names = {}
-  for _, area in ipairs(M.areas) do
+  for _, area in ipairs(M.get_areas()) do
     table.insert(names, area.name)
   end
   return names
 end
 
---- Get all area names with icons
----@return table List of "icon name" strings
-function M.get_area_display_names()
-  local names = {}
-  for _, area in ipairs(M.areas) do
-    local display = area.icon and (area.icon .. " " .. area.name) or area.name
-    table.insert(names, display)
-  end
-  return names
-end
-
---- List .org files in an area directory (excluding Inbox.org)
----@param area table Area configuration
----@return table List of file paths
-function M.list_area_files(area)
-  if not area or not area.dir then return {} end
-  
-  local dir = xp(area.dir)
-  local files = vim.fn.glob(dir .. "/*.org", false, true)
-  
-  -- Filter out Inbox.org (deprecated)
-  local result = {}
-  for _, f in ipairs(files) do
-    local name = vim.fn.fnamemodify(f, ":t"):lower()
-    if name ~= "inbox.org" then
-      table.insert(result, f)
-    end
-  end
-  
-  return result
-end
-
---- Recursively list all .org files in an area (excluding Inbox.org)
----@param area table Area configuration
----@return table List of file paths
-function M.list_area_files_recursive(area)
-  if not area or not area.dir then return {} end
-  
-  local uv = vim.loop
-  local results = {}
-  
-  local function scan(path)
-    local fs = uv.fs_scandir(path)
-    if not fs then return end
-    
-    while true do
-      local name, t = uv.fs_scandir_next(fs)
-      if not name then break end
-      local full = path .. "/" .. name
-      
-      if t == "file" then
-        if name:sub(-4) == ".org" and name:lower() ~= "inbox.org" then
-          table.insert(results, full)
-        end
-      elseif t == "directory" then
-        if name ~= ".git" and name:sub(1, 1) ~= "." then
-          scan(full)
-        end
-      end
-    end
-  end
-  
-  scan(xp(area.dir))
-  return results
+--- Get areas root directory
+---@return string Expanded path to Areas directory
+function M.get_root()
+  return xp(shared.gtd_path("areas"))
 end
 
 -- ------------------------------------------------------------
--- fzf-lua Area Picker
+-- Picker: fzf-lua area selection
 -- ------------------------------------------------------------
 
-local function safe_require(mod)
-  local ok, m = pcall(require, mod)
-  return ok and m or nil
-end
-
---- Pick an area using fzf-lua
----@param callback function Called with selected area table or nil
-function M.pick_area(callback)
-  if not callback then return end
+--- Present area picker and execute callback with selection
+---@param callback function Callback receiving selected area table
+---@param opts table|nil Options: { prompt = "...", include_none = bool }
+function M.pick(callback, opts)
+  opts = opts or {}
   
-  local fzf = safe_require("fzf-lua")
-  
-  local items = { "No specific area" }
-  for _, area in ipairs(M.areas) do
-    local display = area.icon and (area.icon .. " " .. area.name) or area.name
-    table.insert(items, display)
-  end
-  
-  if fzf then
-    fzf.fzf_exec(items, {
-      prompt = shared.colorize(g.container.areas, "areas") .. " Area of Responsibility> ",
-      actions = {
-        ["default"] = function(sel)
-          local choice = sel and sel[1]
-          if not choice or choice == "No specific area" then
-            callback(nil)
-            return
-          end
-          
-          -- Extract name (remove icon if present)
-          local name = choice:match("[%a]+.*$") or choice
-          name = name:gsub("^%s+", "") -- trim leading space after icon
-          
-          for _, area in ipairs(M.areas) do
-            if area.name == name then
-              callback(area)
-              return
-            end
-          end
-          callback(nil)
-        end,
-      },
-      fzf_opts = { ["--no-info"] = true, ["--ansi"] = true },
-      winopts = { height = 0.35, width = 0.50, row = 0.15 },
-    })
-  else
-    vim.ui.select(items, { prompt = "Area of Responsibility" }, function(choice)
-      if not choice or choice == "No specific area" then
-        callback(nil)
-        return
-      end
-      
-      local name = choice:match("[%a]+.*$") or choice
-      name = name:gsub("^%s+", "")
-      
-      for _, area in ipairs(M.areas) do
-        if area.name == name then
-          callback(area)
-          return
-        end
-      end
-      callback(nil)
-    end)
-  end
-end
-
--- ------------------------------------------------------------
--- Browse areas
--- ------------------------------------------------------------
-
---- Browse Areas of Responsibility and open selected directory
-function M.browse()
-  local fzf = safe_require("fzf-lua")
-  
-  if #M.areas == 0 then
-    vim.notify("No areas defined", vim.log.levels.WARN)
+  local areas = M.get_areas()
+  if #areas == 0 then
+    shared.notify("No areas configured. Add areas to ~/.config/gtd-nvim/config.lua", "WARN")
     return
   end
   
-  local items = {}
-  local area_map = {}
-  
-  for _, area in ipairs(M.areas) do
-    local display = area.icon and (area.icon .. " " .. area.name) or area.name
-    table.insert(items, display)
-    area_map[display] = area
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    shared.notify("fzf-lua not available", "WARN")
+    return
   end
   
-  if fzf then
-    fzf.fzf_exec(items, {
-      prompt = shared.colorize(g.container.areas, "areas") .. " Browse Areas> ",
-      actions = {
-        ["default"] = function(sel)
-          local choice = sel and sel[1]
-          if not choice then return end
-          local area = area_map[choice]
-          if area and area.dir then
-            vim.cmd("edit " .. vim.fn.fnameescape(area.dir))
-          end
-        end,
-        ["ctrl-e"] = function(sel)
-          local choice = sel and sel[1]
-          if not choice then return end
-          local area = area_map[choice]
-          if area and area.dir then
-            -- Open DIRECTORY.md if it exists, else the directory
-            local dir_file = area.dir .. "/DIRECTORY.md"
-            if vim.fn.filereadable(dir_file) == 1 then
-              vim.cmd("edit " .. vim.fn.fnameescape(dir_file))
-            else
-              vim.cmd("edit " .. vim.fn.fnameescape(area.dir))
-            end
-          end
-        end,
-      },
-      fzf_opts = {
-        ["--no-info"] = true,
-        ["--ansi"] = true,
-        ["--header"] = "Enter: Open Dir • Ctrl-E: Open DIRECTORY.md",
-      },
-      winopts = { height = 0.40, width = 0.55, row = 0.15 },
-    })
-  else
-    vim.ui.select(items, { prompt = "Browse Areas" }, function(choice)
-      if not choice then return end
-      local area = area_map[choice]
-      if area and area.dir then
-        vim.cmd("edit " .. vim.fn.fnameescape(area.dir))
-      end
-    end)
+  local display = {}
+  local lookup = {}
+  
+  -- Optionally include "No Area" option
+  if opts.include_none then
+    table.insert(display, g.ui.folder .. " (No Area)")
+    lookup["(No Area)"] = nil
   end
+  
+  for _, area in ipairs(areas) do
+    local icon = area.icon or g.container.area
+    local label = icon .. " " .. area.name
+    table.insert(display, label)
+    lookup[area.name] = area
+  end
+  
+  fzf.fzf_exec(display, {
+    prompt = opts.prompt or "Area> ",
+    winopts = {
+      height = 0.40,
+      width = 0.50,
+      row = 0.30,
+      title = " " .. g.container.area .. " Areas ",
+      title_pos = "center",
+    },
+    fzf_opts = {
+      ["--no-info"] = true,
+    },
+    actions = {
+      ["default"] = function(sel)
+        if not sel or not sel[1] then return end
+        -- Extract area name from selection (remove icon prefix)
+        local name = sel[1]:match("%s(.+)$") or sel[1]
+        local area = lookup[name]
+        if callback then callback(area) end
+      end,
+    },
+  })
 end
 
 -- ------------------------------------------------------------
--- Setup
+-- Browse: Open area directory in fzf-lua
+-- ------------------------------------------------------------
+
+--- Browse all areas with fzf-lua picker
+function M.browse()
+  local areas = M.get_areas()
+  if #areas == 0 then
+    shared.notify("No areas configured", "WARN")
+    return
+  end
+  
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    shared.notify("fzf-lua not available", "WARN")
+    return
+  end
+  
+  local display = {}
+  local meta = {}
+  
+  for _, area in ipairs(areas) do
+    local icon = area.icon or g.container.area
+    local dir = xp(area.dir)
+    local file_count = 0
+    
+    if vim.fn.isdirectory(dir) == 1 then
+      local files = vim.fn.glob(dir .. "/*.org", false, true)
+      file_count = #files
+    end
+    
+    local label = string.format("%s %s (%d files)", icon, area.name, file_count)
+    table.insert(display, label)
+    table.insert(meta, area)
+  end
+  
+  fzf.fzf_exec(display, {
+    prompt = "Areas> ",
+    winopts = {
+      height = 0.50,
+      width = 0.60,
+      row = 0.25,
+      title = " " .. g.container.area .. " Areas of Focus ",
+      title_pos = "center",
+    },
+    fzf_opts = {
+      ["--no-info"] = true,
+      ["--header"] = "Enter: Browse files │ Ctrl-N: New project",
+    },
+    actions = {
+      ["default"] = function(sel)
+        if not sel or not sel[1] then return end
+        local idx = vim.fn.index(display, sel[1]) + 1
+        local area = meta[idx]
+        if area then
+          local dir = xp(area.dir)
+          if vim.fn.isdirectory(dir) == 1 then
+            fzf.files({ cwd = dir })
+          else
+            shared.notify("Area directory not found: " .. dir, "WARN")
+          end
+        end
+      end,
+      ["ctrl-n"] = function(sel)
+        if not sel or not sel[1] then return end
+        local idx = vim.fn.index(display, sel[1]) + 1
+        local area = meta[idx]
+        if area then
+          -- Create new project in this area
+          local projects = require("gtd-nvim.gtd.projects")
+          if projects and projects.create then
+            projects.create({ area = area })
+          end
+        end
+      end,
+    },
+  })
+end
+
+-- ------------------------------------------------------------
+-- Setup (optional - for custom configuration)
 -- ------------------------------------------------------------
 
 function M.setup(opts)
+  -- No-op: areas now come from user config
+  -- Kept for backwards compatibility
   if opts and opts.areas then
-    M.areas = opts.areas
+    shared.notify("areas.setup() is deprecated. Use ~/.config/gtd-nvim/config.lua", "WARN")
   end
 end
 

@@ -13,29 +13,37 @@
 local M = {}
 
 M._VERSION = "1.0.0"
-M._UPDATED = "2024-12-08"
+M._UPDATED = "2024-12-19"
 
 -- Load shared utilities with glyph system
 local shared = require("gtd-nvim.gtd.shared")
 local g = shared.glyphs  -- Glyph shortcuts
 
 -- ------------------------ Config ------------------------
+-- NOTE: These are defaults. Use gtd_root()/zk_root() for runtime paths!
 M.cfg = {
-  gtd_root            = "~/Documents/GTD",
-  projects_dir        = "Projects",       -- under gtd_root
-  areas_dir           = "Areas",          -- under gtd_root (new: Areas support)
-  inbox_file          = "Inbox.org",      -- under gtd_root
-  archive_file        = "Archive.org",    -- under gtd_root
-  archive_deleted_dir = "ArchiveDeleted", -- under gtd_root
-
-  zk_root             = "~/Documents/Notes",
-  zk_archive_dir      = "Archive",        -- under zk_root
+  -- Relative paths (under gtd_root/zk_root)
+  projects_dir        = "Projects",
+  areas_dir           = "Areas",
+  inbox_file          = "Inbox.org",
+  archive_file        = "Archive.org",
+  archive_deleted_dir = "ArchiveDeleted",
+  zk_archive_dir      = "Archive",
 
   -- Display options
-  show_archive_tasks  = true,             -- include archived tasks in listings
-  max_title_length    = 60,               -- truncate long titles
-  date_format         = "%Y-%m-%d %H:%M", -- for timestamps
+  show_archive_tasks  = true,
+  max_title_length    = 60,
+  date_format         = "%Y-%m-%d %H:%M",
 }
+
+-- Runtime path accessors
+local function gtd_root()
+  return shared.gtd_home()
+end
+
+local function zk_root()
+  return shared.notes_home()
+end
 
 -- ------------------------ Dependencies ------------------------
 local ui = require("gtd-nvim.gtd.ui")
@@ -65,7 +73,7 @@ local function ensure_valid_cwd()
   local cwd = vim.uv.cwd()
   if not cwd then
     -- cwd is nil (deleted directory) - change to GTD root or home
-    local fallback = xp(M.cfg.gtd_root)
+    local fallback = xp(gtd_root())
     if vim.fn.isdirectory(fallback) == 1 then
       vim.cmd("cd " .. vim.fn.fnameescape(fallback))
     else
@@ -81,8 +89,8 @@ local function truncate_title(title, max_len)
 end
 
 local function paths()
-  local root = xp(M.cfg.gtd_root)
-  local zk_root = xp(M.cfg.zk_root)
+  local root = xp(gtd_root())
+  local zk_root = xp(zk_root())
   return {
     root       = root,
     inbox      = j(root, M.cfg.inbox_file),

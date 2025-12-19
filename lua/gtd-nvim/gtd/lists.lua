@@ -4,13 +4,16 @@
 
 local M = {}
 
+-- Load shared for config access
+local shared = require("gtd-nvim.gtd.shared")
+
 -- ---------------------------- Config ----------------------------
+-- NOTE: These are fallback defaults. Runtime paths come from config!
 M.cfg = {
-  gtd_root     = "~/Documents/GTD",
+  -- Relative paths (subpaths under roots)
   inbox_file   = "Inbox.org",
   projects_dir = "Projects",
   archive_file = "Archive.org",
-  zk_root      = "~/Documents/Notes",
   
   -- WAITING display options
   waiting_display = {
@@ -20,6 +23,15 @@ M.cfg = {
     days_overdue_warn = 3,    -- Days past follow-up to show warning
   }
 }
+
+-- Runtime path accessors (use these instead of gtd_root()!)
+local function gtd_root()
+  return shared.gtd_home()
+end
+
+local function zk_root()
+  return shared.notes_home()
+end
 
 -- ---------------------------- Helpers ---------------------------
 local function xp(p) return vim.fn.expand(p) end
@@ -74,7 +86,7 @@ local function format_days_until(date_str)
 end
 
 local function paths()
-  local root = xp(M.cfg.gtd_root)
+  local root = gtd_root()
   return {
     root = root,
     inbox = j(root, M.cfg.inbox_file),
