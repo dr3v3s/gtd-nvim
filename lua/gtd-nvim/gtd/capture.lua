@@ -985,7 +985,9 @@ function M.capture_quick()
                   end
                 end
                 
-                table.insert(lines, string.format("* %s %s%s", state, title, tag_string))
+                -- Use ** for project destinations, * for inbox/standalone
+                local heading_stars = (destination.type == "project") and "**" or "*"
+                table.insert(lines, string.format("%s %s %s%s", heading_stars, state, title, tag_string))
 
                 -- Dates handling
                 if is_recurring and recur_data then
