@@ -1084,23 +1084,61 @@ function M.agenda(date)
   -- Check kairos availability (calendar integration optional)
   local has_kairos = kairos and kairos.is_available()
   
+  -- DEBUG: Log what we're working with
+  vim.notify(string.format("Agenda: kairos=%s, available=%s", 
+    tostring(kairos ~= nil), 
+    tostring(has_kairos)), vim.log.levels.INFO)
+  
   -- Force refresh GTD data to ensure we have latest changes
   if has_kairos then
-    kairos.refresh("gtd")
+    local refresh_ok, refresh_err = kairos.refresh("gtd")
+    vim.notify(string.format("Kairos refresh: ok=%s, err=%s", 
+      tostring(refresh_ok), tostring(refresh_err or "nil")), vim.log.levels.INFO)
     -- Small delay to let refresh complete
-    vim.wait(50, function() return false end)
+    vim.wait(100, function() return false end)
   end
   
-  -- Collect all data asynchronously
-  local pending = has_kairos and 2 or 1  -- calendar (if available) + tasks
-  local calendar_events = {}
+  -- Try synchronous query first for reliability
   local all_tasks = {}
-  local data_received = false  -- Track if we got any data
+  local calendar_events = {}
+  
+  if has_kairos then
+    -- Synchronous task fetch for reliability
+    local tasks_data, tasks_err = kairos.query("gtd", "tasks", {})
+    vim.notify(string.format("Tasks query: got=%s, err=%s", 
+      tostring(tasks_data ~= nil and #(tasks_data or {}) or 0),
+      tostring(tasks_err or "nil")), vim.log.levels.INFO)
+    
+    if tasks_data and type(tasks_data) == "table" then
+      all_tasks = tasks_data
+    end
+    
+    -- Synchronous calendar fetch
+    local cal_data, cal_err = kairos.calendar_today()
+    if cal_data and type(cal_data) == "table" then
+      calendar_events = cal_data
+    end
+  end
+  
+  -- Fallback if Kairos returned nothing
+  if #all_tasks == 0 then
+    vim.notify("Kairos returned 0 tasks, using fallback scan", vim.log.levels.WARN)
+    local items = shared.scan_gtd_files_robust({ root = vim.fn.expand("~/Documents/GTD") })
+    for _, item in ipairs(items) do
+      table.insert(all_tasks, {
+        state = item.state,
+        title = item.title,
+        file = item.path,
+        line = item.lnum,
+        project = item.filename:gsub("%.org$", ""),
+        scheduled = nil,
+        deadline = nil,
+      })
+    end
+    vim.notify(string.format("Fallback scan found %d tasks", #all_tasks), vim.log.levels.INFO)
+  end
   
   local function build_agenda()
-    pending = pending - 1
-    if pending > 0 then return end
-    
     -- Categorize tasks
     local scheduled_today = {}
     local due_today = {}
@@ -1534,57 +1572,8 @@ function M.agenda(date)
     end)
   end
   
-  -- Fetch calendar events for today (if kairos available)
-  if has_kairos then
-    kairos.calendar_today_async(function(events, err)
-      if events and type(events) == "table" then
-        calendar_events = events
-      end
-      build_agenda()
-    end)
-    
-    -- Fetch all GTD tasks via kairos
-    kairos.query_async("gtd", "tasks", {}, function(tasks, err)
-      if tasks and type(tasks) == "table" and #tasks > 0 then
-        all_tasks = tasks
-        data_received = true
-      else
-        -- Kairos returned empty, try fallback
-        local items = shared.scan_gtd_files_robust({ root = vim.fn.expand("~/Documents/GTD") })
-        for _, item in ipairs(items) do
-          table.insert(all_tasks, {
-            state = item.state,
-            title = item.title,
-            file = item.path,
-            line = item.lnum,
-            project = item.filename:gsub("%.org$", ""),
-            scheduled = nil,
-            deadline = nil,
-          })
-        end
-        if #all_tasks > 0 then data_received = true end
-      end
-      build_agenda()
-    end)
-  else
-    -- Fallback: scan GTD files directly when kairos unavailable
-    vim.schedule(function()
-      local items = shared.scan_gtd_files_robust({ root = vim.fn.expand("~/Documents/GTD") })
-      for _, item in ipairs(items) do
-        table.insert(all_tasks, {
-          state = item.state,
-          title = item.title,
-          file = item.path,
-          line = item.lnum,
-          project = item.filename:gsub("%.org$", ""),
-          scheduled = nil,
-          deadline = nil,
-        })
-      end
-      if #all_tasks > 0 then data_received = true end
-      build_agenda()
-    end)
-  end
+  -- Build and display the agenda (data already fetched synchronously above)
+  build_agenda()
 end
 
 -- Show free time slots
