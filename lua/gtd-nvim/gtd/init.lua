@@ -104,6 +104,9 @@ local status = safe_require "gtd-nvim.gtd.status"
 -- Kairos daemon integration (calendar/reminders via EventKit)
 local kairos = safe_require "gtd-nvim.gtd.kairos"
 
+-- Chronos daemon integration (GTD orchestration engine)
+local chronos = safe_require "gtd-nvim.gtd.chronos"
+
 -- ============================================================================
 -- HEALTH CHECK
 -- ============================================================================
@@ -135,6 +138,20 @@ function M.health()
       table.insert(warnings, "Kairos daemon not available (socket missing)")
     elseif not kairos_status.running then
       table.insert(warnings, "Kairos daemon not running")
+    end
+  end
+
+  -- Chronos daemon
+  if not chronos then
+    table.insert(warnings, "Missing gtd.chronos (GTD orchestration unavailable)")
+  else
+    if not chronos.is_available() then
+      table.insert(warnings, "Chronos daemon not available (socket missing)")
+    else
+      local running, err = chronos.is_running()
+      if not running then
+        table.insert(warnings, "Chronos daemon not running: " .. (err or ""))
+      end
     end
   end
 
@@ -621,6 +638,13 @@ function M.setup(user_cfg)
   pcall(function()
     if kairos and kairos.setup then
       kairos.setup {}
+    end
+  end)
+
+  -- Setup Chronos daemon integration (GTD orchestration engine)
+  pcall(function()
+    if chronos and chronos.setup then
+      chronos.setup { keymaps = "<leader>C" }
     end
   end)
 
