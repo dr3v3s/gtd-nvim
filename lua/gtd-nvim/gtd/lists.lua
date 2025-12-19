@@ -1153,41 +1153,78 @@ function M.agenda(date)
     end
     stuck_projects = really_stuck
     
-    -- Build display
+    -- Build display with Catppuccin Mocha colors (ANSI)
     local display = {}
     local meta = {}
     local section_indices = {}  -- Track section headers for coloring
     
-    local function add_section(title, icon)
+    -- Catppuccin Mocha ANSI colors (256-color mode)
+    local colors = {
+      reset     = "\27[0m",
+      bold      = "\27[1m",
+      dim       = "\27[2m",
+      italic    = "\27[3m",
+      -- Catppuccin Mocha palette
+      rosewater = "\27[38;2;245;224;220m",
+      flamingo  = "\27[38;2;242;205;205m",
+      pink      = "\27[38;2;245;194;231m",
+      mauve     = "\27[38;2;203;166;247m",
+      red       = "\27[38;2;243;139;168m",
+      maroon    = "\27[38;2;235;160;172m",
+      peach     = "\27[38;2;250;179;135m",
+      yellow    = "\27[38;2;249;226;175m",
+      green     = "\27[38;2;166;227;161m",
+      teal      = "\27[38;2;148;226;213m",
+      sky       = "\27[38;2;137;220;235m",
+      sapphire  = "\27[38;2;116;199;236m",
+      blue      = "\27[38;2;137;180;250m",
+      lavender  = "\27[38;2;180;190;254m",
+      text      = "\27[38;2;205;214;244m",
+      subtext1  = "\27[38;2;186;194;222m",
+      subtext0  = "\27[38;2;166;173;200m",
+      overlay1  = "\27[38;2;127;132;156m",
+    }
+    local C = colors
+    
+    local function add_section(title, icon, color)
       if #display > 0 then
         table.insert(display, "")
         table.insert(meta, { type = "separator" })
       end
-      local header = string.format("%s %s", icon or "", title)
+      local header = string.format("%s%s%s %s%s", C.bold, color or C.mauve, icon or "", title, C.reset)
       table.insert(display, header)
       table.insert(meta, { type = "header", title = title })
       section_indices[#display] = true
     end
     
-    local function add_item(item, prefix, item_type)
-      local line = prefix .. " " .. (item.title or "?")
+    local function add_item(item, prefix, item_type, color)
+      local line = string.format("%s%s%s %s", color or C.text, prefix, C.reset, item.title or "?")
       table.insert(display, line)
       table.insert(meta, { type = item_type, data = item })
     end
     
     local function format_event(e)
       local time_str = e.isAllDay and "All-day" or (e.startDate and e.startDate:sub(12, 16) or "")
-      local cal = e.calendar and (" (" .. e.calendar .. ")") or ""
-      return string.format("  %s  %s%s", time_str, e.title, cal)
+      local cal = e.calendar and (" " .. C.overlay1 .. "(" .. e.calendar .. ")" .. C.reset) or ""
+      return string.format("%s%s%s  %s%s%s%s", 
+        C.sapphire, time_str, C.reset, 
+        C.text, e.title, C.reset, cal)
     end
     
     local function format_task(t, show_state)
       local state_icon = g.state and g.state[t.state] or ""
-      local project = t.project and (" :" .. t.project) or ""
+      local project = t.project and (C.overlay1 .. " :" .. t.project .. C.reset) or ""
+      local state_color = C.text
+      if t.state == "NEXT" then state_color = C.yellow
+      elseif t.state == "TODO" then state_color = C.blue
+      elseif t.state == "WAITING" then state_color = C.peach
+      elseif t.state == "SOMEDAY" then state_color = C.overlay1
+      elseif t.state == "DONE" then state_color = C.green
+      end
       if show_state then
-        return string.format("  %s %s%s", state_icon, t.title, project)
+        return string.format("%s%s%s %s%s", state_color, state_icon, C.reset, t.title, project)
       else
-        return string.format("  %s%s", t.title, project)
+        return string.format("%s%s", t.title, project)
       end
     end
     
@@ -1198,16 +1235,16 @@ function M.agenda(date)
     local has_must_do = #calendar_events > 0 or #scheduled_today > 0 or #due_today > 0
     
     if has_must_do then
-      add_section("MUST DO TODAY", "󰃰")
+      add_section("MUST DO TODAY", "󰃰", C.green)
       
       -- Calendar events
       for _, e in ipairs(calendar_events) do
-        add_item({ title = format_event(e), raw = e }, (g.container and g.container.calendar or ""), "event")
+        add_item({ title = format_event(e), raw = e }, (g.container and g.container.calendar or ""), "event", C.sapphire)
       end
       
       -- Scheduled today
       for _, t in ipairs(scheduled_today) do
-        add_item({ title = format_task(t, true), raw = t }, "󰃭", "task")  -- scheduled icon
+        add_item({ title = format_task(t, true), raw = t }, "󰃭", "task", C.teal)
       end
       
       -- Due today
@@ -1221,7 +1258,7 @@ function M.agenda(date)
           end
         end
         if not dominated then
-          add_item({ title = format_task(t, true), raw = t }, "󰀨", "task")  -- deadline icon
+          add_item({ title = format_task(t, true), raw = t }, "󰀨", "task", C.peach)
         end
       end
     end
@@ -1231,7 +1268,7 @@ function M.agenda(date)
     -- ═══════════════════════════════════════════════════════════════
     
     if #overdue > 0 then
-      add_section("OVERDUE", "󰀦")
+      add_section("OVERDUE", "󰀦", C.red)
       for i, t in ipairs(overdue) do
         if i <= 10 then  -- Limit to 10
           local days = math.floor((os.time() - os.time({
@@ -1239,11 +1276,11 @@ function M.agenda(date)
             month = tonumber(t.deadline:sub(6,7)),
             day = tonumber(t.deadline:sub(9,10))
           })) / 86400)
-          add_item({ title = format_task(t, true) .. " (" .. days .. "d)", raw = t }, "󰀨", "task")
+          add_item({ title = format_task(t, true) .. C.red .. " (" .. days .. "d)" .. C.reset, raw = t }, "󰀨", "task", C.red)
         end
       end
       if #overdue > 10 then
-        table.insert(display, "  ... and " .. (#overdue - 10) .. " more overdue items")
+        table.insert(display, C.overlay1 .. "  ... and " .. (#overdue - 10) .. " more overdue items" .. C.reset)
         table.insert(meta, { type = "info" })
       end
     end
@@ -1255,41 +1292,41 @@ function M.agenda(date)
     local has_could_do = #next_actions > 0 or #someday > 0 or #stuck_projects > 0
     
     if has_could_do then
-      add_section("COULD DO TODAY", "󰋚")
+      add_section("COULD DO TODAY", "󰋚", C.lavender)
       
       -- NEXT actions (top 5)
       if #next_actions > 0 then
-        table.insert(display, "  NEXT actions available:")
+        table.insert(display, C.subtext0 .. "  NEXT actions available:" .. C.reset)
         table.insert(meta, { type = "info" })
         for i, t in ipairs(next_actions) do
           if i <= 5 then
-            add_item({ title = format_task(t, false), raw = t }, "  󰁔", "task")
+            add_item({ title = format_task(t, false), raw = t }, "  󰁔", "task", C.yellow)
           end
         end
         if #next_actions > 5 then
-          table.insert(display, "    ... " .. (#next_actions - 5) .. " more NEXT actions")
+          table.insert(display, C.overlay1 .. "    ... " .. (#next_actions - 5) .. " more NEXT actions" .. C.reset)
           table.insert(meta, { type = "info" })
         end
       end
       
       -- Stuck projects
       if #stuck_projects > 0 then
-        table.insert(display, "  Stuck projects (need NEXT action):")
+        table.insert(display, C.subtext0 .. "  Stuck projects (need NEXT action):" .. C.reset)
         table.insert(meta, { type = "info" })
         for i, t in ipairs(stuck_projects) do
           if i <= 3 then
-            add_item({ title = "  " .. t.title, raw = t }, "  󰏔", "task")
+            add_item({ title = "  " .. t.title, raw = t }, "  󰏔", "task", C.maroon)
           end
         end
         if #stuck_projects > 3 then
-          table.insert(display, "    ... " .. (#stuck_projects - 3) .. " more stuck projects")
+          table.insert(display, C.overlay1 .. "    ... " .. (#stuck_projects - 3) .. " more stuck projects" .. C.reset)
           table.insert(meta, { type = "info" })
         end
       end
       
       -- Someday suggestions (random 3)
       if #someday > 0 then
-        table.insert(display, "  Someday/Maybe inspiration:")
+        table.insert(display, C.subtext0 .. "  Someday/Maybe inspiration:" .. C.reset)
         table.insert(meta, { type = "info" })
         -- Shuffle and pick 3
         local picks = {}
@@ -1301,7 +1338,7 @@ function M.agenda(date)
           table.insert(picks, someday[indices[i]])
         end
         for _, t in ipairs(picks) do
-          add_item({ title = "  " .. t.title, raw = t }, "  󰋚", "task")
+          add_item({ title = "  " .. t.title, raw = t }, "  󰋚", "task", C.overlay1)
         end
       end
     end
