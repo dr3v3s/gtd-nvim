@@ -223,112 +223,25 @@ end
 -- ============================================================================
 
 --- Show today's agenda (calendar events + GTD scheduled tasks)
+--- Delegates to lists.agenda() for comprehensive GTD agenda view
 ---@param date string|nil Optional date in YYYY-MM-DD format (default: today)
 function M.agenda(date)
-  if not kairos then
-    vim.notify("Kairos not loaded - calendar unavailable", vim.log.levels.WARN)
+  if not lists then
+    vim.notify("gtd.lists not loaded", vim.log.levels.ERROR)
     return
   end
-  
-  -- Use async agenda builder
-  kairos.build_agenda_async(date, function(agenda, err)
-    if err then
-      vim.notify("Failed to build agenda: " .. err, vim.log.levels.ERROR)
-      return
-    end
-    
-    if not agenda or #agenda.merged == 0 then
-      vim.notify("No events or tasks for " .. (date or "today"), vim.log.levels.INFO)
-      return
-    end
-    
-    -- Display in floating window
-    local lines = { " Agenda for " .. agenda.date, string.rep("─", 40) }
-    for _, item in ipairs(agenda.merged) do
-      local icon = item.type == "event" and "" or ""
-      local time_str = item.all_day and "All day" or item.time
-      table.insert(lines, string.format("%s %s  %s", icon, time_str, item.title))
-    end
-    
-    local buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    vim.api.nvim_buf_set_option(buf, "modifiable", false)
-    vim.api.nvim_buf_set_option(buf, "buftype", "nofile")
-    
-    local width = math.min(60, vim.o.columns - 4)
-    local height = math.min(#lines + 2, vim.o.lines - 4)
-    
-    vim.api.nvim_open_win(buf, true, {
-      relative = "editor",
-      width = width,
-      height = height,
-      col = math.floor((vim.o.columns - width) / 2),
-      row = math.floor((vim.o.lines - height) / 2),
-      style = "minimal",
-      border = "rounded",
-      title = " Agenda ",
-      title_pos = "center",
-    })
-    
-    vim.api.nvim_buf_set_keymap(buf, "n", "q", ":close<CR>", { noremap = true, silent = true })
-    vim.api.nvim_buf_set_keymap(buf, "n", "<Esc>", ":close<CR>", { noremap = true, silent = true })
-  end)
+  return lists.agenda(date)
 end
 
 --- Find free time slots for scheduling
+--- Delegates to lists.free_slots() for fzf-based view
 ---@param date string|nil Optional date in YYYY-MM-DD format (default: today)
 function M.free_slots(date)
-  if not kairos then
-    vim.notify("Kairos not loaded - calendar unavailable", vim.log.levels.WARN)
+  if not lists then
+    vim.notify("gtd.lists not loaded", vim.log.levels.ERROR)
     return
   end
-  
-  local events, err = kairos.calendar_today()
-  if err then
-    vim.notify("Failed to get calendar: " .. err, vim.log.levels.ERROR)
-    return
-  end
-  
-  local slots = kairos.calculate_free_slots(events or {})
-  
-  if #slots == 0 then
-    vim.notify("No free slots found today", vim.log.levels.INFO)
-    return
-  end
-  
-  local lines = { (g.ui.clock or "") .. " Free Time Slots", string.rep("─", 30) }
-  for _, slot in ipairs(slots) do
-    local duration_hr = math.floor(slot.duration_min / 60)
-    local duration_min = slot.duration_min % 60
-    local duration_str = duration_hr > 0 
-      and string.format("%dh %dm", duration_hr, duration_min)
-      or string.format("%dm", duration_min)
-    table.insert(lines, string.format("%s - %s  (%s)", 
-      slot.start_time, slot.end_time, duration_str))
-  end
-  
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.api.nvim_buf_set_option(buf, "modifiable", false)
-  vim.api.nvim_buf_set_option(buf, "buftype", "nofile")
-  
-  local width = math.min(40, vim.o.columns - 4)
-  local height = math.min(#lines + 2, vim.o.lines - 4)
-  
-  vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    width = width,
-    height = height,
-    col = math.floor((vim.o.columns - width) / 2),
-    row = math.floor((vim.o.lines - height) / 2),
-    style = "minimal",
-    border = "rounded",
-    title = " Free Slots ",
-    title_pos = "center",
-  })
-  
-  vim.api.nvim_buf_set_keymap(buf, "n", "q", ":close<CR>", { noremap = true, silent = true })
-  vim.api.nvim_buf_set_keymap(buf, "n", "<Esc>", ":close<CR>", { noremap = true, silent = true })
+  return lists.free_slots(date)
 end
 
 -- ============================================================================
