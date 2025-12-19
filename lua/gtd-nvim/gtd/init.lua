@@ -728,22 +728,10 @@ function M.setup(user_cfg)
     M.link_task_to_project {}
   end, { desc = "Link task to project" })
 
-  -- Lists
-  vim.api.nvim_create_user_command("GtdLists", function()
-    M.lists_menu()
-  end, { desc = "Open GTD lists menu" })
-
+  -- Lists (shortcuts - main definitions in lists.lua)
   vim.api.nvim_create_user_command("GtdNext", function()
     M.list_next()
   end, { desc = "Show NEXT actions" })
-
-  vim.api.nvim_create_user_command("GtdProjects", function()
-    M.list_projects()
-  end, { desc = "Show projects" })
-
-  vim.api.nvim_create_user_command("GtdWaiting", function()
-    M.list_waiting()
-  end, { desc = "Show WAITING items" })
 
   -- Calendar (Kairos)
   vim.api.nvim_create_user_command("GtdAgenda", function(opts)
@@ -767,18 +755,8 @@ function M.setup(user_cfg)
     M.find_duplicates()
   end, { desc = "Find duplicate TASK_IDs" })
 
-  -- Weekly Review
-  vim.api.nvim_create_user_command("GtdWeeklyReview", function()
-    M.weekly_review()
-  end, { desc = "Start GTD Weekly Review" })
-
-  vim.api.nvim_create_user_command("GtdReviewResume", function()
-    M.review_resume()
-  end, { desc = "Resume incomplete review" })
-
-  vim.api.nvim_create_user_command("GtdReviewHistory", function()
-    M.review_history()
-  end, { desc = "Browse past reviews" })
+  -- Weekly Review (main definitions in review.lua)
+  -- Commands: GtdReview, GtdReviewResume, GtdReviewHistory, GtdReviewChecklists
 
   -- Status changes
   vim.api.nvim_create_user_command("GtdStatus", function()

@@ -1294,18 +1294,15 @@ function M.setup(user_cfg)
   end
   
   -- Create commands
-  vim.api.nvim_create_user_command("GtdListsMenu",        function() M.menu() end, {})
-  vim.api.nvim_create_user_command("GtdNextActions",      function() M.next_actions() end, {})
-  vim.api.nvim_create_user_command("GtdProjects",         function() M.projects() end, {})
-  vim.api.nvim_create_user_command("GtdSomedayMaybe",     function() M.someday_maybe() end, {})
-  vim.api.nvim_create_user_command("GtdWaiting",          function() M.waiting() end, {})
-  vim.api.nvim_create_user_command("GtdWaitingOverdue",   function() M.waiting_overdue() end, {})
-  vim.api.nvim_create_user_command("GtdWaitingUrgent",    function() M.waiting_urgent() end, {})
-  vim.api.nvim_create_user_command("GtdStuckProjects",    function() M.stuck_projects() end, {})
-  vim.api.nvim_create_user_command("GtdSearchAll",        function() M.search_all() end, {})
-  
-  -- Backward compatibility
-  vim.api.nvim_create_user_command("GtdLists",            function() M.menu() end, {})
+  vim.api.nvim_create_user_command("GtdLists",            function() M.menu() end, { desc = "GTD Lists menu" })
+  vim.api.nvim_create_user_command("GtdProjects",         function() M.projects() end, { desc = "Show projects" })
+  vim.api.nvim_create_user_command("GtdSomedayMaybe",     function() M.someday_maybe() end, { desc = "Show Someday/Maybe" })
+  vim.api.nvim_create_user_command("GtdWaiting",          function() M.waiting() end, { desc = "Show WAITING items" })
+  vim.api.nvim_create_user_command("GtdWaitingOverdue",   function() M.waiting_overdue() end, { desc = "Show overdue WAITING" })
+  vim.api.nvim_create_user_command("GtdWaitingUrgent",    function() M.waiting_urgent() end, { desc = "Show urgent WAITING" })
+  vim.api.nvim_create_user_command("GtdStuckProjects",    function() M.stuck_projects() end, { desc = "Show stuck projects" })
+  vim.api.nvim_create_user_command("GtdSearchAll",        function() M.search_all() end, { desc = "Search all GTD files" })
+  -- Removed: GtdListsMenu (duplicate of GtdLists), GtdNextActions (duplicate of GtdNext in init.lua)
 end
 
 return M

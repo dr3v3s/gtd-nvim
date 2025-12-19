@@ -1227,7 +1227,7 @@ function M.setup(user_cfg)
   
   -- Create commands
   vim.api.nvim_create_user_command("GtdEdit", function() M.open() end, { desc = "Edit task at cursor" })
-  vim.api.nvim_create_user_command("GtdTaskEditor", function() M.open() end, { desc = "Edit task at cursor" })
+  -- GtdTaskEditor removed (was duplicate of GtdEdit)
   vim.api.nvim_create_user_command("GtdEnsureId", function()
     local data, err = M.extract_task_at_cursor()
     if data then
