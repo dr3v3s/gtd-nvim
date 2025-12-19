@@ -1349,8 +1349,7 @@ function M.agenda(date)
     
     if #display == 0 then
       vim.notify("No agenda items for " .. date .. " - enjoy your free day!", vim.log.levels.INFO)
-      vim.schedule(function() M.menu() end)
-      return
+      return  -- Don't fallback to menu, just return
     end
     
     -- Show in fzf
@@ -1358,6 +1357,23 @@ function M.agenda(date)
     if not ok then
       vim.notify("fzf-lua required for agenda display", vim.log.levels.WARN)
       return
+    end
+    
+    -- Helper to find item by stripping ANSI and matching
+    local function find_item_index(selected)
+      -- fzf returns selection with ANSI codes, try direct match first
+      for i, line in ipairs(display) do
+        if line == selected then return i end
+      end
+      -- Strip ANSI codes and try again
+      local strip_ansi = function(s)
+        return s:gsub("\27%[[%d;]*m", "")
+      end
+      local stripped_sel = strip_ansi(selected)
+      for i, line in ipairs(display) do
+        if strip_ansi(line) == stripped_sel then return i end
+      end
+      return nil
     end
     
     vim.schedule(function()
@@ -1378,10 +1394,7 @@ function M.agenda(date)
         actions = {
           ["default"] = function(sel)
             if not sel or not sel[1] then return end
-            local idx = nil
-            for i, line in ipairs(display) do
-              if line == sel[1] then idx = i; break end
-            end
+            local idx = find_item_index(sel[1])
             if not idx then return end
             
             local item = meta[idx]
@@ -1409,10 +1422,7 @@ function M.agenda(date)
           end,
           ["ctrl-e"] = function(sel)
             if not sel or not sel[1] then return end
-            local idx = nil
-            for i, line in ipairs(display) do
-              if line == sel[1] then idx = i; break end
-            end
+            local idx = find_item_index(sel[1])
             if not idx then return end
             
             local item = meta[idx]
