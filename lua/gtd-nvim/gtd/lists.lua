@@ -1074,7 +1074,9 @@ end
 -- Load kairos module for calendar functions (replaces icalbuddy)
 local kairos = safe_require("gtd-nvim.gtd.kairos")
 
--- Show today's agenda (calendar events + GTD tasks)
+-- Show today's GTD agenda (comprehensive view)
+-- MUST DO: Calendar events, Scheduled today, Due today
+-- COULD DO: Overdue, NEXT actions, Someday suggestions, Stuck projects
 function M.agenda(date)
   if not kairos then
     vim.notify("Calendar integration not available (kairos module missing)", vim.log.levels.WARN)
@@ -1087,69 +1089,261 @@ function M.agenda(date)
     return
   end
   
-  -- Use async agenda builder from kairos
   date = date or os.date("%Y-%m-%d")
+  local g = shared and shared.glyphs or {}
   
-  kairos.build_agenda_async(date, function(agenda, err)
-    if err or not agenda then
-      vim.notify("Failed to build agenda: " .. (err or "unknown error"), vim.log.levels.ERROR)
-      return
+  -- Collect all data asynchronously
+  local pending = 2  -- calendar + tasks
+  local calendar_events = {}
+  local all_tasks = {}
+  
+  local function build_agenda()
+    pending = pending - 1
+    if pending > 0 then return end
+    
+    -- Categorize tasks
+    local scheduled_today = {}
+    local due_today = {}
+    local overdue = {}
+    local next_actions = {}
+    local someday = {}
+    local stuck_projects = {}
+    
+    -- Track projects with NEXT actions
+    local projects_with_next = {}
+    
+    for _, t in ipairs(all_tasks) do
+      local sched_date = t.scheduled and t.scheduled:match("^(%d%d%d%d%-%d%d%-%d%d)")
+      local dead_date = t.deadline and t.deadline:match("^(%d%d%d%d%-%d%d%-%d%d)")
+      
+      -- Scheduled for today
+      if sched_date == date then
+        table.insert(scheduled_today, t)
+      end
+      
+      -- Due today
+      if dead_date == date then
+        table.insert(due_today, t)
+      end
+      
+      -- Overdue (deadline passed, not DONE)
+      if dead_date and dead_date < date and t.state ~= "DONE" then
+        table.insert(overdue, t)
+      end
+      
+      -- NEXT actions (for "could do" section)
+      if t.state == "NEXT" then
+        table.insert(next_actions, t)
+        if t.project then
+          projects_with_next[t.project] = true
+        end
+      end
+      
+      -- SOMEDAY items
+      if t.state == "SOMEDAY" then
+        table.insert(someday, t)
+      end
+      
+      -- Track PROJECT entries for stuck detection
+      if t.state == "PROJECT" and t.project then
+        if not projects_with_next[t.project] then
+          table.insert(stuck_projects, t)
+        end
+      end
     end
     
-    if #agenda.merged == 0 then
-      vim.notify("No events or scheduled tasks for " .. date, vim.log.levels.INFO)
+    -- Re-filter stuck projects (some may have gotten NEXT actions)
+    local really_stuck = {}
+    for _, p in ipairs(stuck_projects) do
+      if not projects_with_next[p.project] then
+        table.insert(really_stuck, p)
+      end
+    end
+    stuck_projects = really_stuck
+    
+    -- Build display
+    local display = {}
+    local meta = {}
+    local section_indices = {}  -- Track section headers for coloring
+    
+    local function add_section(title, icon)
+      if #display > 0 then
+        table.insert(display, "")
+        table.insert(meta, { type = "separator" })
+      end
+      local header = string.format("%s %s", icon or "", title)
+      table.insert(display, header)
+      table.insert(meta, { type = "header", title = title })
+      section_indices[#display] = true
+    end
+    
+    local function add_item(item, prefix, item_type)
+      local line = prefix .. " " .. (item.title or "?")
+      table.insert(display, line)
+      table.insert(meta, { type = item_type, data = item })
+    end
+    
+    local function format_event(e)
+      local time_str = e.isAllDay and "All-day" or (e.startDate and e.startDate:sub(12, 16) or "")
+      local cal = e.calendar and (" (" .. e.calendar .. ")") or ""
+      return string.format("  %s  %s%s", time_str, e.title, cal)
+    end
+    
+    local function format_task(t, show_state)
+      local state_icon = g.state and g.state[t.state] or ""
+      local project = t.project and (" :" .. t.project) or ""
+      if show_state then
+        return string.format("  %s %s%s", state_icon, t.title, project)
+      else
+        return string.format("  %s%s", t.title, project)
+      end
+    end
+    
+    -- ═══════════════════════════════════════════════════════════════
+    -- MUST DO TODAY
+    -- ═══════════════════════════════════════════════════════════════
+    
+    local has_must_do = #calendar_events > 0 or #scheduled_today > 0 or #due_today > 0
+    
+    if has_must_do then
+      add_section("MUST DO TODAY", "󰃰")
+      
+      -- Calendar events
+      for _, e in ipairs(calendar_events) do
+        add_item({ title = format_event(e), raw = e }, (g.container and g.container.calendar or ""), "event")
+      end
+      
+      -- Scheduled today
+      for _, t in ipairs(scheduled_today) do
+        add_item({ title = format_task(t, true), raw = t }, "󰃭", "task")  -- scheduled icon
+      end
+      
+      -- Due today
+      for _, t in ipairs(due_today) do
+        -- Don't duplicate if also scheduled today
+        local dominated = false
+        for _, s in ipairs(scheduled_today) do
+          if s.file == t.file and s.line == t.line then
+            duped = true
+            break
+          end
+        end
+        if not duped then
+          add_item({ title = format_task(t, true), raw = t }, "󰀨", "task")  -- deadline icon
+        end
+      end
+    end
+    
+    -- ═══════════════════════════════════════════════════════════════
+    -- OVERDUE (urgent attention needed)
+    -- ═══════════════════════════════════════════════════════════════
+    
+    if #overdue > 0 then
+      add_section("OVERDUE", "󰀦")
+      for i, t in ipairs(overdue) do
+        if i <= 10 then  -- Limit to 10
+          local days = math.floor((os.time() - os.time({
+            year = tonumber(t.deadline:sub(1,4)),
+            month = tonumber(t.deadline:sub(6,7)),
+            day = tonumber(t.deadline:sub(9,10))
+          })) / 86400)
+          add_item({ title = format_task(t, true) .. " (" .. days .. "d)", raw = t }, "󰀨", "task")
+        end
+      end
+      if #overdue > 10 then
+        table.insert(display, "  ... and " .. (#overdue - 10) .. " more overdue items")
+        table.insert(meta, { type = "info" })
+      end
+    end
+    
+    -- ═══════════════════════════════════════════════════════════════
+    -- COULD DO TODAY (suggestions)
+    -- ═══════════════════════════════════════════════════════════════
+    
+    local has_could_do = #next_actions > 0 or #someday > 0 or #stuck_projects > 0
+    
+    if has_could_do then
+      add_section("COULD DO TODAY", "󰋚")
+      
+      -- NEXT actions (top 5)
+      if #next_actions > 0 then
+        table.insert(display, "  NEXT actions available:")
+        table.insert(meta, { type = "info" })
+        for i, t in ipairs(next_actions) do
+          if i <= 5 then
+            add_item({ title = format_task(t, false), raw = t }, "  󰁔", "task")
+          end
+        end
+        if #next_actions > 5 then
+          table.insert(display, "    ... " .. (#next_actions - 5) .. " more NEXT actions")
+          table.insert(meta, { type = "info" })
+        end
+      end
+      
+      -- Stuck projects
+      if #stuck_projects > 0 then
+        table.insert(display, "  Stuck projects (need NEXT action):")
+        table.insert(meta, { type = "info" })
+        for i, t in ipairs(stuck_projects) do
+          if i <= 3 then
+            add_item({ title = "  " .. t.title, raw = t }, "  󰏔", "task")
+          end
+        end
+        if #stuck_projects > 3 then
+          table.insert(display, "    ... " .. (#stuck_projects - 3) .. " more stuck projects")
+          table.insert(meta, { type = "info" })
+        end
+      end
+      
+      -- Someday suggestions (random 3)
+      if #someday > 0 then
+        table.insert(display, "  Someday/Maybe inspiration:")
+        table.insert(meta, { type = "info" })
+        -- Shuffle and pick 3
+        local picks = {}
+        local indices = {}
+        for i = 1, #someday do indices[i] = i end
+        for i = 1, math.min(3, #someday) do
+          local j = math.random(i, #someday)
+          indices[i], indices[j] = indices[j], indices[i]
+          table.insert(picks, someday[indices[i]])
+        end
+        for _, t in ipairs(picks) do
+          add_item({ title = "  " .. t.title, raw = t }, "  󰋚", "task")
+        end
+      end
+    end
+    
+    -- ═══════════════════════════════════════════════════════════════
+    -- Empty state
+    -- ═══════════════════════════════════════════════════════════════
+    
+    if #display == 0 then
+      vim.notify("No agenda items for " .. date .. " - enjoy your free day!", vim.log.levels.INFO)
       vim.schedule(function() M.menu() end)
       return
     end
     
-    -- Build display items for fzf
+    -- Show in fzf
     local ok, fzf = pcall(require, "fzf-lua")
     if not ok then
       vim.notify("fzf-lua required for agenda display", vim.log.levels.WARN)
       return
     end
     
-    local display = {}
-    local meta = {}
-    
-    for _, item in ipairs(agenda.merged) do
-      -- Use Nerd Font glyphs: calendar for events, checkbox for tasks
-      local g = shared and shared.glyphs or {}
-      local icon = item.type == "event" 
-        and (g.container and g.container.calendar or "") 
-        or (g.ui and g.ui.list or "")
-      local time_str = item.all_day and "All day" or item.time
-      local extra = ""
-      
-      if item.type == "event" then
-        if item.location and item.location ~= "" then
-          local loc_icon = g.ui and g.ui.home or ""
-          extra = " " .. loc_icon .. " " .. item.location:gsub("\n.*", "")  -- First line only
-        end
-      else
-        if item.state then
-          extra = " [" .. item.state .. "]"
-        end
-      end
-      
-      local line = string.format("%s %s  %s%s", icon, time_str, item.title, extra)
-      table.insert(display, line)
-      table.insert(meta, item)
-    end
-    
-    -- Show in fzf
     vim.schedule(function()
       fzf.fzf_exec(display, {
         prompt = "Agenda " .. date .. "> ",
         fzf_opts = {
           ["--ansi"] = true,
           ["--no-info"] = true,
-          ["--header"] = " Calendar events •  GTD tasks • Enter: Open • Ctrl-B: Back",
+          ["--header"] = "Enter: Open • Ctrl-B: Back to menu",
+          ["--header-first"] = true,
         },
         winopts = {
-          height = 0.70,
-          width = 0.80,
-          title = " Today's Agenda ",
+          height = 0.85,
+          width = 0.75,
+          title = string.format(" 󰃰 GTD Agenda: %s ", date),
           title_pos = "center",
         },
         actions = {
@@ -1162,24 +1356,24 @@ function M.agenda(date)
             if not idx then return end
             
             local item = meta[idx]
-            if item.type == "task" and item.data then
-              -- Kairos uses 'file' and 'line', not 'path' and 'lnum'
-              local filepath = item.data.file or item.data.path
-              local linenum = item.data.line or item.data.lnum
+            if item.type == "task" and item.data and item.data.raw then
+              local t = item.data.raw
+              local filepath = t.file or t.path
+              local linenum = t.line or t.lnum
               if filepath then
                 vim.cmd("edit " .. vim.fn.fnameescape(filepath))
                 if linenum then
                   vim.api.nvim_win_set_cursor(0, { linenum, 0 })
                 end
               end
-            elseif item.type == "event" then
-              -- Show event details for calendar items
-              local details = item.title
-              if item.location and item.location ~= "" then
-                details = details .. "\nLocation: " .. item.location
+            elseif item.type == "event" and item.data and item.data.raw then
+              local e = item.data.raw
+              local details = e.title or "Event"
+              if e.location and e.location ~= "" then
+                details = details .. "\nLocation: " .. e.location
               end
-              if item.calendar then
-                details = details .. "\nCalendar: " .. item.calendar
+              if e.calendar then
+                details = details .. "\nCalendar: " .. e.calendar
               end
               vim.notify(details, vim.log.levels.INFO)
             end
@@ -1190,6 +1384,22 @@ function M.agenda(date)
         },
       })
     end)
+  end
+  
+  -- Fetch calendar events for today
+  kairos.calendar_today_async(function(events, err)
+    if events and type(events) == "table" then
+      calendar_events = events
+    end
+    build_agenda()
+  end)
+  
+  -- Fetch all GTD tasks
+  kairos.query_async("gtd", "tasks", {}, function(tasks, err)
+    if tasks and type(tasks) == "table" then
+      all_tasks = tasks
+    end
+    build_agenda()
   end)
 end
 
