@@ -352,18 +352,19 @@ local function render_preview_item(item, item_type)
     end
     if item.waiting_data.follow_up_date then
       local days_text = format_days_until(item.waiting_data.follow_up_date)
-      local overdue_warning = is_overdue(item.waiting_data.follow_up_date, M.cfg.waiting_display.days_overdue_warn) and " ⚠️  OVERDUE" or ""
+      local overdue_warning = is_overdue(item.waiting_data.follow_up_date, M.cfg.waiting_display.days_overdue_warn) and "  OVERDUE" or ""
       table.insert(lines, ("Follow-up : %s %s%s"):format(item.waiting_data.follow_up_date, days_text, overdue_warning))
     end
     if item.waiting_data.context then
       table.insert(lines, ("Via       : %s"):format(item.waiting_data.context))
     end
     if item.waiting_data.priority then
+      local gp = shared and shared.glyphs and shared.glyphs.priority or {}
       local priority_icon = ""
-      if item.waiting_data.priority == "urgent" then priority_icon = " 🔴"
-      elseif item.waiting_data.priority == "high" then priority_icon = " 🟡"
-      elseif item.waiting_data.priority == "medium" then priority_icon = " 🔵"
-      else priority_icon = " ⚪"
+      if item.waiting_data.priority == "urgent" then priority_icon = " " .. (gp.urgent or "")
+      elseif item.waiting_data.priority == "high" then priority_icon = " " .. (gp.high or "")
+      elseif item.waiting_data.priority == "medium" then priority_icon = " " .. (gp.medium or "")
+      else priority_icon = " " .. (gp.low or "")
       end
       table.insert(lines, ("Priority  : %s%s"):format(item.waiting_data.priority, priority_icon))
     end
@@ -381,7 +382,7 @@ local function render_preview_item(item, item_type)
       stats.next, stats.todo, stats.waiting, stats.someday, stats.done, cbtxt))
     
     if is_stuck_project(item, L) then
-      table.insert(lines, "⚠️  STUCK PROJECT (no NEXT actions)")
+      table.insert(lines, "  STUCK PROJECT (no NEXT actions)")
     end
   elseif item.cb.total > 0 then
     table.insert(lines, string.format("Checkboxes: %d/%d", item.cb.done, item.cb.total))
@@ -452,37 +453,36 @@ local function show_list(filter_fn, title, item_type, extra_actions)
   for _, h in ipairs(headings) do
     local L = readf(h.path)
     if filter_fn(h, L) then
-      local due = h.deadline and (" 📅" .. h.deadline) or ""
+      local due = h.deadline and (" " .. h.deadline) or ""
       local tags = (#h.tags > 0) and (" :" .. table.concat(h.tags, ":") .. ":") or ""
-      local effort = h.effort and (" ⏱️" .. h.effort) or ""
+      local effort = h.effort and (" " .. h.effort) or ""
       local ctx = h.context and ("[" .. h.context .. "] ") or ""
       
       -- Enhanced WAITING display
       local waiting_indicators = ""
       if h.state == "WAITING" and h.waiting_data then
+        local gp = shared and shared.glyphs and shared.glyphs.priority or {}
         -- Priority indicator
         if M.cfg.waiting_display.show_priority and h.waiting_data.priority then
           if h.waiting_data.priority == "urgent" then
-            waiting_indicators = waiting_indicators .. " 🔴"
+            waiting_indicators = waiting_indicators .. " " .. (gp.urgent or "")
           elseif h.waiting_data.priority == "high" then
-            waiting_indicators = waiting_indicators .. " 🟡"
+            waiting_indicators = waiting_indicators .. " " .. (gp.high or "")
           end
         end
         
         -- Overdue indicator
         if M.cfg.waiting_display.show_overdue and h.waiting_data.follow_up_date then
           if is_overdue(h.waiting_data.follow_up_date, M.cfg.waiting_display.days_overdue_warn) then
-            waiting_indicators = waiting_indicators .. " ⚠️"
+            waiting_indicators = waiting_indicators .. " "
           end
         end
         
         -- Context indicator
         if M.cfg.waiting_display.show_context and h.waiting_data.context then
-          local context_icons = {
-            email = "📧", phone = "📞", meeting = "🤝", text = "💬",
-            slack = "💻", teams = "💻", verbal = "🗣️", letter = "📮"
-          }
-          local icon = context_icons[h.waiting_data.context] or "📋"
+          local icon = shared and shared.context_glyph 
+            and shared.context_glyph(h.waiting_data.context) 
+            or "󰐕"  -- fallback clipboard
           waiting_indicators = waiting_indicators .. " " .. icon
         end
         
@@ -981,15 +981,18 @@ function M.menu()
   local menu_keys = {}     -- Track which function to call
   
   -- Define menu structure: { key, glyph, label, color }
+  -- Use Nerd Font glyphs (requires patched font)
   local menu_def = {
-    { key = "next",           glyph = g.state and g.state.NEXT or "⚡",      label = "Next Actions",      color = "next" },
-    { key = "projects",       glyph = g.state and g.state.PROJECT or "📂",  label = "Projects",          color = "project" },
-    { key = "someday",        glyph = g.state and g.state.SOMEDAY or "💭",  label = "Someday/Maybe",     color = "someday" },
-    { key = "waiting",        glyph = g.state and g.state.WAITING or "⏳",  label = "Waiting For",       color = "waiting" },
-    { key = "waiting_overdue",glyph = g.progress and g.progress.overdue or "⚠", label = "Waiting - Overdue", color = "error" },
-    { key = "waiting_urgent", glyph = g.progress and g.progress.urgent or "🔴", label = "Waiting - Urgent",  color = "warning" },
-    { key = "stuck",          glyph = g.progress and g.progress.blocked or "⛔", label = "Stuck Projects",    color = "error" },
-    { key = "search",         glyph = g.ui and g.ui.search or "🔍",          label = "Search All Items",  color = "info" },
+    { key = "next",           glyph = g.state and g.state.NEXT or "󰖦",     label = "Next Actions",      color = "next" },
+    { key = "projects",       glyph = g.state and g.state.PROJECT or "",    label = "Projects",          color = "project" },
+    { key = "someday",        glyph = g.state and g.state.SOMEDAY or "󰋊",   label = "Someday/Maybe",     color = "someday" },
+    { key = "waiting",        glyph = g.state and g.state.WAITING or "",    label = "Waiting For",       color = "waiting" },
+    { key = "waiting_overdue",glyph = g.progress and g.progress.overdue or "", label = "Waiting - Overdue", color = "error" },
+    { key = "waiting_urgent", glyph = g.progress and g.progress.urgent or "",  label = "Waiting - Urgent",  color = "warning" },
+    { key = "stuck",          glyph = g.progress and g.progress.blocked or "", label = "Stuck Projects",    color = "error" },
+    { key = "agenda",         glyph = g.container and g.container.calendar or "", label = "Today's Agenda",    color = "calendar" },
+    { key = "free_slots",     glyph = g.ui and g.ui.clock or "",            label = "Free Time Slots",   color = "info" },
+    { key = "search",         glyph = g.ui and g.ui.search or "",           label = "Search All Items",  color = "info" },
   }
   
   for _, item in ipairs(menu_def) do
@@ -1031,6 +1034,8 @@ function M.menu()
         elseif key == "waiting_overdue" then M.waiting_overdue()
         elseif key == "waiting_urgent" then M.waiting_urgent()
         elseif key == "stuck" then M.stuck_projects()
+        elseif key == "agenda" then M.agenda()
+        elseif key == "free_slots" then M.free_slots()
         elseif key == "search" then M.search_all()
         end
       end)
@@ -1061,6 +1066,198 @@ function M.menu()
       title_pos = "center",
     },
     actions = menu_actions,
+  })
+end
+
+-- ---------------------------- Calendar Integration (via Kairos) ----------------------------
+
+-- Load kairos module for calendar functions (replaces icalbuddy)
+local kairos = safe_require("gtd-nvim.gtd.kairos")
+
+-- Show today's agenda (calendar events + GTD tasks)
+function M.agenda(date)
+  if not kairos then
+    vim.notify("Calendar integration not available (kairos module missing)", vim.log.levels.WARN)
+    vim.schedule(function() M.menu() end)
+    return
+  end
+  if not kairos.is_available() then
+    vim.notify("Kairos daemon not running - start terminal to initialize", vim.log.levels.WARN)
+    vim.schedule(function() M.menu() end)
+    return
+  end
+  
+  -- Use async agenda builder from kairos
+  date = date or os.date("%Y-%m-%d")
+  
+  kairos.build_agenda_async(date, function(agenda, err)
+    if err or not agenda then
+      vim.notify("Failed to build agenda: " .. (err or "unknown error"), vim.log.levels.ERROR)
+      return
+    end
+    
+    if #agenda.merged == 0 then
+      vim.notify("No events or scheduled tasks for " .. date, vim.log.levels.INFO)
+      vim.schedule(function() M.menu() end)
+      return
+    end
+    
+    -- Build display items for fzf
+    local ok, fzf = pcall(require, "fzf-lua")
+    if not ok then
+      vim.notify("fzf-lua required for agenda display", vim.log.levels.WARN)
+      return
+    end
+    
+    local display = {}
+    local meta = {}
+    
+    for _, item in ipairs(agenda.merged) do
+      -- Use Nerd Font glyphs: calendar for events, checkbox for tasks
+      local g = shared and shared.glyphs or {}
+      local icon = item.type == "event" 
+        and (g.container and g.container.calendar or "") 
+        or (g.ui and g.ui.list or "")
+      local time_str = item.all_day and "All day" or item.time
+      local extra = ""
+      
+      if item.type == "event" then
+        if item.location and item.location ~= "" then
+          local loc_icon = g.ui and g.ui.home or ""
+          extra = " " .. loc_icon .. " " .. item.location:gsub("\n.*", "")  -- First line only
+        end
+      else
+        if item.state then
+          extra = " [" .. item.state .. "]"
+        end
+      end
+      
+      local line = string.format("%s %s  %s%s", icon, time_str, item.title, extra)
+      table.insert(display, line)
+      table.insert(meta, item)
+    end
+    
+    -- Show in fzf
+    vim.schedule(function()
+      fzf.fzf_exec(display, {
+        prompt = "Agenda " .. date .. "> ",
+        fzf_opts = {
+          ["--ansi"] = true,
+          ["--no-info"] = true,
+          ["--header"] = " Calendar events •  GTD tasks • Enter: Open • Ctrl-B: Back",
+        },
+        winopts = {
+          height = 0.70,
+          width = 0.80,
+          title = " Today's Agenda ",
+          title_pos = "center",
+        },
+        actions = {
+          ["default"] = function(sel)
+            if not sel or not sel[1] then return end
+            local idx = nil
+            for i, line in ipairs(display) do
+              if line == sel[1] then idx = i; break end
+            end
+            if not idx then return end
+            
+            local item = meta[idx]
+            if item.type == "task" and item.data and item.data.path then
+              vim.cmd("edit " .. vim.fn.fnameescape(item.data.path))
+              if item.data.lnum then
+                vim.api.nvim_win_set_cursor(0, { item.data.lnum, 0 })
+              end
+            else
+              vim.notify("Calendar event: " .. item.title, vim.log.levels.INFO)
+            end
+          end,
+          ["ctrl-b"] = function(_)
+            vim.schedule(function() M.menu() end)
+          end,
+        },
+      })
+    end)
+  end)
+end
+
+-- Show free time slots
+function M.free_slots(date)
+  if not kairos then
+    vim.notify("Calendar integration not available (kairos module missing)", vim.log.levels.WARN)
+    vim.schedule(function() M.menu() end)
+    return
+  end
+  if not kairos.is_available() then
+    vim.notify("Kairos daemon not running - start terminal to initialize", vim.log.levels.WARN)
+    vim.schedule(function() M.menu() end)
+    return
+  end
+  
+  -- Fetch today's events
+  local events, err = kairos.calendar_today()
+  if not events then
+    vim.notify("Failed to fetch calendar: " .. (err or "unknown"), vim.log.levels.ERROR)
+    vim.schedule(function() M.menu() end)
+    return
+  end
+  
+  -- Calculate free slots
+  local slots = kairos.calculate_free_slots(events, 9, 18, 30)  -- 9-18, min 30 min
+  
+  if #slots == 0 then
+    vim.notify("No free time slots found today (9 AM - 6 PM)", vim.log.levels.INFO)
+    vim.schedule(function() M.menu() end)
+    return
+  end
+  
+  -- Show in fzf
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    -- Fallback to notify
+    local lines = { "Free Time Slots:", "" }
+    for _, slot in ipairs(slots) do
+      table.insert(lines, string.format("  %s - %s (%d min)", 
+        slot.start_time, slot.end_time, slot.duration_min))
+    end
+    vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+    return
+  end
+  
+  local display = {}
+  local g = shared and shared.glyphs or {}
+  local clock_icon = g.ui and g.ui.clock or ""
+  for _, slot in ipairs(slots) do
+    local duration_str = slot.duration_min >= 60 
+      and string.format("%dh %dm", math.floor(slot.duration_min / 60), slot.duration_min % 60)
+      or string.format("%d min", slot.duration_min)
+    table.insert(display, string.format("%s %s - %s  (%s)", 
+      clock_icon, slot.start_time, slot.end_time, duration_str))
+  end
+  
+  fzf.fzf_exec(display, {
+    prompt = "Free Slots> ",
+    fzf_opts = {
+      ["--ansi"] = true,
+      ["--no-info"] = true,
+      ["--header"] = "Free time between calendar events • Ctrl-B: Back",
+    },
+    winopts = {
+      height = 0.50,
+      width = 0.60,
+      title = " Free Time Slots ",
+      title_pos = "center",
+    },
+    actions = {
+      ["default"] = function(sel)
+        if sel and sel[1] then
+          vim.notify("Selected: " .. sel[1], vim.log.levels.INFO)
+        end
+        vim.schedule(function() M.menu() end)
+      end,
+      ["ctrl-b"] = function(_)
+        vim.schedule(function() M.menu() end)
+      end,
+    },
   })
 end
 

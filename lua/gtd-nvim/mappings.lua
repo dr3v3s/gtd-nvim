@@ -13,6 +13,8 @@ M.defaults = {
   keys = {
     -- Capture
     capture           = "c",    -- <prefix>c  → Capture to Inbox
+    capture_instant   = "i",    -- <prefix>i  → Instant capture (quick brain dump)
+    capture_clipboard = "v",    -- <prefix>v  → Capture from clipboard
     
     -- Status
     status            = "s",    -- <prefix>s  → Change task status
@@ -94,6 +96,24 @@ function M.setup(opts)
     map("n", prefix .. keys.capture, function()
       gtd.capture({})
     end, "GTD: Capture → Inbox")
+  end
+  
+  if keys.capture_instant then
+    map("n", prefix .. keys.capture_instant, function()
+      local capture = safe_require("gtd-nvim.gtd.capture")
+      if capture and capture.capture_instant then
+        capture.capture_instant()
+      end
+    end, "GTD: Instant capture (quick)")
+  end
+  
+  if keys.capture_clipboard then
+    map("n", prefix .. keys.capture_clipboard, function()
+      local capture = safe_require("gtd-nvim.gtd.capture")
+      if capture and capture.capture_clipboard then
+        capture.capture_clipboard()
+      end
+    end, "GTD: Capture from clipboard")
   end
   
   ---------------------------------------------------------------------------
@@ -265,6 +285,12 @@ function M.register_which_key(prefix, keys)
     if keys.capture then
       table.insert(specs, { prefix .. keys.capture, desc = "Capture → Inbox" })
     end
+    if keys.capture_instant then
+      table.insert(specs, { prefix .. keys.capture_instant, desc = "Instant capture (quick)" })
+    end
+    if keys.capture_clipboard then
+      table.insert(specs, { prefix .. keys.capture_clipboard, desc = "Capture from clipboard" })
+    end
     if keys.status then
       table.insert(specs, { prefix .. keys.status, desc = "Change status" })
     end
@@ -331,6 +357,8 @@ function M.register_which_key(prefix, keys)
       [prefix] = {
         name = "GTD",
         c = keys.capture and "Capture → Inbox" or nil,
+        i = keys.capture_instant and "Instant capture (quick)" or nil,
+        v = keys.capture_clipboard and "Capture from clipboard" or nil,
         s = keys.status and "Change status" or nil,
         l = {
           name = "Clarify / Lists",

@@ -566,7 +566,7 @@ local function handle_original_task(task_data, new_project_path)
               new_project_path, vim.fn.fnamemodify(new_project_path, ":t:r")))
             
             writefile(task_data.file_path, lines)
-            vim.notify("✅ Task marked DONE with project link", vim.log.levels.INFO)
+            vim.notify(" Task marked DONE with project link", vim.log.levels.INFO)
             
           elseif choice:match("^Move") then
             -- Move as first NEXT action in project
@@ -609,7 +609,7 @@ local function handle_original_task(task_data, new_project_path)
             end
             
             writefile(task_data.file_path, new_lines)
-            vim.notify("✅ Task moved as first NEXT action in project", vim.log.levels.INFO)
+            vim.notify(" Task moved as first NEXT action in project", vim.log.levels.INFO)
             
           else
             -- Keep as-is
@@ -740,14 +740,14 @@ function M.create_from_task_at_cursor()
   -- Load UI helpers
   local ui = safe_require("gtd.ui")
   if not ui then
-    vim.notify("❌ UI module not found", vim.log.levels.ERROR)
+    vim.notify(" UI module not found", vim.log.levels.ERROR)
     return
   end
   
   -- Extract task metadata
   local task_data, err = extract_task_metadata_at_cursor()
   if not task_data then
-    vim.notify("❌ " .. (err or "Failed to extract task metadata"), vim.log.levels.ERROR)
+    vim.notify(" " .. (err or "Failed to extract task metadata"), vim.log.levels.ERROR)
     return
   end
   
@@ -766,7 +766,7 @@ function M.create_from_task_at_cursor()
       
       -- Step 2/5: Description
       ui.enhanced_input(2, total_steps, {
-        icon = "📝",
+        icon = "",
         prompt = "Description",
         hint = "Stored in :DESCRIPTION: property (optional)",
         default = task_data.description or "",
@@ -1163,7 +1163,7 @@ function M.sync_backlink_under_cursor()
   if h and h ~= "" then heading = h end
 
   append_backlink(xp(zk), project_path, heading)
-  vim.notify("🔗 Backlink appended to ZK note.", vim.log.levels.INFO)
+  vim.notify(" Backlink appended to ZK note.", vim.log.levels.INFO)
 end
 
 -- ------------------------------------------------------------

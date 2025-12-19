@@ -27,7 +27,7 @@ local function safe_require(name) local ok, m = pcall(require, name); return ok 
 local function notify(msg, lvl, t) vim.notify(msg, lvl or vim.log.levels.INFO, t) end
 
 local task_id  = safe_require("gtd-nvim.gtd.utils.task_id")
-local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- ✅ Added
+local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- [OK] Added
 local projects = safe_require("gtd-nvim.gtd.projects")
 local refile   = safe_require("gtd-nvim.gtd.refile")
 

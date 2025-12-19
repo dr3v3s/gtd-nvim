@@ -46,7 +46,7 @@ local function safe_require(name)
   return ok and mod or nil
 end
 
-local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- ✅ Added
+local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- [OK] Added
 local clarify = safe_require("gtd-nvim.gtd.clarify")
 local organize = safe_require("gtd-nvim.gtd.organize")
 
@@ -599,7 +599,7 @@ local function archive_or_delete_zk(zk_path, action)
 
   local success = vim.fn.rename(zk_path, dst) == 0
   if not success then
-    vim.notify("⚠️  Failed to move ZK note to archive", vim.log.levels.WARN)
+    vim.notify("  Failed to move ZK note to archive", vim.log.levels.WARN)
   end
   return success
 end
@@ -736,7 +736,7 @@ function M.task_actions_menu(item, on_done)
                   archive_or_delete_zk(item.zk_path, "delete")
                   vim.notify(g.container.trash .. " Task deleted permanently", vim.log.levels.INFO)
                 else
-                  vim.notify("❌ Failed to delete task", vim.log.levels.ERROR)
+                  vim.notify(" Failed to delete task", vim.log.levels.ERROR)
                 end
                 if on_done then on_done() end
               end
@@ -926,15 +926,15 @@ local function project_actions_menu(proj_info, on_done)
 
         elseif action == "Delete" then
           ui.select({ "Yes, delete permanently", "Cancel" },
-            { prompt = "⚠️  Really delete this project file?" },
+            { prompt = "  Really delete this project file?" },
             function(choice)
               if choice and choice:match("Yes") then
                 local P = paths()
                 local ok, _ = move_or_delete_file(proj_info.path, false, P.deldir)
                 if ok then
-                  vim.notify("🗑️  Project moved to ArchiveDeleted", vim.log.levels.INFO)
+                  vim.notify(" Project moved to ArchiveDeleted", vim.log.levels.INFO)
                 else
-                  vim.notify("❌ Failed to delete project", vim.log.levels.ERROR)
+                  vim.notify(" Failed to delete project", vim.log.levels.ERROR)
                 end
                 if on_done then on_done() end
               end
@@ -1313,14 +1313,14 @@ function M.delete_task_at_cursor(opts)
   for _, item in ipairs(items) do
     if item.path == path and item.lnum <= lnum and lnum <= item.hend then
       ui.select({ "Yes, delete permanently", "Cancel" },
-        { prompt = "⚠️  Really delete this task permanently?" },
+        { prompt = "  Really delete this task permanently?" },
         function(choice)
           if choice and choice:match("Yes") then
             if remove_subtree_from_file(item.path, item.hstart, item.hend) then
               archive_or_delete_zk(item.zk_path, "delete")
-              vim.notify("🗑️  Task deleted permanently", vim.log.levels.INFO)
+              vim.notify(" Task deleted permanently", vim.log.levels.INFO)
             else
-              vim.notify("❌ Failed to delete task", vim.log.levels.ERROR)
+              vim.notify(" Failed to delete task", vim.log.levels.ERROR)
             end
           end
         end)

@@ -34,7 +34,7 @@ local function set_buf_lines(buf, L) vim.api.nvim_buf_set_lines(buf, 0, -1, fals
 local function safe_require(name) local ok, m = pcall(require, name); return ok and m or nil end
 
 local task_id  = safe_require("gtd-nvim.gtd.utils.task_id")
-local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- ✅ Added
+local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- [OK] Added
 local projects = safe_require("gtd-nvim.gtd.projects")
 local refile   = safe_require("gtd-nvim.gtd.refile")
 

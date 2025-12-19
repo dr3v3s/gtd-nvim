@@ -2,33 +2,29 @@
 -- GTD-NVIM STATUS MODULE
 -- ============================================================================
 -- Change org-mode TODO status on heading under cursor
--- Uses centralized fzf utilities for consistent UI
+-- Uses shared.glyphs for consistent Nerd Font icons
 --
 -- @module gtd-nvim.gtd.status
--- @version 0.8.0
+-- @version 1.0.0
 -- @requires shared (>= 1.0.0)
--- @todo Migrate from fzf_utils.icons to shared.glyphs
 -- ============================================================================
 
 local M = {}
 
-M._VERSION = "0.8.0"
-M._UPDATED = "2024-12-08"
+M._VERSION = "1.0.0"
+M._UPDATED = "2024-12-18"
 
 -- Load shared utilities
 local shared = require("gtd-nvim.gtd.shared")
 local g = shared.glyphs
 
--- Load centralized fzf utilities (for backward compatibility)
-local fzf_utils = require("gtd-nvim.gtd.fzf")
-
--- All available statuses with metadata
+-- All available statuses with metadata (using Nerd Font glyphs from shared.lua)
 local STATUSES = {
-  { state = "NEXT",    icon = fzf_utils.icons.NEXT,    desc = "Next physical action to take" },
-  { state = "TODO",    icon = fzf_utils.icons.TODO,    desc = "Task to be done" },
-  { state = "WAITING", icon = fzf_utils.icons.WAITING, desc = "Waiting for someone/something" },
-  { state = "SOMEDAY", icon = fzf_utils.icons.SOMEDAY, desc = "Maybe/someday" },
-  { state = "DONE",    icon = fzf_utils.icons.DONE,    desc = "Completed" },
+  { state = "NEXT",    icon = g.state.NEXT,      desc = "Next physical action to take" },
+  { state = "TODO",    icon = g.state.TODO,      desc = "Task to be done" },
+  { state = "WAITING", icon = g.state.WAITING,   desc = "Waiting for someone/something" },
+  { state = "SOMEDAY", icon = g.state.SOMEDAY,   desc = "Maybe/someday" },
+  { state = "DONE",    icon = g.state.DONE,      desc = "Completed" },
 }
 
 local ALL_STATUS_NAMES = { "NEXT", "TODO", "WAITING", "SOMEDAY", "DONE" }

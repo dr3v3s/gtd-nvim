@@ -108,7 +108,7 @@ local function safe_require(module_name)
   return ok and module or nil
 end
 
--- ✅ Load GTD v2.0 utilities
+-- [OK] Load GTD v2.0 utilities
 local task_id = safe_require("gtd.utils.task_id")
 local org_dates = safe_require("gtd.utils.org_dates")
 
@@ -172,6 +172,16 @@ local function success_notify(msg, level, title)
     elseif level == vim.log.levels.ERROR then prefix = g.ui.cross .. " " end
     vim.notify(prefix .. msg, level or vim.log.levels.INFO, { title = title or "GTD" })
   end
+end
+
+-- Refresh external displays (SketchyBar, Starship) after capture
+local function refresh_external_displays()
+  -- Clear caches so next prompt/bar update shows new counts
+  vim.fn.jobstart({
+    "sh", "-c",
+    "rm -f /tmp/gtd_starship_cache /tmp/gtd_sketchybar_cache; " ..
+    "/Users/plague/bin/gtd_sketchybar.sh refresh >/dev/null 2>&1 &"
+  }, { detach = true })
 end
 
 -- Silent command execution to avoid vim's own notifications
@@ -1138,6 +1148,9 @@ function M.capture_quick()
                   local icon = is_recurring and g.container.recurring or (destination.type == "project" and g.container.projects or g.container.inbox)
                   success_notify(icon .. " " .. original_title .. dest_text .. area_text .. recur_text .. waiting_text .. zk_text, vim.log.levels.INFO)
                   
+                  -- Refresh external displays (SketchyBar, Starship)
+                  refresh_external_displays()
+                  
                   -- Clear focus
                   if focus_mode and focus_mode.clear then
                     focus_mode.clear()
@@ -1393,6 +1406,9 @@ function M.capture_recurring()
             end
             
             success_notify(g.container.recurring .. " " .. title .. area_text .. " [" .. freq_text .. "]", vim.log.levels.INFO)
+            
+            -- Refresh external displays (SketchyBar, Starship)
+            refresh_external_displays()
           else
             vim.notify("Failed to capture recurring task", vim.log.levels.ERROR)
           end
@@ -1404,6 +1420,117 @@ function M.capture_recurring()
         end)
       end)
     end)
+  end)
+end
+
+-- ------------------------------------------------------------
+-- INSTANT CAPTURE (Quick brain dump - minimal prompts)
+-- ------------------------------------------------------------
+-- Captures directly to Inbox with TODO state, no pickers
+-- Perfect for rapid capture when you just need to dump a thought
+function M.capture_instant()
+  input_nonempty({ prompt = g.container.inbox .. " Quick capture: " }, function(title)
+    if not title or title == "" then return end
+    
+    local id = task_id.generate()
+    local lines = {
+      "* TODO " .. title,
+      ":PROPERTIES:",
+      ":ID:        " .. id,
+      ":TASK_ID:   " .. id,
+      ":ZK_LINK:   [[zk:" .. id .. "]]",
+      ":CREATED:   " .. shared.format_org_inactive_timestamp(),
+      ":END:",
+    }
+    
+    -- Ensure inbox exists
+    ensure_dir(vim.fn.fnamemodify(xp(M.cfg.inbox_file), ":h"))
+    if not file_exists(M.cfg.inbox_file) then
+      writefile(M.cfg.inbox_file, { "#+TITLE: Inbox", "" })
+    end
+    
+    if append_lines(M.cfg.inbox_file, lines) then
+      success_notify(g.container.inbox .. " " .. title, vim.log.levels.INFO)
+      refresh_external_displays()
+    else
+      vim.notify("Failed to capture task", vim.log.levels.ERROR)
+    end
+  end)
+end
+
+-- ------------------------------------------------------------
+-- CLIPBOARD CAPTURE (Capture from system clipboard)
+-- ------------------------------------------------------------
+-- Grabs text from clipboard and uses it as task title
+-- Useful for capturing URLs, snippets, or text from other apps
+function M.capture_clipboard()
+  local clipboard = vim.fn.getreg("+")
+  
+  if not clipboard or clipboard == "" then
+    -- Try the unnamed register as fallback
+    clipboard = vim.fn.getreg('"')
+  end
+  
+  if not clipboard or clipboard == "" then
+    quiet_notify("Clipboard is empty", vim.log.levels.WARN)
+    return
+  end
+  
+  -- Clean up: collapse whitespace, trim, limit length
+  local title = clipboard
+    :gsub("\r\n", " ")      -- Windows line endings
+    :gsub("\n", " ")        -- Unix line endings
+    :gsub("\t", " ")        -- Tabs
+    :gsub("%s+", " ")       -- Multiple spaces
+    :gsub("^%s+", "")       -- Leading whitespace
+    :gsub("%s+$", "")       -- Trailing whitespace
+  
+  -- Truncate very long clipboard content
+  if #title > 120 then
+    title = title:sub(1, 117) .. "..."
+  end
+  
+  if title == "" then
+    quiet_notify("Clipboard contains only whitespace", vim.log.levels.WARN)
+    return
+  end
+  
+  -- Show what we captured and let user edit/confirm
+  vim.ui.input({
+    prompt = g.container.inbox .. " From clipboard: ",
+    default = title,
+  }, function(final_title)
+    if not final_title or final_title == "" then return end
+    
+    local id = task_id.generate()
+    local lines = {
+      "* TODO " .. final_title,
+      ":PROPERTIES:",
+      ":ID:        " .. id,
+      ":TASK_ID:   " .. id,
+      ":ZK_LINK:   [[zk:" .. id .. "]]",
+      ":CREATED:   " .. shared.format_org_inactive_timestamp(),
+      ":END:",
+    }
+    
+    -- If clipboard was a URL, add it as a note
+    if clipboard:match("^https?://") then
+      table.insert(lines, "")
+      table.insert(lines, "Source: " .. clipboard)
+    end
+    
+    -- Ensure inbox exists
+    ensure_dir(vim.fn.fnamemodify(xp(M.cfg.inbox_file), ":h"))
+    if not file_exists(M.cfg.inbox_file) then
+      writefile(M.cfg.inbox_file, { "#+TITLE: Inbox", "" })
+    end
+    
+    if append_lines(M.cfg.inbox_file, lines) then
+      success_notify(g.container.inbox .. " " .. final_title, vim.log.levels.INFO)
+      refresh_external_displays()
+    else
+      vim.notify("Failed to capture task", vim.log.levels.ERROR)
+    end
   end)
 end
 

@@ -4,16 +4,21 @@
 -- Apple Reminders bidirectional integration
 -- Import/Export: Reminders ↔ GTD tasks
 --
+-- Architecture:
+--   READ (quick): Kairos daemon (fast, but limited data: id, title, list, priority)
+--   READ (full):  AppleScript (slower, but includes body, dates, all fields)
+--   WRITE:        AppleScript (create, update, complete reminders)
+--
 -- @module gtd-nvim.gtd.reminders
--- @version 0.8.0
+-- @version 1.0.0
 -- @requires shared (>= 1.0.0)
--- @todo Use shared.colorize() for fzf displays
+-- @see kairos.lua for daemon integration
 -- ============================================================================
 
 local M = {}
 
-M._VERSION = "0.8.0"
-M._UPDATED = "2024-12-08"
+M._VERSION = "1.0.0"
+M._UPDATED = "2024-12-18"
 
 -- Load shared utilities with glyph system
 local shared = require("gtd-nvim.gtd.shared")
@@ -75,6 +80,94 @@ local function safe_exec_applescript(script)
   
   if not success then return nil, "AppleScript execution failed" end
   return result
+end
+
+-- ============================================================================
+-- KAIROS INTEGRATION (Quick reads via daemon)
+-- ============================================================================
+-- Kairos provides fast access to reminders but with limited data.
+-- Use for browsing/metrics; use AppleScript for full data or writes.
+
+local function safe_require(name)
+  local ok, mod = pcall(require, name)
+  return ok and mod or nil
+end
+
+--- Get reminders via Kairos (fast, limited data)
+--- Returns: { {id, title, list, isCompleted, priority}, ... }
+function M.kairos_list()
+  local kairos = safe_require("gtd-nvim.gtd.kairos")
+  if not kairos then
+    return nil, "Kairos not available"
+  end
+  return kairos.reminders_all()
+end
+
+--- Get reminders metrics via Kairos
+--- Returns: { total, incomplete, by_list }
+function M.kairos_metrics()
+  local kairos = safe_require("gtd-nvim.gtd.kairos")
+  if not kairos then
+    return nil, "Kairos not available"
+  end
+  return kairos.reminders_metrics()
+end
+
+--- Quick browse reminders using Kairos (fzf picker)
+function M.browse()
+  local fzf_ok, fzf = pcall(require, "fzf-lua")
+  if not fzf_ok then
+    vim.notify("fzf-lua required for browsing", vim.log.levels.WARN)
+    return
+  end
+  
+  local reminders, err = M.kairos_list()
+  if not reminders then
+    -- Fall back to AppleScript
+    vim.notify("Kairos unavailable, using AppleScript...", vim.log.levels.INFO)
+    reminders, err = M.fetch_reminders()
+    if not reminders then
+      vim.notify("Failed to fetch reminders: " .. (err or "unknown"), vim.log.levels.ERROR)
+      return
+    end
+  end
+  
+  if #reminders == 0 then
+    vim.notify("No reminders found", vim.log.levels.INFO)
+    return
+  end
+  
+  local display = {}
+  local meta = {}
+  
+  for _, r in ipairs(reminders) do
+    local icon = r.isCompleted and (g.state.DONE or "") or (g.checkbox.unchecked or "")
+    local pri_icon = ""
+    if r.priority and r.priority >= 9 then
+      pri_icon = " " .. (g.priority.high or "")
+    end
+    local line = string.format("%s %s%s  [%s]", icon, r.title or "(untitled)", pri_icon, r.list or "")
+    table.insert(display, line)
+    table.insert(meta, r)
+  end
+  
+  fzf.fzf_exec(display, {
+    prompt = "Reminders> ",
+    fzf_opts = { ["--ansi"] = true, ["--no-info"] = true },
+    winopts = { height = 0.60, width = 0.70, title = " Apple Reminders " },
+    actions = {
+      ["default"] = function(sel)
+        if not sel or not sel[1] then return end
+        local idx = vim.fn.index(display, sel[1]) + 1
+        local item = meta[idx]
+        if item then
+          vim.notify(string.format("%s: %s [%s] priority=%d", 
+            item.isCompleted and "Completed" or "Pending",
+            item.title, item.list, item.priority or 0), vim.log.levels.INFO)
+        end
+      end,
+    },
+  })
 end
 
 -- ============================================================================
@@ -578,7 +671,8 @@ end
 -- ============================================================================
 
 function M.sync_completion_status()
-  vim.notify("🔁 Syncing completion status...", vim.log.levels.INFO)
+  local gu = shared.glyphs and shared.glyphs.ui or {}
+  vim.notify((gu.current or "󰔚") .. " Syncing completion status...", vim.log.levels.INFO)
   
   local files = vim.fn.globpath(xp(M.cfg.gtd_root), "**/*.org", false, true)
   local completed, errors = 0, 0
@@ -606,12 +700,13 @@ function M.sync_completion_status()
     end
   end
   
-  vim.notify(string.format("✅ Marked %d reminders complete, %d errors", completed, errors),
+  vim.notify(string.format("%s Marked %d reminders complete, %d errors", g.state.DONE or "", completed, errors),
     vim.log.levels.INFO)
 end
 
 function M.bidirectional_sync()
-  vim.notify("🔁 Starting bidirectional sync...", vim.log.levels.INFO)
+  local gu = shared.glyphs and shared.glyphs.ui or {}
+  vim.notify((gu.current or "󰔚") .. " Starting bidirectional sync...", vim.log.levels.INFO)
   
   M.import_all()
   M.export_tasks()
@@ -620,7 +715,7 @@ function M.bidirectional_sync()
     M.sync_completion_status()
   end
   
-  vim.notify("✅ Bidirectional sync complete", vim.log.levels.INFO)
+  vim.notify((g.state.DONE or "") .. " Bidirectional sync complete", vim.log.levels.INFO)
 end
 
 -- ============================================================================
@@ -676,7 +771,7 @@ function M.clean_inbox_duplicates()
     local backup = inbox_path .. ".backup." .. os.date("%Y%m%d_%H%M%S")
     writefile(backup, lines)
     writefile(inbox_path, clean_lines)
-    vim.notify(string.format("🗑️ Removed %d duplicates. Backup: %s", removed, 
+    vim.notify(string.format("%s Removed %d duplicates. Backup: %s", g.container.trash or "", removed, 
       vim.fn.fnamemodify(backup, ":t")), vim.log.levels.INFO)
   else
     vim.notify("No duplicates found", vim.log.levels.INFO)
@@ -684,21 +779,21 @@ function M.clean_inbox_duplicates()
 end
 
 function M.test_basic()
-  vim.notify("⚙️ Testing Apple Reminders access...", vim.log.levels.INFO)
+  vim.notify((g.ui.cog or "") .. " Testing Apple Reminders access...", vim.log.levels.INFO)
   
   local result, err = safe_exec_applescript('tell application "Reminders" to return "OK"')
   
   if result and result:find("OK") then
-    vim.notify("✅ Apple Reminders access works", vim.log.levels.INFO)
+    vim.notify((g.checkbox.checked or "") .. " Apple Reminders access works", vim.log.levels.INFO)
   else
-    vim.notify("❌ Failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+    vim.notify((g.ui.cross or "") .. " Failed: " .. (err or "unknown"), vim.log.levels.ERROR)
     vim.notify("Check System Settings → Privacy & Security → Automation", vim.log.levels.INFO)
   end
 end
 
 function M.show_config()
   local info = {
-    "📝 Apple Reminders Configuration:",
+    (g.ui.list or "") .. " Apple Reminders Configuration:",
     "",
     "Import:",
     "  Mark imported as completed: " .. tostring(M.cfg.mark_imported),
@@ -733,15 +828,15 @@ function M.configure()
       M.show_config()
     elseif choice:find("Mark imported") then
       M.cfg.mark_imported = not M.cfg.mark_imported
-      vim.notify("✅ Mark imported: " .. tostring(M.cfg.mark_imported), vim.log.levels.INFO)
+      vim.notify((g.checkbox.checked or "") .. " Mark imported: " .. tostring(M.cfg.mark_imported), vim.log.levels.INFO)
     elseif choice:find("Sync completion") then
       M.cfg.sync_completion = not M.cfg.sync_completion
-      vim.notify("✅ Sync completion: " .. tostring(M.cfg.sync_completion), vim.log.levels.INFO)
+      vim.notify((g.checkbox.checked or "") .. " Sync completion: " .. tostring(M.cfg.sync_completion), vim.log.levels.INFO)
     elseif choice:find("Test") then
       M.test_basic()
     elseif choice:find("Help") then
       local help = {
-        "📚 Apple Reminders Setup:",
+        (g.container.reference or "") .. " Apple Reminders Setup:",
         "",
         "1. Grant permissions:",
         "   System Settings → Privacy & Security → Automation",
@@ -781,6 +876,7 @@ function M.setup(user_cfg)
   vim.api.nvim_create_user_command("GtdRemindersConfig", function() M.configure() end, {})
   vim.api.nvim_create_user_command("GtdCleanInboxDuplicates", function() M.clean_inbox_duplicates() end, {})
   vim.api.nvim_create_user_command("GtdRemindersTest", function() M.test_basic() end, {})
+  vim.api.nvim_create_user_command("GtdBrowseReminders", function() M.browse() end, {})
   
   if M.cfg.auto_sync_on_save then
     vim.api.nvim_create_autocmd("BufWritePost", {

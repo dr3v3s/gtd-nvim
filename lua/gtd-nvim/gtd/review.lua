@@ -132,7 +132,6 @@ M.cfg = {
   custom_checklists_file = "~/Documents/GTD/.review_checklists.json",
   calendar_days_back = 7,
   calendar_days_forward = 14,
-  icalbuddy_path = "/opt/homebrew/bin/icalBuddy",
   left_panel_width = 38,
 }
 
@@ -261,32 +260,65 @@ end
 
 local function get_calendar_events(days_offset, days_count)
   local events = {}
-  local icalbuddy = M.cfg.icalbuddy_path
-  if vim.fn.executable(icalbuddy) ~= 1 then 
-    return { "(icalBuddy not found - brew install ical-buddy)" }
+  local kairos = safe_require("gtd-nvim.gtd.kairos")
+  
+  if not kairos then
+    return { "(Kairos not available)" }
   end
   
-  local cmd
+  local raw_events = nil
+  
   if days_offset < 0 then
-    local start_date = os.date("%Y-%m-%d", os.time() + days_offset * 86400)
-    local end_date = os.date("%Y-%m-%d")
-    cmd = string.format("%s -nc -nrd -df '%%Y-%%m-%%d' -tf '%%H:%%M' eventsFrom:%s to:%s 2>/dev/null", icalbuddy, start_date, end_date)
+    -- PAST EVENTS: Use Kairos "past" command
+    raw_events = kairos.calendar_past(math.abs(days_offset))
   else
-    cmd = string.format("%s -nc -nrd -df '%%Y-%%m-%%d' -tf '%%H:%%M' eventsToday+%d 2>/dev/null", icalbuddy, days_count)
-  end
-  
-  local handle = io.popen(cmd)
-  if handle then
-    for line in handle:lines() do
-      if line ~= "" then 
-        local cleaned = line:gsub("^%s*•%s*", "")
-        table.insert(events, cleaned)
+    -- FUTURE EVENTS: Use Kairos "upcoming" command
+    raw_events = kairos.calendar_upcoming()
+    if raw_events then
+      -- Filter to the requested date range
+      local start_ts = os.time()
+      local end_ts = os.time() + (days_count * 86400)
+      local filtered = {}
+      for _, evt in ipairs(raw_events) do
+        local evt_ts = evt.startTimestamp or 0
+        if evt_ts >= start_ts and evt_ts <= end_ts then
+          table.insert(filtered, evt)
+        end
       end
+      raw_events = filtered
     end
-    handle:close()
   end
   
-  return #events > 0 and events or { "(No events)" }
+  if not raw_events or #raw_events == 0 then
+    return { days_offset < 0 and "(No past events)" or "(No upcoming events)" }
+  end
+  
+  -- Format events for display
+  for _, evt in ipairs(raw_events) do
+    local title = evt.title or "(untitled)"
+    local date_str = ""
+    local time_str = ""
+    
+    if evt.startDate then
+      -- Parse ISO date: 2025-12-18T09:00:00Z
+      date_str = evt.startDate:match("(%d%d%d%d%-%d%d%-%d%d)") or ""
+      time_str = evt.startDate:match("T(%d%d:%d%d)") or ""
+    end
+    
+    local display = date_str
+    if time_str ~= "" and not evt.isAllDay then
+      display = display .. " " .. time_str
+    end
+    display = display .. " " .. title
+    
+    if evt.calendar and evt.calendar ~= "" then
+      display = display .. " (" .. evt.calendar .. ")"
+    end
+    
+    table.insert(events, display)
+  end
+  
+  return #events > 0 and events or { "(No events in range)" }
 end
 
 -- ============================================================================
@@ -1872,7 +1904,7 @@ function M.save_right_panel()
   
   if modified and buftype == "" and filename ~= "" then
     vim.cmd("write")
-    vim.notify((gu.save or "💾") .. " Saved: " .. vim.fn.fnamemodify(filename, ":t"), vim.log.levels.INFO)
+    vim.notify((gu.save or "") .. " Saved: " .. vim.fn.fnamemodify(filename, ":t"), vim.log.levels.INFO)
   end
   -- Return to left panel
   vim.cmd("wincmd h")

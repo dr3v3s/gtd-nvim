@@ -16,32 +16,69 @@ local M = {}
 -- ============================================================================
 M.VERSION = {
   major = 1,
-  minor = 0,
+  minor = 1,
   patch = 0,
   pre = "alpha",  -- "alpha", "beta", "rc1", or nil for release
-  string = "1.0.0-alpha",
-  date = "2024-12-08",
+  string = "1.1.0-alpha",
+  date = "2024-12-18",
 }
 
 -- Module versions (updated when module changes significantly)
 M.MODULE_VERSIONS = {
-  shared    = "1.0.0",  -- This file - foundation
+  shared    = "1.1.0",  -- This file - foundation, context glyphs
   capture   = "0.9.0",  -- Needs glyph/color update
   clarify   = "0.9.0",  -- Needs glyph/color update
   organize  = "1.0.0",  -- Updated with gtd_sort
   manage    = "1.0.0",  -- Updated with gtd_sort
-  lists     = "1.0.0",  -- Updated with gtd_sort, partial colors
-  review    = "0.8.0",  -- Needs glyph/color update
-  projects  = "0.8.0",  -- Needs audit
-  areas     = "0.8.0",  -- Needs audit
-  calendar  = "0.8.0",  -- Needs audit
-  reminders = "0.8.0",  -- Needs audit
-  ui        = "0.8.0",  -- Needs audit
-  status    = "0.8.0",  -- Needs audit
+  lists     = "1.0.0",  -- Updated: Kairos integration, glyphs
+  review    = "1.0.0",  -- Updated: Kairos past/future calendar
+  projects  = "0.9.0",  -- Loaded in init, setup() called
+  areas     = "0.9.0",  -- Loaded in init, setup() called
+  kairos    = "1.0.0",  -- Calendar/Reminders via Kairos daemon
+  reminders = "1.0.0",  -- Updated: Kairos quick reads, browse cmd
+  editor    = "1.0.0",  -- Loaded in init, setup() called
+  ui        = "0.8.0",  -- Needs audit (may merge to shared)
+  status    = "1.0.0",  -- Updated: uses shared.glyphs
+  init      = "1.2.0",  -- All modules wired up
+  -- DELETED: calendar.lua (replaced by kairos.lua)
+  -- DELETED: icalbuddy.lua (replaced by kairos.lua)
+  -- DELETED: fzf.lua (consolidated into shared.lua)
 }
 
 -- Changelog entries (latest first)
 M.CHANGELOG = {
+  ["1.2.0-alpha"] = {
+    date = "2024-12-19",
+    changes = {
+      "Phase 5: Wired up all orphaned modules in init.lua",
+      "Added areas, reminders, status modules to init loading",
+      "Added setup() calls for projects, areas, reminders, ui",
+      "Added GtdWeeklyReview, GtdReviewResume, GtdReviewHistory commands",
+      "Added GtdStatus, GtdCycleStatus commands for status changes",
+      "Added GtdAreas command for browsing areas",
+      "Added areas.browse() function with fzf-lua picker",
+      "Added public API functions: weekly_review(), review_resume(), review_history()",
+      "Added public API functions: change_status(), cycle_status(), browse_areas()",
+      "Updated health check to include all modules",
+      "Kairos calendar past events now working via calendar_past()",
+    },
+    zk_note = "202512191200-GTD-Nvim-Phase5-Wiring",
+  },
+  ["1.1.0-alpha"] = {
+    date = "2024-12-18",
+    changes = {
+      "Integrated Kairos daemon for calendar/reminders (replaces iCalBuddy)",
+      "Added context glyphs for WAITING items (email, phone, meeting, etc.)",
+      "Removed emoji fallbacks - now 100% Nerd Font glyphs",
+      "Deleted redundant modules: calendar.lua, icalbuddy.lua, fzf.lua",
+      "Updated status.lua to use shared.glyphs",
+      "Updated lists.lua and review.lua for Kairos integration",
+      "Fixed Kairos JSON encoding (empty params issue)",
+      "Added reminders.browse() with Kairos quick reads",
+      "Added GtdBrowseReminders command",
+    },
+    zk_note = "202512181500-GTD-Nvim-Kairos-Integration",
+  },
   ["1.0.0-alpha"] = {
     date = "2024-12-08",
     changes = {
@@ -262,6 +299,7 @@ M.glyphs = {
     cog         = "", -- settings
     rocket      = "", -- rocket
     archive     = "󰀼", -- archive box
+    save        = "", -- floppy disk
   },
 
   -- Priority indicators
@@ -298,6 +336,23 @@ M.glyphs = {
     ontime  = "󰄬", -- check-all (on time)
     inactive = "󰏤", -- pause-circle-outline
   },
+
+  -- Communication/Context (for WAITING items)
+  context = {
+    email   = "󰇮", -- mail
+    phone   = "", -- phone
+    meeting = "󰤙", -- account-group
+    text    = "󰍦", -- message-text
+    slack   = "󰒱", -- slack
+    teams   = "󰊻", -- microsoft-teams
+    verbal  = "󰔊", -- volume-high
+    letter  = "󰛤", -- mailbox
+    errand  = "󰢅", -- car
+    home    = "", -- home
+    office  = "󰢨", -- office-building
+    computer = "󰌢", -- laptop
+    default = "󰐕", -- clipboard-text
+  },
 }
 -- Helper: Get state glyph
 function M.state_glyph(state)
@@ -324,6 +379,12 @@ function M.container_glyph(name)
   else
     return M.glyphs.file.org
   end
+end
+
+-- Helper: Get context glyph (for WAITING items)
+function M.context_glyph(context)
+  local lower = (context or ""):lower()
+  return M.glyphs.context[lower] or M.glyphs.context.default
 end
 
 -- Helper: Format task for display with glyphs (colored for fzf-lua)

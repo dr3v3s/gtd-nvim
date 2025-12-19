@@ -32,42 +32,42 @@ M.areas = {
   {
     name = "Personal",
     dir  = "~/Documents/GTD/Areas/10-Personal",
-    icon = "👤",
+    icon = "",  -- nf-fa-user
   },
   {
     name = "Ditte",
     dir  = "~/Documents/GTD/Areas/11-Ditte",
-    icon = "❤️",
+    icon = "",  -- nf-fa-heart
   },
   {
     name = "Household",
     dir  = "~/Documents/GTD/Areas/20-Household",
-    icon = "🏠",
+    icon = "",  -- nf-fa-home
   },
   {
     name = "Kids",
     dir  = "~/Documents/GTD/Areas/30-Kids",
-    icon = "👨‍👩‍👧‍👦",
+    icon = "󰀈",  -- nf-md-account_child
   },
   {
     name = "Friends",
     dir  = "~/Documents/GTD/Areas/40-Friends",
-    icon = "🤝",
+    icon = "󰡉",  -- nf-md-account_group
   },
   {
     name = "GTD",
     dir  = "~/Documents/GTD/Areas/50-GTD",
-    icon = "✅",
+    icon = "",  -- nf-fa-check
   },
   {
     name = "DDS",
     dir  = "~/Documents/GTD/Areas/80-DDS",
-    icon = "🏢",
+    icon = "",  -- nf-fa-building
   },
   {
     name = "Work",
     dir  = "~/Documents/GTD/Areas/90-Work",
-    icon = "💼",
+    icon = "",  -- nf-fa-briefcase
   },
 }
 
@@ -248,6 +248,73 @@ function M.pick_area(callback)
         end
       end
       callback(nil)
+    end)
+  end
+end
+
+-- ------------------------------------------------------------
+-- Browse areas
+-- ------------------------------------------------------------
+
+--- Browse Areas of Responsibility and open selected directory
+function M.browse()
+  local fzf = safe_require("fzf-lua")
+  
+  if #M.areas == 0 then
+    vim.notify("No areas defined", vim.log.levels.WARN)
+    return
+  end
+  
+  local items = {}
+  local area_map = {}
+  
+  for _, area in ipairs(M.areas) do
+    local display = area.icon and (area.icon .. " " .. area.name) or area.name
+    table.insert(items, display)
+    area_map[display] = area
+  end
+  
+  if fzf then
+    fzf.fzf_exec(items, {
+      prompt = shared.colorize(g.container.areas, "areas") .. " Browse Areas> ",
+      actions = {
+        ["default"] = function(sel)
+          local choice = sel and sel[1]
+          if not choice then return end
+          local area = area_map[choice]
+          if area and area.dir then
+            vim.cmd("edit " .. vim.fn.fnameescape(area.dir))
+          end
+        end,
+        ["ctrl-e"] = function(sel)
+          local choice = sel and sel[1]
+          if not choice then return end
+          local area = area_map[choice]
+          if area and area.dir then
+            -- Open DIRECTORY.md if it exists, else the directory
+            local dir_file = area.dir .. "/DIRECTORY.md"
+            if vim.fn.filereadable(dir_file) == 1 then
+              vim.cmd("edit " .. vim.fn.fnameescape(dir_file))
+            else
+              vim.cmd("edit " .. vim.fn.fnameescape(area.dir))
+            end
+          end
+        end,
+      },
+      fzf_opts = {
+        ["--no-info"] = true,
+        ["--ansi"] = true,
+        ["--header"] = "Enter: Open Dir • Ctrl-E: Open DIRECTORY.md",
+      },
+      winopts = { height = 0.40, width = 0.55, row = 0.15 },
+    })
+  else
+    vim.ui.select(items, { prompt = "Browse Areas" }, function(choice)
+      if not choice then return end
+      local area = area_map[choice]
+      if area and area.dir then
+        vim.cmd("edit " .. vim.fn.fnameescape(area.dir))
+      end
     end)
   end
 end
