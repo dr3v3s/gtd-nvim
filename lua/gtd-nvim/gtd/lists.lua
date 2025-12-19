@@ -1078,22 +1078,14 @@ local kairos = safe_require("gtd-nvim.gtd.kairos")
 -- MUST DO: Calendar events, Scheduled today, Due today
 -- COULD DO: Overdue, NEXT actions, Someday suggestions, Stuck projects
 function M.agenda(date)
-  if not kairos then
-    vim.notify("Calendar integration not available (kairos module missing)", vim.log.levels.WARN)
-    vim.schedule(function() M.menu() end)
-    return
-  end
-  if not kairos.is_available() then
-    vim.notify("Kairos daemon not running - start terminal to initialize", vim.log.levels.WARN)
-    vim.schedule(function() M.menu() end)
-    return
-  end
-  
   date = date or os.date("%Y-%m-%d")
   local g = shared and shared.glyphs or {}
   
+  -- Check kairos availability (calendar integration optional)
+  local has_kairos = kairos and kairos.is_available()
+  
   -- Collect all data asynchronously
-  local pending = 2  -- calendar + tasks
+  local pending = has_kairos and 2 or 1  -- calendar (if available) + tasks
   local calendar_events = {}
   local all_tasks = {}
   
@@ -1386,21 +1378,40 @@ function M.agenda(date)
     end)
   end
   
-  -- Fetch calendar events for today
-  kairos.calendar_today_async(function(events, err)
-    if events and type(events) == "table" then
-      calendar_events = events
-    end
-    build_agenda()
-  end)
-  
-  -- Fetch all GTD tasks
-  kairos.query_async("gtd", "tasks", {}, function(tasks, err)
-    if tasks and type(tasks) == "table" then
-      all_tasks = tasks
-    end
-    build_agenda()
-  end)
+  -- Fetch calendar events for today (if kairos available)
+  if has_kairos then
+    kairos.calendar_today_async(function(events, err)
+      if events and type(events) == "table" then
+        calendar_events = events
+      end
+      build_agenda()
+    end)
+    
+    -- Fetch all GTD tasks via kairos
+    kairos.query_async("gtd", "tasks", {}, function(tasks, err)
+      if tasks and type(tasks) == "table" then
+        all_tasks = tasks
+      end
+      build_agenda()
+    end)
+  else
+    -- Fallback: scan GTD files directly when kairos unavailable
+    vim.schedule(function()
+      local items = shared.scan_gtd_files_robust({ root = vim.fn.expand("~/Documents/GTD") })
+      for _, item in ipairs(items) do
+        table.insert(all_tasks, {
+          state = item.state,
+          title = item.title,
+          file = item.path,
+          line = item.lnum,
+          project = item.filename:gsub("%.org$", ""),
+          scheduled = nil,  -- Would need to parse from file
+          deadline = nil,
+        })
+      end
+      build_agenda()
+    end)
+  end
 end
 
 -- Show free time slots
