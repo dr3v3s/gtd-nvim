@@ -281,6 +281,50 @@ local function is_next_action(item, L)
   return false
 end
 
+-- GTD Project Definition: A project requires AT LEAST 2 actions
+-- This is a fundamental GTD rule - anything with 1 action is a single action, not a project
+local function is_valid_gtd_project(item, L)
+  -- Must have PROJECT state marker
+  if not item.project then return false end
+  
+  -- Skip completed projects
+  if item.state == "DONE" or item.state == "CANCELLED" then return false end
+  
+  -- Skip Inbox, Recurring, Archive files - these are never projects
+  local filename = item.path and vim.fn.fnamemodify(item.path, ":t"):lower() or ""
+  if filename == "inbox.org" or filename == "recurring.org" or filename:match("archive") then
+    return false
+  end
+  
+  -- Count actionable sub-items within this project's subtree
+  -- GTD actions: TODO, NEXT, WAITING, SOMEDAY (not DONE/CANCELLED)
+  L = L or readf(item.path)
+  local action_count = 0
+  local project_level = item.level or 1
+  
+  for i = item.s + 1, item.e do
+    local ln = L[i] or ""
+    if is_heading(ln) then
+      local heading_level = hlevel(ln)
+      -- Only count direct children or nested items (not sibling projects)
+      if heading_level and heading_level > project_level then
+        local st = select(1, parse_state_title(ln))
+        if st == "TODO" or st == "NEXT" or st == "WAITING" or st == "SOMEDAY" then
+          action_count = action_count + 1
+          -- Early exit once we confirm it's a valid project (2+ actions)
+          if action_count >= 2 then
+            return true
+          end
+        end
+      end
+    end
+  end
+  
+  -- Less than 2 actions = not a GTD project
+  return false
+end
+
+-- Legacy filter - kept for backwards compatibility but deprecated
 local function is_project_item(item)
   return item.project or (item.level == 1 and (item.title or "") ~= "" and item.state ~= "DONE")
 end
@@ -806,7 +850,7 @@ function M.next_actions()
 end
 
 function M.projects()
-  show_list(is_project_item, "Projects", "project", {
+  show_list(is_valid_gtd_project, "Projects", "project", {
     -- Ctrl-r → review (open and go to first NEXT or TODO)
     ["ctrl-r"] = function(item)
       vim.cmd("edit " .. item.path)
