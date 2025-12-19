@@ -5,44 +5,36 @@
 -- Features: Area-of-Focus selection, task-to-project conversion
 --
 -- @module gtd-nvim.gtd.projects
--- @version 0.8.0
--- @requires shared (>= 1.0.0)
--- @todo Import and use shared.glyphs
--- @todo Use shared.colorize() for fzf displays
+-- @version 1.0.0
+-- @requires shared (>= 1.1.0)
 -- ============================================================================
 
 local M = {}
 
-M._VERSION = "0.8.0"
-M._UPDATED = "2024-12-08"
+M._VERSION = "1.0.0"
+M._UPDATED = "2024-12-19"
 
--- Load shared utilities with glyph system
+-- Load shared utilities (single source of truth)
 local shared = require("gtd.shared")
-local g = shared.glyphs  -- Glyph shortcuts
+local g = shared.glyphs
+
 -- Config
--- ------------------------------------------------------------
 local cfg = {
   projects_dir     = "~/Documents/GTD/Projects",
   zk_project_root  = "~/Documents/Notes/Projects",
   default_effort   = "2:00",
   default_assigned = "",
-  areas_root       = "~/Documents/GTD/Areas", -- new, used as fallback if gtd.areas is absent
+  areas_root       = "~/Documents/GTD/Areas",
   
   -- Date defaults
   date_defaults = {
-    due_days_after_defer = 7,    -- DUE suggestion = DEFER + N days (projects default to 7)
+    due_days_after_defer = 7,
   },
 }
 
 -- ------------------------------------------------------------
--- Helpers
+-- Helpers (delegating to shared.lua)
 -- ------------------------------------------------------------
-local function xp(p) return vim.fn.expand(p or "") end
-local function ensure_dir(p) local e = xp(p); vim.fn.mkdir(e, "p"); return e end
-local function file_exists(p) return vim.fn.filereadable(xp(p)) == 1 end
-local function readfile(p) if not file_exists(p) then return {} end return vim.fn.readfile(xp(p)) end
-local function writefile(p, L) ensure_dir(vim.fn.fnamemodify(xp(p), ":h")); vim.fn.writefile(L, xp(p)) end
-local function have_fzf() return pcall(require, "fzf-lua") end
 
 -- Calculate future date from optional base date
 local function future_date(days, from_date)
@@ -59,14 +51,6 @@ local function future_date(days, from_date)
   end
   local future_time = base_time + (days * 24 * 60 * 60)
   return os.date("%Y-%m-%d", future_time)
-end
-
-local function slugify(title)
-  title = tostring(title or "")
-  local s = title:gsub("[/%\\%:%*%?%\"%<%>%|]", "-")
-  s = s:gsub("%s+", "-")
-  s = s:gsub("^%-+", ""):gsub("%-+$", "")
-  return (#s > 0) and s or ("project-" .. os.date("%Y%m%d%H%M%S"))
 end
 
 local function gen_id() return os.date("%Y%m%d%H%M%S") end
@@ -118,7 +102,7 @@ local function get_area_dirs()
         if type(a) == "table" then
           local dir = a.dir or a.path
           if dir then
-            local full = xp(dir)
+            local full = shared.xp(dir)
             if vim.fn.isdirectory(full) == 1 then
               local label = a.label or a.name or vim.fn.fnamemodify(full, ":t")
               table.insert(results, { label = label, dir = full })
@@ -130,7 +114,7 @@ local function get_area_dirs()
   end
 
   -- 2) Fallback: scan cfg.areas_root/* as Area dirs
-  local root = xp(cfg.areas_root)
+  local root = shared.xp(cfg.areas_root)
   if vim.fn.isdirectory(root) == 1 then
     local dirs = vim.fn.glob(root .. "/*", false, true)
     for _, d in ipairs(dirs) do
@@ -156,7 +140,7 @@ end
 -- All project directories: legacy Projects dir + all Areas dirs
 local function get_all_project_dirs()
   local dirs = {}
-  local projects_root = xp(cfg.projects_dir)
+  local projects_root = shared.xp(cfg.projects_dir)
   if vim.fn.isdirectory(projects_root) == 1 then
     table.insert(dirs, projects_root)
   end
@@ -193,7 +177,7 @@ local function pick_area_dir(cb)
   local dirs = {}
   local labels = {}
 
-  local projects_root = xp(cfg.projects_dir)
+  local projects_root = shared.xp(cfg.projects_dir)
   table.insert(labels, "No Area (Projects root)")
   table.insert(dirs, projects_root)
 
@@ -242,11 +226,11 @@ end
 -- ZK notes
 -- ------------------------------------------------------------
 local function zk_note_for_project(title, id)
-  ensure_dir(cfg.zk_project_root)
-  local fname = id .. "-" .. slugify(title) .. ".md"
-  local path = xp(cfg.zk_project_root .. "/" .. fname)
-  if not file_exists(path) then
-    writefile(path, {
+  shared.ensure_dir(cfg.zk_project_root)
+  local fname = id .. "-" .. shared.slugify(title) .. ".md"
+  local path = shared.xp(cfg.zk_project_root .. "/" .. fname)
+  if not shared.file_exists(path) then
+    shared.write_file(path, {
       "# " .. title,
       "",
       "**Dato:** " .. os.date("%Y-%m-%d %H:%M:%S"),
@@ -479,7 +463,7 @@ local function extract_task_metadata_at_cursor()
     tags = tags,
     description = description,
     task_id = task_id,
-    zk_note = zk_note and xp(zk_note) or nil,
+    zk_note = zk_note and shared.xp(zk_note) or nil,
     area = area,
     file_path = file_path,
     h_start = h_start,
@@ -511,12 +495,12 @@ local function handle_original_task(task_data, new_project_path)
           local choice = sel and sel[1]
           if not choice then return end
           
-          local lines = readfile(task_data.file_path)
+          local lines = shared.read_file(task_data.file_path)
           local new_lines = {}
           
           if choice:match("^Archive") then
             -- Move to Archive.org with link
-            local archive_path = xp("~/Documents/GTD/Archive.org")
+            local archive_path = shared.xp("~/Documents/GTD/Archive.org")
             local task_lines = {}
             for i = task_data.h_start, task_data.h_end do
               table.insert(task_lines, lines[i])
@@ -529,8 +513,8 @@ local function handle_original_task(task_data, new_project_path)
             table.insert(task_lines, "Archived: " .. os.date("%Y-%m-%d %H:%M:%S"))
             
             -- Append to Archive.org
-            vim.fn.writefile({""}, archive_path, "a")
-            vim.fn.writefile(task_lines, archive_path, "a")
+            shared.append_file(archive_path, {""})
+            shared.append_file(archive_path, task_lines)
             
             -- Remove from original file
             for i = 1, task_data.h_start - 1 do
@@ -540,7 +524,7 @@ local function handle_original_task(task_data, new_project_path)
               table.insert(new_lines, lines[i])
             end
             
-            writefile(task_data.file_path, new_lines)
+            shared.write_file(task_data.file_path, new_lines)
             vim.notify((g.checkbox.checked or "") .. " Task archived to Archive.org", vim.log.levels.INFO)
             
           elseif choice:match("^Delete") then
@@ -552,7 +536,7 @@ local function handle_original_task(task_data, new_project_path)
               table.insert(new_lines, lines[i])
             end
             
-            writefile(task_data.file_path, new_lines)
+            shared.write_file(task_data.file_path, new_lines)
             vim.notify((g.container.trash or "") .. " Task deleted", vim.log.levels.INFO)
             
           elseif choice:match("^Mark") then
@@ -565,12 +549,12 @@ local function handle_original_task(task_data, new_project_path)
             table.insert(lines, insert_pos + 1, string.format("Converted to project: [[file:%s][%s]]",
               new_project_path, vim.fn.fnamemodify(new_project_path, ":t:r")))
             
-            writefile(task_data.file_path, lines)
+            shared.write_file(task_data.file_path, lines)
             vim.notify(" Task marked DONE with project link", vim.log.levels.INFO)
             
           elseif choice:match("^Move") then
             -- Move as first NEXT action in project
-            local proj_lines = readfile(new_project_path)
+            local proj_lines = shared.read_file(new_project_path)
             local first_heading_idx = org_find_first_heading(proj_lines)
             
             if first_heading_idx then
@@ -597,7 +581,7 @@ local function handle_original_task(task_data, new_project_path)
                 table.insert(proj_lines, insert_pos + 2, task_data.description)
               end
               
-              writefile(new_project_path, proj_lines)
+              shared.write_file(new_project_path, proj_lines)
             end
             
             -- Remove from original file
@@ -608,7 +592,7 @@ local function handle_original_task(task_data, new_project_path)
               table.insert(new_lines, lines[i])
             end
             
-            writefile(task_data.file_path, new_lines)
+            shared.write_file(task_data.file_path, new_lines)
             vim.notify(" Task moved as first NEXT action in project", vim.log.levels.INFO)
             
           else
@@ -663,9 +647,9 @@ local function project_template(opts)
 end
 
 local function open_and_seed(file, lines)
-  if not file_exists(file) then
-    ensure_dir(vim.fn.fnamemodify(file, ":h"))
-    writefile(file, lines or { "" })
+  if not shared.file_exists(file) then
+    shared.ensure_dir(vim.fn.fnamemodify(file, ":h"))
+    shared.write_file(file, lines or { "" })
   end
   vim.cmd("edit " .. file)
 end
@@ -684,10 +668,10 @@ function M.create()
       local deadline  = ""
 
       local function finalize(area_dir)
-        area_dir = area_dir or xp(cfg.projects_dir)
-        ensure_dir(area_dir)
-        local slug   = slugify(title)
-        local file   = xp(area_dir .. "/" .. slug .. ".org")
+        area_dir = area_dir or shared.xp(cfg.projects_dir)
+        shared.ensure_dir(area_dir)
+        local slug   = shared.slugify(title)
+        local file   = shared.xp(area_dir .. "/" .. slug .. ".org")
         local zkpath = zk_note_for_project(title, id) -- always create & link
         local lines  = project_template({
           title       = title,
@@ -777,15 +761,15 @@ function M.create_from_task_at_cursor()
         local deadline = task_data.deadline or ""
         
         local function finalize(area_dir)
-          area_dir = area_dir or (task_data.area and task_data.area.dir) or xp(cfg.projects_dir)
-          ensure_dir(area_dir)
+          area_dir = area_dir or (task_data.area and task_data.area.dir) or shared.xp(cfg.projects_dir)
+          shared.ensure_dir(area_dir)
           
-          local slug = slugify(title)
-          local file = xp(area_dir .. "/" .. slug .. ".org")
+          local slug = shared.slugify(title)
+          local file = shared.xp(area_dir .. "/" .. slug .. ".org")
           
           -- Handle ZK note: reuse or create
           local zkpath = nil
-          if task_data.zk_note and file_exists(task_data.zk_note) then
+          if task_data.zk_note and shared.file_exists(task_data.zk_note) then
             zkpath = task_data.zk_note
             vim.notify(g.container.recurring .. " Reusing existing ZK note", vim.log.levels.INFO)
           else
@@ -822,7 +806,7 @@ function M.create_from_task_at_cursor()
             elseif choice == "choose" then
               pick_area_dir(finalize)
             elseif choice == "root" then
-              finalize(xp(cfg.projects_dir))
+              finalize(shared.xp(cfg.projects_dir))
             else
               pick_area_dir(finalize)
             end
@@ -873,12 +857,12 @@ end
 -- ------------------------------------------------------------
 function M.open_project_dir()
   -- If Areas exist, open Areas root; otherwise legacy projects dir
-  local areas_root = xp(cfg.areas_root)
+  local areas_root = shared.xp(cfg.areas_root)
   local root
   if vim.fn.isdirectory(areas_root) == 1 then
     root = areas_root
   else
-    root = xp(cfg.projects_dir)
+    root = shared.xp(cfg.projects_dir)
   end
   vim.cmd("edit " .. root)
 end
@@ -932,7 +916,7 @@ function M.search()
   end
 
   -- Search within GTD root, but constrain ripgrep to project .org files
-  local projects_root = xp(cfg.projects_dir)
+  local projects_root = shared.xp(cfg.projects_dir)
   local gtd_root = vim.fn.fnamemodify(projects_root, ":h") -- usually ~/Documents/GTD
 
   fzf.live_grep({
@@ -956,11 +940,11 @@ end
 -- Ensure metadata on current project file
 -- ------------------------------------------------------------
 function M.ensure_metadata_current()
-  local path = xp("%:p")
+  local path = shared.xp("%:p")
   if not path:match("%.org$") then
     vim.notify("Not an org file.", vim.log.levels.WARN); return
   end
-  local lines = readfile(path)
+  local lines = shared.read_file(path)
   if #lines == 0 then
     vim.notify("Empty file?", vim.log.levels.WARN); return
   end
@@ -986,7 +970,7 @@ function M.ensure_metadata_current()
   upsert_property(lines, "ID", id)
   upsert_property(lines, "ZK_NOTE",
     ("[[file:%s][%s]]"):format(zkpath, vim.fn.fnamemodify(zkpath, ":t")))
-  writefile(path, lines)
+  shared.write_file(path, lines)
   vim.notify("Added ZK_NOTE to project (no DESCRIPTION found).", vim.log.levels.INFO)
 end
 
@@ -995,7 +979,7 @@ end
 -- ------------------------------------------------------------
 local function collect_zk_links_from_file(path)
   local res = {}
-  local lines = readfile(path)
+  local lines = shared.read_file(path)
   local current_heading = nil
   for i = 1, #lines do
     local ln = lines[i]
@@ -1028,7 +1012,7 @@ local function gather_all_zk_links()
 end
 
 function M.list_zk_links()
-  if not have_fzf() then
+  if not shared.have_fzf() then
     vim.notify("fzf-lua not available", vim.log.levels.WARN)
     return
   end
@@ -1056,7 +1040,7 @@ function M.list_zk_links()
         if not sel or not sel[1] then return end
         local idx = vim.fn.index(display, sel[1]) + 1
         local it = items[idx]
-        if it and it.zk_path then vim.cmd("edit " .. xp(it.zk_path)) end
+        if it and it.zk_path then vim.cmd("edit " .. shared.xp(it.zk_path)) end
       end,
       ["ctrl-e"] = function(sel)
         if not sel or not sel[1] then return end
@@ -1071,7 +1055,7 @@ function M.list_zk_links()
         if not sel or not sel[1] then return end
         local idx = vim.fn.index(display, sel[1]) + 1
         local it = items[idx]
-        if it and it.zk_path then vim.cmd("split " .. xp(it.zk_path)) end
+        if it and it.zk_path then vim.cmd("split " .. shared.xp(it.zk_path)) end
       end,
       ["ctrl-b"] = function(_)
         vim.schedule(function()
@@ -1113,13 +1097,13 @@ local function zk_path_under_cursor(bufnr, lnum)
 end
 
 function M.open_zk_from_cursor()
-  local path = xp("%:p")
+  local path = shared.xp("%:p")
   if not path:match("%.org$") then
     vim.notify("Not an org file.", vim.log.levels.WARN); return
   end
   local zk, _ = zk_path_under_cursor(0, nil)
   if zk then
-    vim.cmd("edit " .. xp(zk))
+    vim.cmd("edit " .. shared.xp(zk))
   else
     vim.notify("No ZK link found in this subtree.", vim.log.levels.INFO)
   end
@@ -1137,17 +1121,17 @@ local function ensure_backlinks_section(lines)
 end
 
 local function append_backlink(zk_path, project_path, heading)
-  local lines = readfile(zk_path)
+  local lines = shared.read_file(zk_path)
   local idx = ensure_backlinks_section(lines)
   local disp_proj = vim.fn.fnamemodify(project_path, ":t")
   local disp_head = heading or "(task)"
   local link = string.format("- [[file:%s::*%s][%s → %s]]", project_path, disp_head, disp_proj, disp_head)
   table.insert(lines, link)
-  writefile(zk_path, lines)
+  shared.write_file(zk_path, lines)
 end
 
 function M.sync_backlink_under_cursor()
-  local project_path = xp("%:p")
+  local project_path = shared.xp("%:p")
   if not project_path:match("%.org$") then
     vim.notify("Not an org project file.", vim.log.levels.WARN); return
   end
@@ -1162,7 +1146,7 @@ function M.sync_backlink_under_cursor()
   local h = ln and ln:match("^%*+%s+(.*)") or nil
   if h and h ~= "" then heading = h end
 
-  append_backlink(xp(zk), project_path, heading)
+  append_backlink(shared.xp(zk), project_path, heading)
   vim.notify(" Backlink appended to ZK note.", vim.log.levels.INFO)
 end
 
@@ -1175,7 +1159,7 @@ local function parse_org_file_link_at_cursor()
   if not inner then return nil end
   local target = inner:match("^file:([^%]]+)%]") or inner:match("^file:(.+)$")
   if not target or target == "" then return nil end
-  return xp(target)
+  return shared.xp(target)
 end
 
 function M.open_link_under_cursor()
@@ -1205,7 +1189,7 @@ local function get_project_files()
   local results = {}
   
   -- Main projects directory
-  local main_dir = xp(cfg.projects_dir)
+  local main_dir = shared.xp(cfg.projects_dir)
   if vim.fn.isdirectory(main_dir) == 1 then
     local files = vim.fn.glob(main_dir .. "/*.org", false, true)
     if type(files) == "string" then files = {files} end
@@ -1349,8 +1333,8 @@ end
 -- ------------------------------------------------------------
 function M.setup(opts)
   cfg = vim.tbl_deep_extend("force", cfg, opts or {})
-  ensure_dir(cfg.projects_dir)
-  ensure_dir(cfg.zk_project_root)
+  shared.ensure_dir(cfg.projects_dir)
+  shared.ensure_dir(cfg.zk_project_root)
   -- areas_root is only used if it exists, so no mkdir here
 end
 
