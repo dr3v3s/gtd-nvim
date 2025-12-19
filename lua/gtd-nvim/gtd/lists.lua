@@ -1224,11 +1224,11 @@ function M.agenda(date)
         local dominated = false
         for _, s in ipairs(scheduled_today) do
           if s.file == t.file and s.line == t.line then
-            duped = true
+            dominated = true
             break
           end
         end
-        if not duped then
+        if not dominated then
           add_item({ title = format_task(t, true), raw = t }, "󰀨", "task")  -- deadline icon
         end
       end
