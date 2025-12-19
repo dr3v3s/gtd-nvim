@@ -1250,7 +1250,7 @@ function M.agenda(date)
   -- Fallback if Kairos returned nothing
   if #all_tasks == 0 then
     vim.notify("Kairos returned 0 tasks, using fallback scan", vim.log.levels.WARN)
-    local items = shared.scan_gtd_files_robust({ root = vim.fn.expand("~/Documents/GTD") })
+    local items = shared.scan_gtd_files_robust({ root = shared.gtd_home() })
     for _, item in ipairs(items) do
       table.insert(all_tasks, {
         state = item.state,

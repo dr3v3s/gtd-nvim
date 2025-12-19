@@ -3,14 +3,24 @@
 
 local M = {}
 
+-- Lazy load config
+local _config = nil
+local function get_gtd_config()
+  if not _config then
+    local ok, cfg = pcall(require, "gtd-nvim.config")
+    if ok then _config = cfg end
+  end
+  return _config
+end
+
 -- Config
 M.config = {
   browser = "Safari",
   mutt_cmd = "neomutt",
   float = { border = "rounded", width = 0.85, height = 0.85, winblend = 0 },
-  -- Notes resolution config
-  notes_dir = "~/Documents/Notes",
-  gtd_dir = "~/Documents/GTD",
+  -- Notes resolution config (nil = use gtd-nvim config)
+  notes_dir = nil,
+  gtd_dir = nil,
   extensions = { "md", "org", "txt", "markdown" },
   exclude_patterns = { "%.git", "%.DS_Store", "node_modules", "%.continuity", "%.gpg" },
   -- Link resolution cache
@@ -22,6 +32,28 @@ M.config = {
     ttl = 30,
   },
 }
+
+-- ============================================================================
+-- PATH ACCESSORS (use config module with fallbacks)
+-- ============================================================================
+
+local function expand_path(path)
+  return vim.fn.expand(path)
+end
+
+local function get_notes_dir()
+  if M.config.notes_dir then return get_notes_dir() end
+  local cfg = get_gtd_config()
+  if cfg then return cfg.notes_home() end
+  return expand_path("~/Documents/Notes")
+end
+
+local function get_gtd_dir()
+  if M.config.gtd_dir then return get_gtd_dir() end
+  local cfg = get_gtd_config()
+  if cfg then return cfg.gtd_home() end
+  return expand_path("~/Documents/GTD")
+end
 
 -- ============================================================================
 -- PLATFORM HELPERS
@@ -78,7 +110,7 @@ end
 
 --- Build file index for fast resolution
 local function build_file_index()
-  local notes_dir = expand_path(M.config.notes_dir)
+  local notes_dir = get_notes_dir()
   local files = {}
   local by_basename = {}
   local by_zk_id = {}
@@ -200,7 +232,7 @@ function M.resolve_wiki_link(target)
   end
   
   -- 4. Try with common extensions added
-  local notes_dir = expand_path(M.config.notes_dir)
+  local notes_dir = get_notes_dir()
   for _, ext in ipairs(M.config.extensions) do
     local test_path = notes_dir .. "/" .. target .. "." .. ext
     if vim.fn.filereadable(test_path) == 1 then
@@ -645,7 +677,7 @@ function M.rename_note(old_path, new_name)
     return vim.notify("No file to rename", vim.log.levels.WARN, { title = "Rename" })
   end
   
-  local notes_dir = expand_path(M.config.notes_dir)
+  local notes_dir = get_notes_dir()
   if not old_path:find(notes_dir, 1, true) then
     return vim.notify("File not in notes directory", vim.log.levels.WARN, { title = "Rename" })
   end

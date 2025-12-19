@@ -197,6 +197,234 @@ function M.get_waiting_contexts()
 end
 
 -- ============================================================================
+-- CANONICAL PARSING FUNCTIONS (GTD-SPEC.md Section 8)
+-- All modules MUST use these for consistency
+-- ============================================================================
+
+--- Check if a file is a project file (has * PROJECT heading in first 10 lines)
+--- @param filepath string Path to org file
+--- @return boolean True if file contains PROJECT heading
+function M.is_project_file(filepath)
+  local lines = M.read_file(filepath)
+  if not lines or #lines == 0 then return false end
+  for i = 1, math.min(10, #lines) do
+    if lines[i] and lines[i]:match("^%*%s+PROJECT%s") then
+      return true
+    end
+  end
+  return false
+end
+
+--- Check if current buffer is a project file
+--- @return boolean True if current buffer contains PROJECT heading
+function M.is_current_project_file()
+  local lines = vim.api.nvim_buf_get_lines(0, 0, 10, false)
+  for _, line in ipairs(lines) do
+    if line:match("^%*%s+PROJECT%s") then
+      return true
+    end
+  end
+  return false
+end
+
+--- Parse an org heading line into components
+--- @param line string The heading line
+--- @return table|nil Parsed heading {level, keyword, title, tags, progress, raw}
+function M.parse_org_heading_full(line)
+  if not line then return nil end
+  local stars, rest = line:match("^(%*+)%s+(.*)")
+  if not stars then return nil end
+  
+  local level = #stars
+  local keyword, title_rest = rest:match("^([A-Z]+)%s+(.*)")
+  local title = title_rest or rest
+  local tags = {}
+  local progress = nil
+  
+  -- Extract tags from end
+  local title_clean, tag_str = title:match("^(.-)%s+(:.+:)%s*$")
+  if tag_str then
+    title = title_clean
+    for tag in tag_str:gmatch(":([^:]+)") do
+      table.insert(tags, tag)
+    end
+  end
+  
+  -- Extract progress counter [n/m]
+  local prog_match = title:match("%[(%d+/%d+)%]")
+  if prog_match then
+    progress = prog_match
+    title = title:gsub("%s*%[%d+/%d+%]%s*", " "):gsub("%s+$", "")
+  end
+  
+  return {
+    level = level,
+    keyword = keyword,
+    title = title,
+    tags = tags,
+    progress = progress,
+    raw = line,
+  }
+end
+
+--- Adjust heading levels when moving between file types
+--- @param line string The heading line to adjust
+--- @param source_is_project boolean Source file is a project file
+--- @param dest_is_project boolean Destination file is a project file
+--- @return string Adjusted heading line
+function M.adjust_heading_level(line, source_is_project, dest_is_project)
+  if not line:match("^%*+%s") then return line end
+  
+  if not source_is_project and dest_is_project then
+    -- Non-project → Project: add star (* → **)
+    return "*" .. line
+  elseif source_is_project and not dest_is_project then
+    -- Project → Non-project: remove star (** → *)
+    return line:gsub("^%*%*", "*")
+  end
+  return line
+end
+
+--- Adjust all headings in a subtree when moving between file types
+--- @param lines string[] Lines of the subtree
+--- @param source_is_project boolean Source file is a project file
+--- @param dest_is_project boolean Destination file is a project file
+--- @return string[] Adjusted lines
+function M.adjust_subtree_levels(lines, source_is_project, dest_is_project)
+  if source_is_project == dest_is_project then return lines end
+  
+  local adjusted = {}
+  for _, line in ipairs(lines) do
+    table.insert(adjusted, M.adjust_heading_level(line, source_is_project, dest_is_project))
+  end
+  return adjusted
+end
+
+--- Get the appropriate heading level for a new task in a file
+--- @param filepath string|nil Path to destination file (nil = current buffer)
+--- @return number Heading level (1 or 2)
+function M.get_task_heading_level(filepath)
+  if filepath then
+    return M.is_project_file(filepath) and 2 or 1
+  else
+    return M.is_current_project_file() and 2 or 1
+  end
+end
+
+--- Generate stars for a heading at given level
+--- @param level number Heading level (1-6)
+--- @return string Stars string (e.g., "**" for level 2)
+function M.heading_stars(level)
+  return string.rep("*", level or 1)
+end
+
+--- Get property value from lines within a heading range
+--- @param lines string[] All file lines
+--- @param h_start number Heading start line (1-indexed)
+--- @param h_end number Heading end line (1-indexed)
+--- @param key string Property key to find
+--- @return string|nil Property value or nil
+function M.get_property_in_range(lines, h_start, h_end, key)
+  local in_props = false
+  for i = h_start, math.min(h_end, #lines) do
+    local line = lines[i]
+    if line:match("^%s*:PROPERTIES:%s*$") then
+      in_props = true
+    elseif line:match("^%s*:END:%s*$") then
+      break
+    elseif in_props then
+      local k, v = line:match("^%s*:([^:]+):%s*(.*)%s*$")
+      if k and k:upper() == key:upper() then
+        return v
+      end
+    end
+  end
+  return nil
+end
+
+--- Upsert a property in a properties drawer
+--- @param lines string[] File lines (modified in place)
+--- @param h_start number Heading start line
+--- @param key string Property key
+--- @param value string Property value
+--- @return string[] Modified lines
+function M.upsert_property_in_range(lines, h_start, key, value)
+  -- Find or create properties drawer
+  local props_start, props_end = nil, nil
+  local insert_after = h_start
+  
+  -- Skip SCHEDULED/DEADLINE lines
+  for i = h_start + 1, math.min(h_start + 5, #lines) do
+    local line = lines[i]
+    if line:match("^SCHEDULED:") or line:match("^DEADLINE:") then
+      insert_after = i
+    elseif line:match("^%s*:PROPERTIES:") then
+      props_start = i
+      break
+    elseif line:match("^%*") or line == "" then
+      break
+    end
+  end
+  
+  -- Find :END: if we found :PROPERTIES:
+  if props_start then
+    for i = props_start + 1, #lines do
+      if lines[i]:match("^%s*:END:") then
+        props_end = i
+        break
+      end
+    end
+  end
+  
+  if props_start and props_end then
+    -- Update existing or insert new property
+    local found = false
+    for i = props_start + 1, props_end - 1 do
+      local k = lines[i]:match("^%s*:([^:]+):")
+      if k and k:upper() == key:upper() then
+        lines[i] = string.format(":%s: %s", key, value)
+        found = true
+        break
+      end
+    end
+    if not found then
+      table.insert(lines, props_end, string.format(":%s: %s", key, value))
+    end
+  else
+    -- Create new drawer
+    table.insert(lines, insert_after + 1, ":PROPERTIES:")
+    table.insert(lines, insert_after + 2, string.format(":%s: %s", key, value))
+    table.insert(lines, insert_after + 3, ":END:")
+  end
+  
+  return lines
+end
+
+--- Generate a TASK_ID (timestamp-based unique ID)
+--- @return string 14-digit timestamp ID
+function M.gen_task_id()
+  return os.date("%Y%m%d%H%M%S")
+end
+
+--- Check if keyword is an active (actionable) state
+--- @param keyword string TODO keyword
+--- @return boolean True if active
+function M.is_active_keyword(keyword)
+  if not keyword then return false end
+  local active = { "TODO", "NEXT", "WAITING", "SOMEDAY", "PROJECT" }
+  return vim.tbl_contains(active, keyword:upper())
+end
+
+--- Check if keyword is a done state
+--- @param keyword string TODO keyword
+--- @return boolean True if done
+function M.is_done_keyword(keyword)
+  if not keyword then return false end
+  local done = { "DONE", "CANCELLED", "CANCELED" }
+  return vim.tbl_contains(done, keyword:upper())
+end
+
+-- ============================================================================
 -- COLOR SYSTEM (ANSI for fzf-lua, highlight groups for buffers)
 -- ============================================================================
 

@@ -93,36 +93,30 @@ function M.check()
   
   -- Check GTD directories
   vim.health.start("GTD System")
-  local gtd_ok, gtd = pcall(require, "gtd-nvim.gtd")
   
-  if gtd_ok and gtd.cfg then
-    local gtd_root = gtd.cfg.gtd_root or "~/Documents/GTD"
-    check_dir_exists(gtd_root, "GTD root")
-    check_file_exists(gtd_root .. "/Inbox.org", "Inbox file")
-    check_dir_exists(gtd_root .. "/Projects", "Projects directory")
-    check_dir_exists(gtd_root .. "/Areas", "Areas directory")
+  -- Try to use config module first
+  local cfg_ok, cfg = pcall(require, "gtd-nvim.config")
+  local gtd_root, zk_root
+  
+  if cfg_ok then
+    gtd_root = cfg.gtd_home()
+    zk_root = cfg.notes_home()
+    vim.health.ok("Config module loaded")
   else
-    local default_gtd = "~/Documents/GTD"
-    check_dir_exists(default_gtd, "GTD root (default)")
-    check_file_exists(default_gtd .. "/Inbox.org", "Inbox file")
+    -- Fallback to gtd module config
+    local gtd_ok, gtd = pcall(require, "gtd-nvim.gtd")
+    gtd_root = (gtd_ok and gtd.cfg and gtd.cfg.gtd_root) or "~/Documents/GTD"
+    zk_root = "~/Documents/Notes"
   end
+  
+  check_dir_exists(gtd_root, "GTD root")
+  check_file_exists(gtd_root .. "/Inbox.org", "Inbox file")
+  check_dir_exists(gtd_root .. "/Projects", "Projects directory")
+  check_dir_exists(gtd_root .. "/Areas", "Areas directory")
   
   -- Check Zettelkasten directories
   vim.health.start("Zettelkasten System")
-  local zk_ok, zk = pcall(require, "gtd-nvim.zettelkasten")
-  
-  if zk_ok then
-    local zk_root = "~/Documents/Notes"
-    if zk.get_paths then
-      local paths = zk.get_paths()
-      if paths and paths.notes_dir then
-        zk_root = paths.notes_dir
-      end
-    end
-    check_dir_exists(zk_root, "Zettelkasten root")
-  else
-    check_dir_exists("~/Documents/Notes", "Zettelkasten root (default)")
-  end
+  check_dir_exists(zk_root, "Zettelkasten root")
   
   -- Check GTD modules
   vim.health.start("GTD Modules")

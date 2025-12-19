@@ -516,7 +516,7 @@ local function handle_original_task(task_data, new_project_path)
           
           if choice:match("^Archive") then
             -- Move to Archive.org with link
-            local archive_path = shared.xp("~/Documents/GTD/Archive.org")
+            local archive_path = shared.gtd_path("archive") .. ".org"
             local task_lines = {}
             for i = task_data.h_start, task_data.h_end do
               table.insert(task_lines, lines[i])

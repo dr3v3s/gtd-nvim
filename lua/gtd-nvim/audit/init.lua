@@ -10,9 +10,25 @@ local validators = nil
 local insights = nil
 local reports = nil
 
+-- Lazy load config module
+local _gtd_config = nil
+local function get_gtd_config()
+  if not _gtd_config then
+    local ok, cfg = pcall(require, "gtd-nvim.config")
+    if ok then _gtd_config = cfg end
+  end
+  return _gtd_config
+end
+
+local function get_gtd_root()
+  local cfg = get_gtd_config()
+  if cfg then return cfg.gtd_home() end
+  return vim.fn.expand("~/Documents/GTD")
+end
+
 -- Configuration
 M.config = {
-  gtd_root = vim.fn.expand("~/Documents/GTD"),
+  gtd_root = nil,  -- Uses config.gtd_home() if nil
   todo_keywords = { "INBOX", "TODO", "NEXT", "WAIT", "WAITING", "SOMEDAY", "DONE", "CANCELLED" },
   active_keywords = { "INBOX", "TODO", "NEXT", "WAIT", "WAITING", "SOMEDAY" },
   done_keywords = { "DONE", "CANCELLED" },
@@ -30,6 +46,11 @@ M.config = {
   strict_mode = true,  -- Enforce strict org-mode syntax
   gtd_mode = true,     -- Enforce GTD-specific rules
 }
+
+-- Get effective GTD root
+function M.get_gtd_root()
+  return M.config.gtd_root or get_gtd_root()
+end
 
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
@@ -68,7 +89,7 @@ function M.audit_all()
   validators = validators or require("utils.gtd-audit.validators")
   reports = reports or require("utils.gtd-audit.reports")
   
-  local gtd_files = vim.fn.globpath(M.config.gtd_root, "**/*.org", false, true)
+  local gtd_files = vim.fn.globpath(M.get_gtd_root(), "**/*.org", false, true)
   
   -- Exclude backup files
   gtd_files = vim.tbl_filter(function(f)

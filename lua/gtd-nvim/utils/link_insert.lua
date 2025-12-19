@@ -3,10 +3,20 @@
 
 local M = {}
 
--- Config
+-- Lazy load config
+local _config = nil
+local function get_gtd_config()
+  if not _config then
+    local ok, cfg = pcall(require, "gtd-nvim.config")
+    if ok then _config = cfg end
+  end
+  return _config
+end
+
+-- Config (uses gtd-nvim config as defaults)
 M.config = {
-  notes_dir = "~/Documents/Notes",
-  gtd_dir = "~/Documents/GTD",
+  notes_dir = nil,  -- Will use config.notes_home() if nil
+  gtd_dir = nil,    -- Will use config.gtd_home() if nil
   link_formats = {
     markdown = {
       file = "[%s](%s)",
@@ -49,6 +59,21 @@ function M.setup(user_config)
   if user_config then
     M.config = vim.tbl_deep_extend("force", M.config, user_config)
   end
+end
+
+-- Path accessors (use config module with fallbacks)
+local function get_notes_dir()
+  if M.config.notes_dir then return expand_path(M.config.notes_dir) end
+  local cfg = get_gtd_config()
+  if cfg then return cfg.notes_home() end
+  return expand_path("~/Documents/Notes")
+end
+
+local function get_gtd_dir()
+  if M.config.gtd_dir then return expand_path(M.config.gtd_dir) end
+  local cfg = get_gtd_config()
+  if cfg then return cfg.gtd_home() end
+  return expand_path("~/Documents/GTD")
 end
 
 -- Helpers (preserved from original)
@@ -101,7 +126,7 @@ end
 -- ============================================================================
 
 function M.get_notes_files()
-  local notes_dir = expand_path(M.config.notes_dir)
+  local notes_dir = get_notes_dir()
   local files = {}
   
   if vim.fn.isdirectory(notes_dir) == 0 then
@@ -241,7 +266,7 @@ function M.complete_wiki_link()
   
   local files = get_notes_files_cached()
   if #files == 0 then
-    return vim.notify("No notes found in " .. M.config.notes_dir, vim.log.levels.WARN)
+    return vim.notify("No notes found in " .. get_notes_dir(), vim.log.levels.WARN)
   end
   
   local ok, fzf_lua = pcall(require, 'fzf-lua')
@@ -351,7 +376,7 @@ end
 function M.insert_file_link()
   local files = M.get_notes_files()
   if #files == 0 then
-    return vim.notify("No notes found in " .. M.config.notes_dir, vim.log.levels.WARN)
+    return vim.notify("No notes found in " .. get_notes_dir(), vim.log.levels.WARN)
   end
   
   local ok, fzf_lua = pcall(require, 'fzf-lua')
@@ -448,7 +473,7 @@ function M.insert_task_ref()
     return
   end
   
-  local gtd_dir = expand_path(M.config.gtd_dir)
+  local gtd_dir = get_gtd_dir()
   
   if vim.fn.isdirectory(gtd_dir) == 0 then
     return vim.ui.input({ prompt = "Task ID/Reference: " }, function(task_ref)
@@ -505,7 +530,7 @@ function M.insert_person_link()
     return
   end
   
-  local notes_dir = expand_path(M.config.notes_dir)
+  local notes_dir = get_notes_dir()
   local people_dir = notes_dir .. "/People"
   
   if vim.fn.isdirectory(people_dir) == 0 then
@@ -556,7 +581,7 @@ function M.insert_project_link()
     return
   end
   
-  local notes_dir = expand_path(M.config.notes_dir)
+  local notes_dir = get_notes_dir()
   local projects_dir = notes_dir .. "/Projects"
   
   if vim.fn.isdirectory(projects_dir) == 0 then
@@ -614,7 +639,7 @@ function M.insert_timestamp_note()
         prompt = "Create the note file?",
       }, function(choice)
         if choice == "Yes" then
-          local notes_dir = expand_path(M.config.notes_dir)
+          local notes_dir = get_notes_dir()
           local full_path = notes_dir .. "/" .. rel_path
           vim.cmd("edit " .. vim.fn.fnameescape(full_path))
         end
@@ -678,7 +703,7 @@ end
 -- ============================================================================
 
 function M.debug_notes_scan()
-  local notes_dir = expand_path(M.config.notes_dir)
+  local notes_dir = get_notes_dir()
   print("Notes directory: " .. notes_dir)
   print("Directory exists: " .. (vim.fn.isdirectory(notes_dir) == 1 and "YES" or "NO"))
   

@@ -12,14 +12,15 @@ This specification defines the canonical structure for GTD org-mode files and Ze
 ## Table of Contents
 
 1. [Module Inventory](#1-module-inventory)
-2. [Directory Structure](#2-directory-structure)
-3. [GTD File Types & Heading Levels](#3-gtd-file-types--heading-levels)
-4. [Org-Mode Syntax Rules](#4-org-mode-syntax-rules)
-5. [Zettelkasten Markdown Rules](#5-zettelkasten-markdown-rules)
-6. [Linking Between Systems](#6-linking-between-systems)
-7. [Identifiers](#7-identifiers)
-8. [Canonical Parsing Functions](#8-canonical-parsing-functions)
-9. [Module Compliance Checklist](#9-module-compliance-checklist)
+2. [Configuration System](#2-configuration-system)
+3. [Directory Structure](#3-directory-structure)
+4. [GTD File Types & Heading Levels](#4-gtd-file-types--heading-levels)
+5. [Org-Mode Syntax Rules](#5-org-mode-syntax-rules)
+6. [Zettelkasten Markdown Rules](#6-zettelkasten-markdown-rules)
+7. [Linking Between Systems](#7-linking-between-systems)
+8. [Identifiers](#8-identifiers)
+9. [Canonical Parsing Functions](#9-canonical-parsing-functions)
+10. [Module Compliance Checklist](#10-module-compliance-checklist)
 
 ---
 
@@ -88,9 +89,87 @@ This specification defines the canonical structure for GTD org-mode files and Ze
 
 ---
 
-## 2. Directory Structure
+## 2. Configuration System
 
-### 2.1 GTD Directory (`~/Documents/GTD/`)
+### 2.1 User Configuration
+
+All user-specific settings are centralized in `~/.config/gtd-nvim/config.lua`:
+
+```lua
+return {
+  -- Paths
+  gtd_home = "~/Documents/GTD",
+  notes_home = "~/Documents/Notes",
+  
+  -- User Identity
+  user = {
+    name = "Your Name",
+    email = "you@example.com",
+    timezone = "Europe/Copenhagen",
+  },
+  
+  -- Areas of Focus
+  areas = {
+    { id = "work", name = "Work", icon = "󰊕", dir = "Work" },
+    { id = "family", name = "Family", icon = "󰋑", dir = "Family" },
+  },
+  
+  -- Contexts
+  contexts = {
+    { tag = "@computer", name = "Computer", icon = "󰌢" },
+    { tag = "@phone", name = "Phone", icon = "󰏲" },
+  },
+  
+  -- People (for WAITING)
+  people = {
+    { id = "boss", name = "Boss Name", email = "boss@work.com" },
+  },
+  
+  -- Integrations
+  integrations = {
+    kairos = { enabled = true, socket = "~/.cache/kairos/kairos.sock" },
+  },
+}
+```
+
+### 2.2 Configuration Loading
+
+Modules access configuration via `shared.lua`:
+
+```lua
+local shared = require("gtd-nvim.gtd.shared")
+
+-- Path accessors
+local gtd_root = shared.gtd_home()      -- "~/Documents/GTD" expanded
+local notes_root = shared.notes_home()  -- "~/Documents/Notes" expanded
+local inbox = shared.gtd_path("inbox")  -- Full path to Inbox.org
+
+-- Data accessors
+local areas = shared.get_areas()        -- User's areas of focus
+local contexts = shared.get_contexts()  -- User's @contexts
+local people = shared.get_people()      -- User's people list
+```
+
+### 2.3 Config Module API
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `config.get()` | table | Full configuration |
+| `config.gtd_home()` | string | Expanded GTD path |
+| `config.notes_home()` | string | Expanded Notes path |
+| `config.gtd_path(key)` | string | GTD subdirectory path |
+| `config.notes_path(key)` | string | Notes subdirectory path |
+| `config.areas()` | table[] | Areas of focus |
+| `config.contexts()` | table[] | GTD contexts |
+| `config.people()` | table[] | People for WAITING |
+| `config.effort_options()` | table[] | Time estimate options |
+| `config.reload()` | table | Force reload config |
+
+---
+
+## 3. Directory Structure
+
+### 3.1 GTD Directory (`~/Documents/GTD/`)
 
 ```
 GTD/
@@ -106,7 +185,7 @@ GTD/
     └── *.org
 ```
 
-### 2.2 Notes Directory (`~/Documents/Notes/`)
+### 3.2 Notes Directory (`~/Documents/Notes/`)
 
 ```
 Notes/
@@ -128,9 +207,9 @@ Notes/
 
 ---
 
-## 3. GTD File Types & Heading Levels
+## 4. GTD File Types & Heading Levels
 
-### 3.1 The Golden Rule
+### 4.1 The Golden Rule
 
 > **Heading level is determined by file type, NOT by the action.**
 
@@ -139,7 +218,7 @@ Notes/
 | Standalone (Inbox, Recurring, Tickler) | No `* PROJECT` heading | `*` (level 1) |
 | Project file | Has `* PROJECT` at line 1-10 | `**` (level 2) |
 
-### 3.2 Standalone Files
+### 4.2 Standalone Files
 
 **Files:** `Inbox.org`, `Recurring.org`, `Tickler.org`, and any `.org` without `* PROJECT`
 
@@ -154,7 +233,7 @@ SCHEDULED: <2025-12-20 Fri>
 DEADLINE: <2025-12-25 Wed>
 ```
 
-### 3.3 Project Files
+### 4.3 Project Files
 
 **Files:** Any `.org` with `* PROJECT` heading in first 10 lines
 
@@ -191,7 +270,7 @@ Sub-notes at level 3.
 CLOSED: [2025-12-18 Thu 10:00]
 ```
 
-### 3.4 Moving Between File Types
+### 4.4 Moving Between File Types
 
 When moving tasks between files, heading levels MUST be adjusted:
 
@@ -206,9 +285,9 @@ When moving tasks between files, heading levels MUST be adjusted:
 
 ---
 
-## 4. Org-Mode Syntax Rules
+## 5. Org-Mode Syntax Rules
 
-### 4.1 TODO Keywords
+### 5.1 TODO Keywords
 
 | Keyword | Type | Description | Icon |
 |---------|------|-------------|------|
@@ -220,7 +299,7 @@ When moving tasks between files, heading levels MUST be adjusted:
 | `DONE` | Complete | Finished | 󰄳 |
 | `CANCELLED` | Complete | Cancelled | 󰜺 |
 
-### 4.2 Heading Format
+### 5.2 Heading Format
 
 ```
 STARS SPACE KEYWORD SPACE TITLE [PROGRESS] TAGS
@@ -233,7 +312,7 @@ STARS SPACE KEYWORD SPACE TITLE [PROGRESS] TAGS
 * PROJECT Home Renovation [0/5]                :home:
 ```
 
-### 4.3 Scheduling (MUST be AFTER heading, BEFORE properties)
+### 5.3 Scheduling (MUST be AFTER heading, BEFORE properties)
 
 ```org
 * TODO Task title
@@ -251,7 +330,7 @@ DEADLINE: <2025-12-25 Wed +1w>
 - `.+1w` - From completion date
 - `++1w` - Shift to future
 
-### 4.4 Properties Drawer
+### 5.4 Properties Drawer
 
 **Location:** Immediately after SCHEDULED/DEADLINE (or after heading if none)
 
@@ -279,7 +358,7 @@ DEADLINE: <2025-12-25 Wed +1w>
 | `WAITING` | `TASK_ID` | `WAITING_FOR`, `WAITING_SINCE`, `WAITING_CONTEXT` |
 | `RECURRING` | `TASK_ID` | - |
 
-### 4.5 Tags
+### 5.5 Tags
 
 **Format:** `:tag1:tag2:tag3:` at end of heading line
 
@@ -289,7 +368,7 @@ DEADLINE: <2025-12-25 Wed +1w>
 - `@context` - GTD contexts (e.g., `@phone`, `@computer`, `@errands`)
 - `@person` - Person-related (e.g., `@boss`, `@spouse`)
 
-### 4.6 Progress Tracker
+### 5.6 Progress Tracker
 
 **Format:** `[done/total]` in heading
 
@@ -301,9 +380,9 @@ DEADLINE: <2025-12-25 Wed +1w>
 
 ---
 
-## 5. Zettelkasten Markdown Rules
+## 6. Zettelkasten Markdown Rules
 
-### 5.1 Filename Format
+### 6.1 Filename Format
 
 ```
 {ID}-{slug}.md
@@ -313,7 +392,7 @@ DEADLINE: <2025-12-25 Wed +1w>
 - `20251219143022-meeting-with-client.md`
 - `20251219-daily.md` (daily notes)
 
-### 5.2 Frontmatter (YAML)
+### 6.2 Frontmatter (YAML)
 
 ```yaml
 ---
@@ -326,7 +405,7 @@ status: active|archived|completed
 ---
 ```
 
-### 5.3 Template Structure
+### 6.3 Template Structure
 
 **Standard Note:**
 ```markdown
@@ -381,21 +460,21 @@ status: active|archived|completed
 
 ---
 
-## 6. Linking Between Systems
+## 7. Linking Between Systems
 
-### 6.1 GTD → Zettelkasten (in org files)
+### 7.1 GTD → Zettelkasten (in org files)
 
 ```org
 :ZK_NOTE: [[file:~/Documents/Notes/Projects/20251219-project.md][Project Note]]
 ```
 
-### 6.2 Zettelkasten → GTD (in markdown)
+### 7.2 Zettelkasten → GTD (in markdown)
 
 ```markdown
 [[file:~/Documents/GTD/Projects/my-project.org][My Project]]
 ```
 
-### 6.3 Wiki Links (markdown to markdown)
+### 7.3 Wiki Links (markdown to markdown)
 
 ```markdown
 [[note-title]]                    # By title
@@ -403,7 +482,7 @@ status: active|archived|completed
 [[note-title|Display Text]]       # With alias
 ```
 
-### 6.4 Internal Org Links
+### 7.4 Internal Org Links
 
 ```org
 [[file:../Projects/other.org][Other Project]]
@@ -411,7 +490,7 @@ status: active|archived|completed
 [[id:20251219143022][By ID]]
 ```
 
-### 6.5 Link Resolution Priority
+### 7.5 Link Resolution Priority
 
 1. Exact path match
 2. ID match (TASK_ID, ID, or filename ID)
@@ -420,9 +499,9 @@ status: active|archived|completed
 
 ---
 
-## 7. Identifiers
+## 8. Identifiers
 
-### 7.1 TASK_ID
+### 8.1 TASK_ID
 
 **Format:** `YYYYMMDDHHmmss` (14 digits)
 
@@ -437,21 +516,21 @@ local function gen_task_id()
 end
 ```
 
-### 7.2 ID (for projects)
+### 8.2 ID (for projects)
 
 Same format as TASK_ID, used in PROJECT headings for linking.
 
-### 7.3 Note ID (Zettelkasten)
+### 8.3 Note ID (Zettelkasten)
 
 **Format:** `YYYYMMDDHHmm` (12 digits) or `YYYYMMDD` (8 digits for daily)
 
 ---
 
-## 8. Canonical Parsing Functions
+## 9. Canonical Parsing Functions
 
 All modules MUST use these shared functions from `shared.lua`:
 
-### 8.1 File Type Detection
+### 9.1 File Type Detection
 
 ```lua
 -- Returns true if file has * PROJECT heading in first 10 lines
@@ -467,7 +546,7 @@ function M.is_project_file(filepath)
 end
 ```
 
-### 8.2 Heading Parsing
+### 9.2 Heading Parsing
 
 ```lua
 function M.parse_org_heading(line)
@@ -502,7 +581,7 @@ function M.parse_org_heading(line)
 end
 ```
 
-### 8.3 Heading Level Adjustment
+### 9.3 Heading Level Adjustment
 
 ```lua
 function M.adjust_heading_level(line, source_is_project, dest_is_project)
@@ -519,7 +598,7 @@ function M.adjust_heading_level(line, source_is_project, dest_is_project)
 end
 ```
 
-### 8.4 Property Extraction
+### 9.4 Property Extraction
 
 ```lua
 function M.get_property(lines, h_start, h_end, key)
@@ -543,35 +622,35 @@ end
 
 ---
 
-## 9. Module Compliance Checklist
+## 10. Module Compliance Checklist
 
 Before modifying any module, verify:
 
-### 9.1 Heading Level Rules
+### 10.1 Heading Level Rules
 
 - [ ] Uses `is_project_file()` to detect file type
 - [ ] Creates headings at correct level based on destination
 - [ ] Adjusts heading levels when moving between files
 
-### 9.2 Property Handling
+### 10.2 Property Handling
 
 - [ ] Uses canonical `get_property()` / `upsert_property()`
 - [ ] Generates TASK_ID for new tasks
 - [ ] Places SCHEDULED/DEADLINE before PROPERTIES
 
-### 9.3 Link Format
+### 10.3 Link Format
 
 - [ ] Uses correct link format for file type (org vs md)
 - [ ] ZK_NOTE links use `[[file:path][title]]` format
 - [ ] Wiki links use `[[target]]` or `[[target|alias]]`
 
-### 9.4 Date Format
+### 10.4 Date Format
 
 - [ ] Dates use `<YYYY-MM-DD Day>` format
 - [ ] Timestamps use `[YYYY-MM-DD Day HH:MM]` format
 - [ ] Repeaters follow `+Nd/w/m/y` pattern
 
-### 9.5 Tag Format
+### 10.5 Tag Format
 
 - [ ] Tags at end of heading line
 - [ ] Format: `:tag1:tag2:`
@@ -591,8 +670,88 @@ When updating modules to comply with this spec:
 
 ---
 
-## Appendix B: Version History
+## Appendix B: Configuration System
+
+### B.1 User Configuration Location
+
+```
+~/.config/gtd-nvim/config.lua
+```
+
+### B.2 Configuration Structure
+
+```lua
+return {
+  -- Paths
+  gtd_home = "~/Documents/GTD",
+  notes_home = "~/Documents/Notes",
+  
+  -- User identity
+  user = { name = "...", email = "...", timezone = "..." },
+  
+  -- Areas of focus
+  areas = {
+    { id = "work", name = "Work", icon = "󰊕", dir = "Work" },
+    -- ...
+  },
+  
+  -- GTD contexts
+  contexts = {
+    { tag = "@computer", name = "Computer", icon = "󰌢" },
+    -- ...
+  },
+  
+  -- People (for WAITING)
+  people = {
+    { id = "boss", name = "Boss Name", email = "..." },
+    -- ...
+  },
+  
+  -- UI preferences
+  ui = { icons = "nerd", date_format = "%Y-%m-%d" },
+  
+  -- Integrations
+  integrations = {
+    kairos = { enabled = true, socket = "~/.cache/kairos/kairos.sock" },
+    calendar = { enabled = true, provider = "apple" },
+  },
+}
+```
+
+### B.3 Accessing Configuration
+
+All modules MUST use the config module instead of hardcoded paths:
+
+```lua
+local config = require("gtd-nvim.config")
+
+-- Paths
+local gtd = config.gtd_home()      -- ~/Documents/GTD (expanded)
+local notes = config.notes_home()  -- ~/Documents/Notes (expanded)
+local inbox = config.gtd_path("inbox")  -- ~/Documents/GTD/Inbox.org
+
+-- Data
+local areas = config.areas()       -- Array of area definitions
+local contexts = config.contexts() -- Array of context definitions
+local people = config.people()     -- Array of people definitions
+
+-- Glyphs
+local icon = config.state_glyph("NEXT")  -- 󰁔
+local color = config.color("next")       -- #a6e3a1
+```
+
+### B.4 Generating User Config
+
+```vim
+:lua require("gtd-nvim.config").generate_user_config()
+:lua require("gtd-nvim.config").edit()
+```
+
+---
+
+## Appendix C: Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.1 | 2025-12-19 | Added configuration system (Appendix B) |
 | 1.0 | 2025-12-19 | Initial specification |
