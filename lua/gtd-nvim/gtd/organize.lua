@@ -749,7 +749,7 @@ local function is_project_file(filepath)
   if not ok or not lines or #lines == 0 then return false end
   
   -- Check first few lines for * PROJECT heading
-  for i = 1, math.min(5, #lines) do
+  for i = 1, math.min(10, #lines) do
     if lines[i]:match("^%* PROJECT%s") then
       return true
     end
@@ -757,15 +757,35 @@ local function is_project_file(filepath)
   return false
 end
 
--- Adjust heading levels in subtree (add stars to make children of project)
-local function adjust_heading_levels(subtree, dest_is_project)
-  if not dest_is_project then return subtree end
-  
+-- Check if source file is a project file (to know if we're moving FROM a project)
+local function is_source_project_file(bufnr)
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if not filepath or filepath == "" then return false end
+  return is_project_file(filepath)
+end
+
+-- Adjust heading levels based on source and destination
+-- Rules:
+--   Non-project → Project:  * → **  (add star)
+--   Project → Non-project:  ** → *  (remove star)
+--   Project → Project:      ** → ** (keep as is)
+--   Non-project → Non-project: * → * (keep as is)
+local function adjust_heading_levels(subtree, source_is_project, dest_is_project)
   local adjusted = {}
+  
   for _, line in ipairs(subtree) do
-    -- Add one star to all headings (*, **, ***, etc.)
     if line:match("^%*+%s") then
-      table.insert(adjusted, "*" .. line)
+      if not source_is_project and dest_is_project then
+        -- Moving TO project: add one star (* → **)
+        table.insert(adjusted, "*" .. line)
+      elseif source_is_project and not dest_is_project then
+        -- Moving FROM project to non-project: remove one star (** → *)
+        local new_line = line:gsub("^%*%*", "*")
+        table.insert(adjusted, new_line)
+      else
+        -- Same type (project→project or non-project→non-project): keep as is
+        table.insert(adjusted, line)
+      end
     else
       table.insert(adjusted, line)
     end
@@ -788,11 +808,12 @@ local function move_subtree(bufnr, start, finish, destfile)
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
-  -- Check if destination is a project file
+  -- Check source and destination types
+  local source_is_project = is_source_project_file(bufnr)
   local dest_is_project = is_project_file(destfile)
   
-  -- Adjust heading levels if moving to a project
-  local adjusted_subtree = adjust_heading_levels(subtree, dest_is_project)
+  -- Adjust heading levels based on source and destination
+  local adjusted_subtree = adjust_heading_levels(subtree, source_is_project, dest_is_project)
 
   local ok, dest_lines = pcall(vim.fn.readfile, destfile)
   if not ok or not dest_lines then dest_lines = {} end
@@ -804,7 +825,13 @@ local function move_subtree(bufnr, start, finish, destfile)
 
   vim.fn.writefile(dest_lines, destfile)
   
-  local level_msg = dest_is_project and " (adjusted to **)" or ""
+  -- Build informative message about heading level changes
+  local level_msg = ""
+  if not source_is_project and dest_is_project then
+    level_msg = " (* → **)"
+  elseif source_is_project and not dest_is_project then
+    level_msg = " (** → *)"
+  end
   notify("Refiled task → " .. vim.fn.fnamemodify(destfile, ":.") .. level_msg, vim.log.levels.INFO)
 end
 
