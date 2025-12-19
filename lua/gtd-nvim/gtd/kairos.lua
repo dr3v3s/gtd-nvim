@@ -700,8 +700,12 @@ function M.build_agenda_async(date, callback)
   local function check_done()
     pending = pending - 1
     if pending == 0 then
+      -- Ensure tables (may be nil/userdata from JSON)
+      local events = type(agenda.events) == "table" and agenda.events or {}
+      local tasks = type(agenda.tasks) == "table" and agenda.tasks or {}
+      
       -- Merge and sort
-      for _, e in ipairs(agenda.events) do
+      for _, e in ipairs(events) do
         table.insert(agenda.merged, {
           type = "event",
           time = e.startDate and e.startDate:sub(12, 16) or "00:00",
@@ -713,7 +717,7 @@ function M.build_agenda_async(date, callback)
         })
       end
       
-      for _, t in ipairs(agenda.tasks) do
+      for _, t in ipairs(tasks) do
         local time = "00:00"
         if t.scheduled then
           time = t.scheduled:match("(%d%d:%d%d)") or "00:00"

@@ -86,7 +86,7 @@ local function get_status_context()
 
   local current_status, line = detect_status(bufnr, row, col)
   if not current_status then
-    fzf_utils.notify("No org status found on this line", "WARN")
+    shared.notify("No org status found on this line", "WARN")
     return nil
   end
 
@@ -99,7 +99,7 @@ local function get_status_context()
   end
 
   if #choices == 0 then
-    fzf_utils.notify("No alternative statuses", "INFO")
+    shared.notify("No alternative statuses", "INFO")
     return nil
   end
 
@@ -122,7 +122,7 @@ function M.change_status()
   local ctx = get_status_context()
   if not ctx then return end
 
-  if not fzf_utils.available() then
+  if not shared.have_fzf() then
     -- Fallback to vim.ui.select
     local names = {}
     for _, s in ipairs(ctx.choices) do
@@ -134,7 +134,7 @@ function M.change_status()
     }, function(choice)
       if not choice then return end
       if replace_status(ctx.bufnr, ctx.row, ctx.current_status, choice) then
-        fzf_utils.notify(ctx.current_status .. " → " .. choice, "INFO")
+        shared.notify(ctx.current_status .. " → " .. choice, "INFO")
       end
     end)
     return
@@ -152,11 +152,12 @@ function M.change_status()
   local fzf = require("fzf-lua")
   fzf.fzf_exec(display, {
     prompt = string.format("Status (%s → ?)> ", ctx.current_status),
-    fzf_opts = vim.tbl_extend("force", fzf_utils.fzf_opts.single, {
+    fzf_opts = {
+      ["--no-info"] = true,
       ["--header"] = string.format("Current: %s %s │ Enter: Change │ Esc: Cancel",
-        fzf_utils.icons[ctx.current_status] or "•", ctx.current_status),
-    }),
-    winopts = fzf_utils.winopts.small,
+        g.state[ctx.current_status] or "•", ctx.current_status),
+    },
+    winopts = { height = 0.35, width = 0.50, row = 0.35 },
     actions = {
       ["default"] = function(sel)
         if not sel or not sel[1] then return end
@@ -164,12 +165,12 @@ function M.change_status()
         local new_status = meta[idx]
         if new_status then
           if replace_status(ctx.bufnr, ctx.row, ctx.current_status, new_status) then
-            fzf_utils.notify(string.format("%s %s → %s %s",
-              fzf_utils.icons[ctx.current_status] or "", ctx.current_status,
-              fzf_utils.icons[new_status] or "", new_status
+            shared.notify(string.format("%s %s → %s %s",
+              g.state[ctx.current_status] or "", ctx.current_status,
+              g.state[new_status] or "", new_status
             ), "INFO")
           else
-            fzf_utils.notify("Failed to change status", "ERROR")
+            shared.notify("Failed to change status", "ERROR")
           end
         end
       end,
@@ -207,7 +208,7 @@ function M.cycle_status(direction)
   
   local new_status = ALL_STATUS_NAMES[next_idx]
   if replace_status(ctx.bufnr, ctx.row, ctx.current_status, new_status) then
-    fzf_utils.notify(string.format("%s → %s", ctx.current_status, new_status), "INFO")
+    shared.notify(string.format("%s → %s", ctx.current_status, new_status), "INFO")
   end
 end
 
@@ -215,7 +216,7 @@ end
 ---@param new_status string The status to set
 function M.set_status(new_status)
   if not is_status(new_status) then
-    fzf_utils.notify("Invalid status: " .. tostring(new_status), "ERROR")
+    shared.notify("Invalid status: " .. tostring(new_status), "ERROR")
     return false
   end
   
@@ -224,12 +225,12 @@ function M.set_status(new_status)
   local current_status, _ = detect_status(bufnr, row, 0)
   
   if not current_status then
-    fzf_utils.notify("No org heading found", "WARN")
+    shared.notify("No org heading found", "WARN")
     return false
   end
   
   if current_status == new_status then
-    fzf_utils.notify("Already " .. new_status, "INFO")
+    shared.notify("Already " .. new_status, "INFO")
     return true
   end
   
