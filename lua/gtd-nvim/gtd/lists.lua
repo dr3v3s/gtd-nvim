@@ -1366,7 +1366,7 @@ function M.agenda(date)
         fzf_opts = {
           ["--ansi"] = true,
           ["--no-info"] = true,
-          ["--header"] = "Enter: Open • Ctrl-B: Back to menu",
+          ["--header"] = "Enter: Open • Ctrl-E: Edit & Return • Ctrl-B: Back to menu",
           ["--header-first"] = true,
         },
         winopts = {
@@ -1405,6 +1405,46 @@ function M.agenda(date)
                 details = details .. "\nCalendar: " .. e.calendar
               end
               vim.notify(details, vim.log.levels.INFO)
+            end
+          end,
+          ["ctrl-e"] = function(sel)
+            if not sel or not sel[1] then return end
+            local idx = nil
+            for i, line in ipairs(display) do
+              if line == sel[1] then idx = i; break end
+            end
+            if not idx then return end
+            
+            local item = meta[idx]
+            if item.type == "task" and item.data and item.data.raw then
+              local t = item.data.raw
+              local filepath = t.file or t.path
+              local linenum = t.line or t.lnum
+              if filepath then
+                vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+                if linenum then
+                  vim.api.nvim_win_set_cursor(0, { linenum, 0 })
+                end
+                -- Set up return to agenda
+                local bufnr = vim.api.nvim_get_current_buf()
+                local group_name = "GtdAgendaReturn_" .. bufnr
+                pcall(vim.api.nvim_del_augroup_by_name, group_name)
+                local group = vim.api.nvim_create_augroup(group_name, { clear = true })
+                vim.api.nvim_create_autocmd({"BufLeave", "WinLeave"}, {
+                  group = group,
+                  buffer = bufnr,
+                  once = true,
+                  callback = function()
+                    vim.schedule(function()
+                      pcall(vim.api.nvim_del_augroup_by_name, group_name)
+                      vim.defer_fn(function()
+                        M.agenda(date)
+                      end, 100)
+                    end)
+                  end,
+                })
+                vim.notify("Editing. Leave buffer to return to agenda.", vim.log.levels.INFO)
+              end
             end
           end,
           ["ctrl-b"] = function(_)

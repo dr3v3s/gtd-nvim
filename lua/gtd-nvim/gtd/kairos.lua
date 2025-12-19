@@ -628,9 +628,12 @@ function M.calculate_free_slots(events, work_start, work_end, min_slot)
   local today = os.date("%Y-%m-%d")
   local slots = {}
   
+  -- Ensure events is a table (may be nil/userdata from JSON)
+  local event_list = type(events) == "table" and events or {}
+  
   -- Filter today's events and sort by start time
   local today_events = {}
-  for _, e in ipairs(events or {}) do
+  for _, e in ipairs(event_list) do
     if e.startDate and e.startDate:sub(1, 10) == today and not e.isAllDay then
       table.insert(today_events, e)
     end
