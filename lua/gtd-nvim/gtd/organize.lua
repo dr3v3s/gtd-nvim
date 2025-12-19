@@ -29,7 +29,7 @@ local function notify(msg, lvl, t) vim.notify(msg, lvl or vim.log.levels.INFO, t
 local task_id  = safe_require("gtd-nvim.gtd.utils.task_id")
 local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- [OK] Added
 local projects = safe_require("gtd-nvim.gtd.projects")
-local refile   = safe_require("gtd-nvim.gtd.refile")
+-- Note: refile functionality is now in this module (M.refile_to_project)
 
 -- ---------- enhanced date parsing for smart sorting ----------
 local function parse_org_date(date_str)
@@ -463,7 +463,7 @@ local function post_actions_menu(ctx)
   local items = {
     "Finish",
     (projects and "Link to project") or nil,
-    (refile   and "Refile into project") or nil,
+    "Refile into project",  -- Always available (function is in this module)
     "Open ZK note",
     "Mark DONE",
   }
@@ -478,8 +478,8 @@ local function post_actions_menu(ctx)
         local act = sel and sel[1]
         if act == "Link to project" and projects and projects.link_task_to_project_at_cursor then
           projects.link_task_to_project_at_cursor({})
-        elseif act == "Refile into project" and refile and refile.to_project_at_cursor then
-          refile.to_project_at_cursor({})
+        elseif act == "Refile into project" then
+          M.refile_to_project()
         elseif act == "Open ZK note" then
           local id = ctx.id
           if id then
@@ -743,6 +743,36 @@ local function extract_subtree(bufnr)
   return start, finish, lvl
 end
 
+-- Check if a file is a project file (has * PROJECT heading)
+local function is_project_file(filepath)
+  local ok, lines = pcall(vim.fn.readfile, filepath)
+  if not ok or not lines or #lines == 0 then return false end
+  
+  -- Check first few lines for * PROJECT heading
+  for i = 1, math.min(5, #lines) do
+    if lines[i]:match("^%* PROJECT%s") then
+      return true
+    end
+  end
+  return false
+end
+
+-- Adjust heading levels in subtree (add stars to make children of project)
+local function adjust_heading_levels(subtree, dest_is_project)
+  if not dest_is_project then return subtree end
+  
+  local adjusted = {}
+  for _, line in ipairs(subtree) do
+    -- Add one star to all headings (*, **, ***, etc.)
+    if line:match("^%*+%s") then
+      table.insert(adjusted, "*" .. line)
+    else
+      table.insert(adjusted, line)
+    end
+  end
+  return adjusted
+end
+
 -- Move subtree (cut from current buffer + append to dest file)
 local function move_subtree(bufnr, start, finish, destfile)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -758,16 +788,24 @@ local function move_subtree(bufnr, start, finish, destfile)
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
+  -- Check if destination is a project file
+  local dest_is_project = is_project_file(destfile)
+  
+  -- Adjust heading levels if moving to a project
+  local adjusted_subtree = adjust_heading_levels(subtree, dest_is_project)
+
   local ok, dest_lines = pcall(vim.fn.readfile, destfile)
   if not ok or not dest_lines then dest_lines = {} end
 
   table.insert(dest_lines, "")
-  for _, l in ipairs(subtree) do
+  for _, l in ipairs(adjusted_subtree) do
     table.insert(dest_lines, l)
   end
 
   vim.fn.writefile(dest_lines, destfile)
-  notify("Refiled task → " .. vim.fn.fnamemodify(destfile, ":."), vim.log.levels.INFO)
+  
+  local level_msg = dest_is_project and " (adjusted to **)" or ""
+  notify("Refiled task → " .. vim.fn.fnamemodify(destfile, ":.") .. level_msg, vim.log.levels.INFO)
 end
 
 -- Public: Refile task at cursor
