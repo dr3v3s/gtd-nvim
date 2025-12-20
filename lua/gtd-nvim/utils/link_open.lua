@@ -853,12 +853,7 @@ function M.open()
       vim.notify("Wiki-link not found: " .. link.target, vim.log.levels.WARN, { title = "LinkOpen" })
     end
   elseif link.type == "zk" then
-    local resolved = M.resolve_zk_id(link.target)
-    if resolved then
-      vim.cmd("edit " .. vim.fn.fnameescape(resolved))
-    else
-      vim.notify("ZK note not found: " .. link.target, vim.log.levels.WARN, { title = "LinkOpen" })
-    end
+    M.open_zk(link.target)
   end
 end
 
@@ -867,6 +862,70 @@ function M.open_url(url)
   if url and url ~= "" then
     sys_open_url(url)
   end
+end
+
+--- Open or create ZK note by ID
+---@param zk_id string The ZK ID (YYYYMMDDHHmmss format)
+function M.open_zk(zk_id)
+  if not zk_id or zk_id == "" then
+    return vim.notify("Invalid ZK ID", vim.log.levels.WARN, { title = "LinkOpen" })
+  end
+  
+  -- Try to resolve existing note
+  local resolved = M.resolve_zk_id(zk_id)
+  if resolved then
+    vim.cmd("edit " .. vim.fn.fnameescape(resolved))
+    return
+  end
+  
+  -- Note doesn't exist - offer to create it
+  vim.ui.select(
+    { "Create note", "Cancel" },
+    { prompt = "ZK note not found: " .. zk_id },
+    function(choice)
+      if choice ~= "Create note" then return end
+      
+      -- Get title from user
+      vim.ui.input({ prompt = "Note title: " }, function(title)
+        if not title or title == "" then return end
+        
+        local notes_dir = get_notes_dir()
+        local gtd_dir = notes_dir .. "/GTD"
+        vim.fn.mkdir(gtd_dir, "p")
+        
+        -- Create note with ZK ID prefix
+        local slug = title:lower()
+          :gsub("[æ]", "ae"):gsub("[ø]", "oe"):gsub("[å]", "aa")
+          :gsub("[^%w%s-]", ""):gsub("%s+", "-"):gsub("%-+", "-")
+          :gsub("^%-", ""):gsub("%-$", "")
+        
+        local filename = zk_id .. "-" .. slug .. ".md"
+        local path = gtd_dir .. "/" .. filename
+        
+        local lines = {
+          "# " .. title,
+          "",
+          "**ID:** " .. zk_id,
+          "**Created:** " .. os.date("%Y-%m-%d %H:%M"),
+          "**Type:** Note",
+          "",
+          "## Notes",
+          "",
+        }
+        
+        local file = io.open(path, "w")
+        if file then
+          file:write(table.concat(lines, "\n"))
+          file:close()
+          M.invalidate_cache()
+          vim.cmd("edit " .. vim.fn.fnameescape(path))
+          vim.notify("Created: " .. filename, vim.log.levels.INFO, { title = "ZK" })
+        else
+          vim.notify("Failed to create note", vim.log.levels.ERROR, { title = "ZK" })
+        end
+      end)
+    end
+  )
 end
 
 --- Setup keymaps
