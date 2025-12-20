@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.6.0"
+M._VERSION = "0.7.0"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -565,6 +565,20 @@ local capture_glyphs = {
   someday = "󰋚",
   calendar = "󰃭",
   area = "󰀼",
+  tag = "󰓹",
+  reference = "󰌷",
+}
+
+-- Context tags for GTD
+local CONTEXT_TAGS = {
+  "@computer",
+  "@phone", 
+  "@errands",
+  "@home",
+  "@office",
+  "@anywhere",
+  "@email",
+  "@read",
 }
 
 -- Helpers
@@ -812,6 +826,7 @@ local function build_task_entry(opts)
   table.insert(lines, ":ZK_LINK:   " .. id)
   table.insert(lines, ":CREATED:   " .. format_inactive_timestamp())
   if opts.zk_note then table.insert(lines, ":ZK_NOTE:   " .. format_zk_note_property(opts.zk_note)) end
+  if opts.reference then table.insert(lines, ":REFERENCE: " .. opts.reference) end
   if opts.area then table.insert(lines, ":AREA:      " .. opts.area) end
   if opts.effort then table.insert(lines, ":Effort:    " .. opts.effort) end
   if opts.state == "WAITING" then
@@ -1034,7 +1049,7 @@ function M._task_step_schedule(data)
     -- WAITING: Ask for follow-up date and who/what we're waiting for
     vim.ui.input({ prompt = "Waiting for (person/thing): " }, function(wf)
       if not wf or wf == "" then
-        vim.schedule(function() M._task_step_zk(data) end)
+        vim.schedule(function() M._task_step_tags(data) end)
         return
       end
       data.waiting_for = wf
@@ -1054,7 +1069,7 @@ function M._task_step_schedule(data)
               prompt = string.format("Due [%s] (%s): ", due_default, DATE_HINT)
             }, function(d)
               data.deadline = parse_smart_date(d, follow_up) or due_default
-              M._task_step_zk(data)
+              M._task_step_tags(data)
             end)
           end)
         end)
@@ -1062,7 +1077,7 @@ function M._task_step_schedule(data)
     end)
   elseif data.state == "SOMEDAY" then
     -- SOMEDAY: No dates needed
-    vim.schedule(function() M._task_step_zk(data) end)
+    vim.schedule(function() M._task_step_tags(data) end)
   else
     -- NEXT/TODO: Ask for DEFER and DUE
     vim.ui.input({
@@ -1080,11 +1095,66 @@ function M._task_step_schedule(data)
             data.deadline = parse_smart_date(d, defer_date) or due_default
           end
           -- DUE is optional - empty means no deadline
-          M._task_step_zk(data)
+          M._task_step_tags(data)
         end)
       end)
     end)
   end
+end
+
+--- Task wizard: Context tags step (optional, multi-select)
+function M._task_step_tags(data)
+  local fzf = require("fzf-lua")
+  
+  -- Add "skip" option at top
+  local items = { capture_glyphs.tag .. " (skip - no tags)" }
+  for _, tag in ipairs(CONTEXT_TAGS) do
+    table.insert(items, capture_glyphs.tag .. " " .. tag)
+  end
+  
+  fzf.fzf_exec(items, {
+    prompt = "Tags ❯ ",
+    winopts = { height = 0.45, width = 0.35 },
+    fzf_opts = { ["--multi"] = true },
+    actions = {
+      ["default"] = function(selected)
+        if selected and #selected > 0 then
+          local tags = {}
+          for _, item in ipairs(selected) do
+            local tag = item:match("@%w+")
+            if tag then table.insert(tags, tag) end
+          end
+          if #tags > 0 then
+            data.tags = tags
+          end
+        end
+        vim.schedule(function() M._task_step_reference(data) end)
+      end,
+    },
+  })
+end
+
+--- Task wizard: Reference step (optional file/URL)
+function M._task_step_reference(data)
+  vim.ui.input({
+    prompt = capture_glyphs.reference .. " Reference (file/URL, empty to skip): "
+  }, function(ref)
+    if ref and ref ~= "" then
+      -- Format as org link if it's a path
+      if ref:match("^[~/]") or ref:match("^file:") then
+        -- File path - wrap in org link syntax
+        local expanded = vim.fn.expand(ref)
+        data.reference = "[[file:" .. expanded .. "]]"
+      elseif ref:match("^https?://") then
+        -- URL - wrap in org link syntax
+        data.reference = "[[" .. ref .. "]]"
+      else
+        -- Plain text reference
+        data.reference = ref
+      end
+    end
+    vim.schedule(function() M._task_step_zk(data) end)
+  end)
 end
 
 --- Task wizard: ZK note step (optional)
@@ -1131,6 +1201,8 @@ function M._task_finalize(data)
     task_id = task_id,
     scheduled = data.scheduled,
     deadline = data.deadline,
+    tags = data.tags,
+    reference = data.reference,
     area = data.area,
     waiting_for = data.waiting_for,
     zk_note = zk_note_path,
