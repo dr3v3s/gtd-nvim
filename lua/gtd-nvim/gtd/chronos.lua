@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.8.2"
+M._VERSION = "0.9.0"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -432,6 +432,209 @@ local function archive_tasks(tasks)
   return archived
 end
 
+--- Scan Archive folder and return archived tasks
+---@return table[] Array of archived task objects
+local function get_archived_tasks()
+  local archive_dir = gtd_home() .. "/Archive"
+  local tasks = {}
+  
+  if vim.fn.isdirectory(archive_dir) == 0 then
+    return tasks
+  end
+  
+  -- Scan all .org files in Archive
+  local files = vim.fn.glob(archive_dir .. "/*.org", false, true)
+  
+  for _, file in ipairs(files) do
+    local content = vim.fn.readfile(file)
+    local source_name = vim.fn.fnamemodify(file, ":t:r")  -- original file name
+    
+    for i, line in ipairs(content) do
+      local stars, state, title = line:match("^(%*+)%s+(NEXT|TODO|WAITING|SOMEDAY|DONE|CANCELLED|PROJECT)%s+(.+)")
+      if not stars then
+        -- Try individual keywords
+        for _, kw in ipairs({"NEXT", "TODO", "WAITING", "SOMEDAY", "DONE", "CANCELLED", "PROJECT"}) do
+          stars, title = line:match("^(%*+)%s+" .. kw .. "%s+(.+)")
+          if stars then
+            state = kw
+            break
+          end
+        end
+      end
+      
+      if stars and state and title then
+        -- Clean title (remove tags)
+        title = title:gsub("%s+:[%w@:]+:%s*$", "")
+        
+        table.insert(tasks, {
+          title = title,
+          state = state,
+          file = file,
+          line = i,
+          level = #stars,
+          source = source_name,  -- where it came from
+        })
+      end
+    end
+  end
+  
+  return tasks
+end
+
+--- Restore task(s) from archive to production
+---@param tasks table Array of archived task objects
+---@param target_file string|nil Target file (defaults to Inbox.org)
+---@return number Count of restored tasks
+local function restore_tasks(tasks, target_file)
+  target_file = target_file or inbox_path()
+  ensure_file(target_file, vim.fn.fnamemodify(target_file, ":t:r"))
+  
+  -- Determine target heading level
+  local target_level = 1
+  local target_content = vim.fn.readfile(target_file)
+  for i = 1, math.min(10, #target_content) do
+    if target_content[i]:match("^%* PROJECT") then
+      target_level = 2
+      break
+    end
+  end
+  
+  local restored = 0
+  
+  -- Group by archive file for efficient processing
+  local by_file = {}
+  for _, task in ipairs(tasks) do
+    if task.file and task.line then
+      by_file[task.file] = by_file[task.file] or {}
+      table.insert(by_file[task.file], task)
+    end
+  end
+  
+  for archive_file, file_tasks in pairs(by_file) do
+    local content = vim.fn.readfile(archive_file)
+    
+    -- Sort by line descending to remove from bottom up
+    table.sort(file_tasks, function(a, b) return a.line > b.line end)
+    
+    for _, task in ipairs(file_tasks) do
+      local start_line = task.line
+      local stars = content[start_line]:match("^(%*+)")
+      
+      if stars then
+        local source_level = #stars
+        local end_line = start_line
+        local subtree = {}
+        
+        -- Extract subtree
+        for i = start_line, #content do
+          local s = content[i]:match("^(%*+)")
+          if i > start_line and s and #s <= source_level then break end
+          local line = content[i]
+          -- Adjust heading levels
+          if line:match("^%*+") then
+            local level_diff = target_level - source_level
+            if level_diff > 0 then
+              line = string.rep("*", level_diff) .. line
+            elseif level_diff < 0 then
+              line = line:sub(1 - level_diff + 1)
+            end
+          end
+          table.insert(subtree, line)
+          end_line = i
+        end
+        
+        -- Append to target
+        target_content = vim.fn.readfile(target_file)
+        table.insert(target_content, "")
+        for _, line in ipairs(subtree) do
+          table.insert(target_content, line)
+        end
+        vim.fn.writefile(target_content, target_file)
+        
+        -- Remove from archive
+        for i = end_line, start_line, -1 do
+          table.remove(content, i)
+        end
+        restored = restored + 1
+      end
+    end
+    
+    -- Write back archive file (or delete if empty)
+    local has_content = false
+    for _, line in ipairs(content) do
+      if line:match("^%*") then
+        has_content = true
+        break
+      end
+    end
+    
+    if has_content then
+      vim.fn.writefile(content, archive_file)
+    else
+      vim.fn.delete(archive_file)
+    end
+  end
+  
+  return restored
+end
+
+--- Delete task(s) permanently from archive
+---@param tasks table Array of archived task objects
+---@return number Count of deleted tasks
+local function delete_archived_tasks(tasks)
+  -- Group by file
+  local by_file = {}
+  for _, task in ipairs(tasks) do
+    if task.file and task.line then
+      by_file[task.file] = by_file[task.file] or {}
+      table.insert(by_file[task.file], task.line)
+    end
+  end
+  
+  local deleted = 0
+  for file, lines in pairs(by_file) do
+    table.sort(lines, function(a, b) return a > b end)
+    
+    local content = vim.fn.readfile(file)
+    for _, line_num in ipairs(lines) do
+      local start_line = line_num
+      local stars = content[start_line]:match("^(%*+)")
+      if stars then
+        local level = #stars
+        local end_line = start_line
+        
+        for i = start_line + 1, #content do
+          local s = content[i]:match("^(%*+)")
+          if s and #s <= level then break end
+          end_line = i
+        end
+        
+        for i = end_line, start_line, -1 do
+          table.remove(content, i)
+        end
+        deleted = deleted + 1
+      end
+    end
+    
+    -- Write back or delete empty file
+    local has_content = false
+    for _, line in ipairs(content) do
+      if line:match("^%*") then
+        has_content = true
+        break
+      end
+    end
+    
+    if has_content then
+      vim.fn.writefile(content, file)
+    else
+      vim.fn.delete(file)
+    end
+  end
+  
+  return deleted
+end
+
 --- Mark task(s) as DONE
 ---@param tasks table Array of task objects
 local function mark_tasks_done(tasks)
@@ -695,6 +898,133 @@ function M.pick_tasks(opts)
   })
 end
 
+--- Open fzf picker for archived tasks
+function M.pick_archive()
+  local tasks = get_archived_tasks()
+  
+  if #tasks == 0 then
+    vim.notify("Archive is empty", vim.log.levels.INFO)
+    return
+  end
+  
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("fzf-lua required", vim.log.levels.ERROR)
+    return
+  end
+  
+  local items = {}
+  local task_map = {}
+  
+  for i, task in ipairs(tasks) do
+    local icon = "󰄳"  -- default done icon
+    if task.state == "PROJECT" then icon = "󰷐"
+    elseif task.state == "CANCELLED" then icon = "󰜺"
+    end
+    
+    local display = string.format("%s %s  %s", icon, task.title, task.source)
+    items[i] = display
+    task_map[display] = task
+  end
+  
+  local function get_selected_tasks(selected)
+    local result = {}
+    for _, sel in ipairs(selected or {}) do
+      if task_map[sel] then
+        table.insert(result, task_map[sel])
+      end
+    end
+    return result
+  end
+  
+  local function reopen()
+    vim.schedule(function()
+      vim.defer_fn(function() M.pick_archive() end, 100)
+    end)
+  end
+  
+  fzf.fzf_exec(items, {
+    prompt = "Archive ❯ ",
+    fzf_opts = {
+      ["--multi"] = true,
+      ["--header"] = "󰌌 TAB:select  Enter:view  ^R:restore  ^X:delete permanently",
+    },
+    actions = {
+      ["default"] = function(selected)
+        if selected and selected[1] then
+          local task = task_map[selected[1]]
+          if task and task.file then
+            vim.cmd("edit " .. vim.fn.fnameescape(task.file))
+            if task.line then
+              vim.api.nvim_win_set_cursor(0, {task.line, 0})
+              vim.cmd("normal! zz")
+            end
+          end
+        end
+      end,
+      ["ctrl-r"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        
+        -- Ask where to restore
+        local projects = get_projects()
+        local restore_items = { "Inbox.org (default)" }
+        for _, p in ipairs(projects) do
+          table.insert(restore_items, p.name .. " (" .. vim.fn.fnamemodify(p.path, ":h:t") .. ")")
+        end
+        
+        fzf.fzf_exec(restore_items, {
+          prompt = "Restore to ❯ ",
+          winopts = { height = 0.4, width = 0.5 },
+          actions = {
+            ["default"] = function(target)
+              local target_path = inbox_path()
+              
+              if target and target[1] and not target[1]:match("Inbox.org") then
+                local proj_name = target[1]:match("^([^(]+)")
+                if proj_name then
+                  proj_name = vim.trim(proj_name)
+                  for _, p in ipairs(projects) do
+                    if p.name == proj_name then
+                      target_path = p.path
+                      break
+                    end
+                  end
+                end
+              end
+              
+              local count = restore_tasks(sel_tasks, target_path)
+              vim.notify(string.format("♻ Restored %d task(s) → %s", count, vim.fn.fnamemodify(target_path, ":t")), vim.log.levels.INFO)
+              if M.is_running() then M.query("gtd", "refresh", nil) end
+              reopen()
+            end,
+            ["esc"] = function() reopen() end,
+          },
+        })
+      end,
+      ["ctrl-x"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        
+        vim.ui.select({ "Yes, delete permanently", "Cancel" }, {
+          prompt = string.format("Permanently delete %d task(s)?", #sel_tasks),
+        }, function(choice)
+          if choice == "Yes, delete permanently" then
+            local count = delete_archived_tasks(sel_tasks)
+            vim.notify(string.format("🗑 Permanently deleted %d task(s)", count), vim.log.levels.INFO)
+          end
+          reopen()
+        end)
+      end,
+      ["esc"] = function() end,  -- just close
+    },
+    winopts = {
+      height = 0.6,
+      width = 0.8,
+    },
+  })
+end
+
 --- Search tasks with fzf
 ---@param initial_query string|nil Initial search query
 function M.pick_search(initial_query)
@@ -792,6 +1122,10 @@ function M.setup_commands()
     M.pick_search(opts.args ~= "" and opts.args or nil)
   end, { desc = "Search tasks via Chronos", nargs = "?" })
   
+  vim.api.nvim_create_user_command("ChronosArchive", function()
+    M.pick_archive()
+  end, { desc = "Manage archived tasks" })
+  
   vim.api.nvim_create_user_command("ChronosRemindersSync", function()
     local result = M.reminders_sync()
     if result then
@@ -837,6 +1171,8 @@ function M.setup_keymaps(prefix)
     vim.tbl_extend("force", opts, { desc = "Chronos WAITING tasks" }))
   map("n", prefix .. "/", "<cmd>ChronosSearch<cr>",
     vim.tbl_extend("force", opts, { desc = "Chronos search" }))
+  map("n", prefix .. "A", "<cmd>ChronosArchive<cr>",
+    vim.tbl_extend("force", opts, { desc = "Chronos archive management" }))
   map("n", prefix .. "r", "<cmd>ChronosRemindersSync<cr>",
     vim.tbl_extend("force", opts, { desc = "Chronos reminders sync" }))
   
