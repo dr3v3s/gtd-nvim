@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.7.0"
+M._VERSION = "0.8.0"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -303,6 +303,212 @@ local function format_task_for_fzf(task)
   return string.format("%s %s  %s", icon, title, file)
 end
 
+-- ============================================================================
+-- TASK OPERATIONS (for fzf actions)
+-- ============================================================================
+
+--- Delete task(s) from org file
+---@param tasks table Array of task objects with file and line
+local function delete_tasks(tasks)
+  -- Group by file
+  local by_file = {}
+  for _, task in ipairs(tasks) do
+    if task.file and task.line then
+      by_file[task.file] = by_file[task.file] or {}
+      table.insert(by_file[task.file], task.line)
+    end
+  end
+  
+  local deleted = 0
+  for file, lines in pairs(by_file) do
+    -- Sort lines descending to delete from bottom up
+    table.sort(lines, function(a, b) return a > b end)
+    
+    local content = vim.fn.readfile(file)
+    for _, line_num in ipairs(lines) do
+      -- Find the subtree extent
+      local start_line = line_num
+      local stars = content[start_line]:match("^(%*+)")
+      if stars then
+        local level = #stars
+        local end_line = start_line
+        
+        -- Find end of subtree
+        for i = start_line + 1, #content do
+          local s = content[i]:match("^(%*+)")
+          if s and #s <= level then break end
+          end_line = i
+        end
+        
+        -- Remove lines (from end to start)
+        for i = end_line, start_line, -1 do
+          table.remove(content, i)
+        end
+        deleted = deleted + 1
+      end
+    end
+    vim.fn.writefile(content, file)
+  end
+  
+  return deleted
+end
+
+--- Archive task(s) - move to Archive folder
+---@param tasks table Array of task objects
+local function archive_tasks(tasks)
+  local archive_dir = gtd_home() .. "/Archive"
+  vim.fn.mkdir(archive_dir, "p")
+  
+  local archived = 0
+  for _, task in ipairs(tasks) do
+    if task.file and task.line then
+      local content = vim.fn.readfile(task.file)
+      local start_line = task.line
+      local stars = content[start_line]:match("^(%*+)")
+      
+      if stars then
+        local level = #stars
+        local end_line = start_line
+        local subtree = {}
+        
+        -- Extract subtree
+        for i = start_line, #content do
+          local s = content[i]:match("^(%*+)")
+          if i > start_line and s and #s <= level then break end
+          table.insert(subtree, content[i])
+          end_line = i
+        end
+        
+        -- Determine archive file (same name as source, in Archive/)
+        local source_name = vim.fn.fnamemodify(task.file, ":t")
+        local archive_file = archive_dir .. "/" .. source_name
+        
+        -- Append to archive
+        local archive_content = {}
+        if vim.fn.filereadable(archive_file) == 1 then
+          archive_content = vim.fn.readfile(archive_file)
+        end
+        table.insert(archive_content, "")  -- blank line separator
+        for _, line in ipairs(subtree) do
+          table.insert(archive_content, line)
+        end
+        vim.fn.writefile(archive_content, archive_file)
+        
+        -- Remove from source (bottom up)
+        for i = end_line, start_line, -1 do
+          table.remove(content, i)
+        end
+        vim.fn.writefile(content, task.file)
+        archived = archived + 1
+      end
+    end
+  end
+  
+  return archived
+end
+
+--- Mark task(s) as DONE
+---@param tasks table Array of task objects
+local function mark_tasks_done(tasks)
+  local done = 0
+  for _, task in ipairs(tasks) do
+    if task.file and task.line then
+      local content = vim.fn.readfile(task.file)
+      local line = content[task.line]
+      if line then
+        -- Replace state keyword with DONE
+        local new_line = line
+        for _, kw in ipairs({"NEXT", "TODO", "WAITING", "SOMEDAY"}) do
+          local pattern = "^(%*+%s+)" .. kw .. "(%s+)"
+          if line:match(pattern) then
+            new_line = line:gsub(pattern, "%1DONE%2")
+            break
+          end
+        end
+        if new_line ~= line then
+          content[task.line] = new_line
+          vim.fn.writefile(content, task.file)
+          done = done + 1
+        end
+      end
+    end
+  end
+  return done
+end
+
+--- Refile task(s) to another file
+---@param tasks table Array of task objects
+---@param target_file string Target org file path
+local function refile_tasks(tasks, target_file)
+  if not target_file or target_file == "" then return 0 end
+  
+  ensure_file(target_file, vim.fn.fnamemodify(target_file, ":t:r"))
+  
+  -- Determine target heading level (1 for standalone, 2 for project)
+  local target_level = 1
+  local target_content = vim.fn.readfile(target_file)
+  for i = 1, math.min(10, #target_content) do
+    if target_content[i]:match("^%* PROJECT") then
+      target_level = 2
+      break
+    end
+  end
+  
+  local refiled = 0
+  for _, task in ipairs(tasks) do
+    if task.file and task.line then
+      local content = vim.fn.readfile(task.file)
+      local start_line = task.line
+      local stars = content[start_line]:match("^(%*+)")
+      
+      if stars then
+        local source_level = #stars
+        local end_line = start_line
+        local subtree = {}
+        
+        -- Extract subtree
+        for i = start_line, #content do
+          local s = content[i]:match("^(%*+)")
+          if i > start_line and s and #s <= source_level then break end
+          local line = content[i]
+          -- Adjust heading levels
+          if line:match("^%*+") then
+            local level_diff = target_level - source_level
+            if level_diff > 0 then
+              line = string.rep("*", level_diff) .. line
+            elseif level_diff < 0 then
+              line = line:sub(1 - level_diff + 1)
+            end
+          end
+          table.insert(subtree, line)
+          end_line = i
+        end
+        
+        -- Append to target
+        target_content = vim.fn.readfile(target_file)
+        table.insert(target_content, "")
+        for _, line in ipairs(subtree) do
+          table.insert(target_content, line)
+        end
+        vim.fn.writefile(target_content, target_file)
+        
+        -- Remove from source
+        for i = end_line, start_line, -1 do
+          table.remove(content, i)
+        end
+        vim.fn.writefile(content, task.file)
+        refiled = refiled + 1
+      end
+    end
+  end
+  
+  return refiled
+end
+
+-- ============================================================================
+-- TASK PICKERS
+-- ============================================================================
+
 --- Open fzf picker for tasks
 ---@param opts table Options: state, title
 function M.pick_tasks(opts)
@@ -332,8 +538,23 @@ function M.pick_tasks(opts)
     task_map[display] = task
   end
   
+  -- Helper to get selected tasks
+  local function get_selected_tasks(selected)
+    local result = {}
+    for _, sel in ipairs(selected or {}) do
+      if task_map[sel] then
+        table.insert(result, task_map[sel])
+      end
+    end
+    return result
+  end
+  
   fzf.fzf_exec(items, {
     prompt = title .. " ❯ ",
+    fzf_opts = {
+      ["--multi"] = true,
+      ["--header"] = "TAB:select | Enter:open | ctrl-d:done | ctrl-x:delete | ctrl-a:archive | ctrl-r:refile",
+    },
     actions = {
       ["default"] = function(selected)
         if selected and selected[1] then
@@ -346,6 +567,79 @@ function M.pick_tasks(opts)
             end
           end
         end
+      end,
+      ["ctrl-d"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        
+        local count = mark_tasks_done(sel_tasks)
+        vim.notify(string.format("✓ Marked %d task(s) DONE", count), vim.log.levels.INFO)
+        if M.is_running() then M.query("gtd", "refresh", nil) end
+      end,
+      ["ctrl-x"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        
+        vim.ui.select({ "Yes, delete", "Cancel" }, {
+          prompt = string.format("Delete %d task(s)?", #sel_tasks),
+        }, function(choice)
+          if choice == "Yes, delete" then
+            local count = delete_tasks(sel_tasks)
+            vim.notify(string.format("🗑 Deleted %d task(s)", count), vim.log.levels.INFO)
+            if M.is_running() then M.query("gtd", "refresh", nil) end
+          end
+        end)
+      end,
+      ["ctrl-a"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        
+        local count = archive_tasks(sel_tasks)
+        vim.notify(string.format("📦 Archived %d task(s)", count), vim.log.levels.INFO)
+        if M.is_running() then M.query("gtd", "refresh", nil) end
+      end,
+      ["ctrl-r"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        
+        -- Show project/file picker for refile target
+        local projects = get_projects()
+        local refile_items = { "Inbox.org" }
+        for _, p in ipairs(projects) do
+          table.insert(refile_items, p.name .. " (" .. vim.fn.fnamemodify(p.path, ":h:t") .. ")")
+        end
+        
+        fzf.fzf_exec(refile_items, {
+          prompt = "Refile to ❯ ",
+          winopts = { height = 0.4, width = 0.5 },
+          actions = {
+            ["default"] = function(target)
+              if target and target[1] then
+                local target_path
+                if target[1] == "Inbox.org" then
+                  target_path = inbox_path()
+                else
+                  local proj_name = target[1]:match("^([^(]+)")
+                  if proj_name then
+                    proj_name = vim.trim(proj_name)
+                    for _, p in ipairs(projects) do
+                      if p.name == proj_name then
+                        target_path = p.path
+                        break
+                      end
+                    end
+                  end
+                end
+                
+                if target_path then
+                  local count = refile_tasks(sel_tasks, target_path)
+                  vim.notify(string.format("📁 Refiled %d task(s) → %s", count, vim.fn.fnamemodify(target_path, ":t")), vim.log.levels.INFO)
+                  if M.is_running() then M.query("gtd", "refresh", nil) end
+                end
+              end
+            end,
+          },
+        })
       end,
     },
     winopts = {
