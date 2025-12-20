@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.8.0"
+M._VERSION = "0.8.1"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -549,11 +549,20 @@ function M.pick_tasks(opts)
     return result
   end
   
+  -- Helper to reopen picker after action
+  local function reopen()
+    vim.schedule(function()
+      if M.is_running() then M.query("gtd", "refresh", nil) end
+      -- Small delay to let daemon refresh
+      vim.defer_fn(function() M.pick_tasks(opts) end, 100)
+    end)
+  end
+  
   fzf.fzf_exec(items, {
     prompt = title .. " ❯ ",
     fzf_opts = {
       ["--multi"] = true,
-      ["--header"] = "TAB:select | Enter:open | ctrl-d:done | ctrl-x:delete | ctrl-a:archive | ctrl-r:refile",
+      ["--header"] = "󰌌 TAB:select  Enter:open  ^D:done  ^X:delete  ^A:archive  ^R:refile",
     },
     actions = {
       ["default"] = function(selected)
@@ -574,7 +583,7 @@ function M.pick_tasks(opts)
         
         local count = mark_tasks_done(sel_tasks)
         vim.notify(string.format("✓ Marked %d task(s) DONE", count), vim.log.levels.INFO)
-        if M.is_running() then M.query("gtd", "refresh", nil) end
+        reopen()
       end,
       ["ctrl-x"] = function(selected)
         local sel_tasks = get_selected_tasks(selected)
@@ -586,7 +595,9 @@ function M.pick_tasks(opts)
           if choice == "Yes, delete" then
             local count = delete_tasks(sel_tasks)
             vim.notify(string.format("🗑 Deleted %d task(s)", count), vim.log.levels.INFO)
-            if M.is_running() then M.query("gtd", "refresh", nil) end
+            reopen()
+          else
+            reopen()
           end
         end)
       end,
@@ -596,7 +607,7 @@ function M.pick_tasks(opts)
         
         local count = archive_tasks(sel_tasks)
         vim.notify(string.format("📦 Archived %d task(s)", count), vim.log.levels.INFO)
-        if M.is_running() then M.query("gtd", "refresh", nil) end
+        reopen()
       end,
       ["ctrl-r"] = function(selected)
         local sel_tasks = get_selected_tasks(selected)
@@ -634,12 +645,22 @@ function M.pick_tasks(opts)
                 if target_path then
                   local count = refile_tasks(sel_tasks, target_path)
                   vim.notify(string.format("📁 Refiled %d task(s) → %s", count, vim.fn.fnamemodify(target_path, ":t")), vim.log.levels.INFO)
-                  if M.is_running() then M.query("gtd", "refresh", nil) end
+                  reopen()
+                else
+                  reopen()
                 end
+              else
+                reopen()
               end
+            end,
+            ["esc"] = function()
+              reopen()
             end,
           },
         })
+      end,
+      ["esc"] = function()
+        -- Just close, don't reopen
       end,
     },
     winopts = {
