@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.9.0"
+M._VERSION = "0.9.1"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -353,6 +353,12 @@ local function delete_tasks(tasks)
     for _, line_num in ipairs(lines) do
       -- Find the subtree extent
       local start_line = line_num
+      
+      -- Safety check: ensure line exists
+      if start_line > #content or not content[start_line] then
+        goto continue
+      end
+      
       local stars = content[start_line]:match("^(%*+)")
       if stars then
         local level = #stars
@@ -371,6 +377,7 @@ local function delete_tasks(tasks)
         end
         deleted = deleted + 1
       end
+      ::continue::
     end
     vim.fn.writefile(content, file)
   end
@@ -384,11 +391,39 @@ local function archive_tasks(tasks)
   local archive_dir = gtd_home() .. "/Archive"
   vim.fn.mkdir(archive_dir, "p")
   
-  local archived = 0
+  -- Group tasks by file to handle multiple tasks from same file
+  local by_file = {}
   for _, task in ipairs(tasks) do
     if task.file and task.line then
-      local content = vim.fn.readfile(task.file)
+      by_file[task.file] = by_file[task.file] or {}
+      table.insert(by_file[task.file], task)
+    end
+  end
+  
+  local archived = 0
+  
+  for file, file_tasks in pairs(by_file) do
+    -- Sort by line descending to process from bottom up
+    table.sort(file_tasks, function(a, b) return a.line > b.line end)
+    
+    local content = vim.fn.readfile(file)
+    local source_name = vim.fn.fnamemodify(file, ":t")
+    local archive_file = archive_dir .. "/" .. source_name
+    
+    -- Load or create archive content
+    local archive_content = {}
+    if vim.fn.filereadable(archive_file) == 1 then
+      archive_content = vim.fn.readfile(archive_file)
+    end
+    
+    for _, task in ipairs(file_tasks) do
       local start_line = task.line
+      
+      -- Safety check: ensure line exists
+      if start_line > #content or not content[start_line] then
+        goto continue
+      end
+      
       local stars = content[start_line]:match("^(%*+)")
       
       if stars then
@@ -404,29 +439,26 @@ local function archive_tasks(tasks)
           end_line = i
         end
         
-        -- Determine archive file (same name as source, in Archive/)
-        local source_name = vim.fn.fnamemodify(task.file, ":t")
-        local archive_file = archive_dir .. "/" .. source_name
-        
-        -- Append to archive
-        local archive_content = {}
-        if vim.fn.filereadable(archive_file) == 1 then
-          archive_content = vim.fn.readfile(archive_file)
-        end
+        -- Append to archive content
         table.insert(archive_content, "")  -- blank line separator
         for _, line in ipairs(subtree) do
           table.insert(archive_content, line)
         end
-        vim.fn.writefile(archive_content, archive_file)
         
-        -- Remove from source (bottom up)
+        -- Remove from source content (bottom up)
         for i = end_line, start_line, -1 do
           table.remove(content, i)
         end
-        vim.fn.writefile(content, task.file)
         archived = archived + 1
       end
+      ::continue::
     end
+    
+    -- Write modified source file
+    vim.fn.writefile(content, file)
+    
+    -- Write archive file
+    vim.fn.writefile(archive_content, archive_file)
   end
   
   return archived
@@ -687,6 +719,12 @@ local function refile_tasks(tasks, target_file)
     if task.file and task.line then
       local content = vim.fn.readfile(task.file)
       local start_line = task.line
+      
+      -- Safety check: ensure line exists
+      if start_line > #content or not content[start_line] then
+        goto continue
+      end
+      
       local stars = content[start_line]:match("^(%*+)")
       
       if stars then
@@ -728,6 +766,7 @@ local function refile_tasks(tasks, target_file)
         refiled = refiled + 1
       end
     end
+    ::continue::
   end
   
   return refiled
