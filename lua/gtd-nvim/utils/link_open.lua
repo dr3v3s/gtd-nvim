@@ -743,7 +743,7 @@ end
 -- ORIGINAL LINK OPENING (Preserved functionality)
 -- ============================================================================
 
-local function open_mailto(uri)
+function M.open_mailto(uri)
   local addr, q = parse_mailto(uri)
   if addr == "" then
     vim.notify("Malformed mailto URI", vim.log.levels.WARN, { title = "LinkOpen" })
@@ -763,7 +763,7 @@ local function open_mailto(uri)
   end
 end
 
-local function open_file_link(path)
+function M.open_file(path)
   local expanded = expand_path(path)
   if vim.fn.filereadable(expanded) == 1 then
     vim.cmd("edit " .. vim.fn.fnameescape(expanded))
@@ -842,9 +842,9 @@ function M.open()
   if link.type == "url" then
     sys_open_url(link.target)
   elseif link.type == "mailto" then
-    open_mailto(link.target)
+    M.open_mailto(link.target)
   elseif link.type == "file" then
-    open_file_link(link.target)
+    M.open_file(link.target)
   elseif link.type == "wiki" then
     local resolved = M.resolve_wiki_link(link.target)
     if resolved then
