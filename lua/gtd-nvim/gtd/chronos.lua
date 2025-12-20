@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.10.0"
+M._VERSION = "0.10.1"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -1475,6 +1475,10 @@ function M.setup_commands()
     M.pick_tasks({ state = "WAITING", title = "WAITING Tasks" })
   end, { desc = "Pick WAITING tasks via Chronos" })
   
+  vim.api.nvim_create_user_command("ChronosSomeday", function()
+    M.pick_tasks({ state = "SOMEDAY", title = "SOMEDAY Tasks" })
+  end, { desc = "Pick SOMEDAY tasks via Chronos" })
+  
   vim.api.nvim_create_user_command("ChronosSearch", function(opts)
     M.pick_search(opts.args ~= "" and opts.args or nil)
   end, { desc = "Search tasks via Chronos", nargs = "?" })
@@ -1526,32 +1530,47 @@ function M.setup_keymaps(prefix)
   local map = vim.keymap.set
   local opts = { silent = true }
   
-  map("n", prefix .. "s", "<cmd>ChronosStatus<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos status" }))
-  map("n", prefix .. "n", "<cmd>ChronosNext<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos NEXT actions" }))
-  map("n", prefix .. "t", "<cmd>ChronosTodo<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos TODO tasks" }))
-  map("n", prefix .. "w", "<cmd>ChronosWaiting<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos WAITING tasks" }))
-  map("n", prefix .. "a", "<cmd>ChronosAll<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos ALL tasks" }))
-  map("n", prefix .. "P", "<cmd>ChronosProjects<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos projects" }))
-  map("n", prefix .. "/", "<cmd>ChronosSearch<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos search" }))
-  map("n", prefix .. "A", "<cmd>ChronosArchive<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos archive management" }))
-  map("n", prefix .. "r", "<cmd>ChronosRemindersSync<cr>",
-    vim.tbl_extend("force", opts, { desc = "Chronos reminders sync" }))
+  -- ┌─────────────────────────────────────────────────────────────┐
+  -- │ TASK PICKERS: <leader>xt{key}                               │
+  -- └─────────────────────────────────────────────────────────────┘
+  map("n", prefix .. "ta", "<cmd>ChronosAll<cr>",
+    vim.tbl_extend("force", opts, { desc = "Tasks: ALL" }))
+  map("n", prefix .. "tn", "<cmd>ChronosNext<cr>",
+    vim.tbl_extend("force", opts, { desc = "Tasks: NEXT" }))
+  map("n", prefix .. "tt", "<cmd>ChronosTodo<cr>",
+    vim.tbl_extend("force", opts, { desc = "Tasks: TODO" }))
+  map("n", prefix .. "tw", "<cmd>ChronosWaiting<cr>",
+    vim.tbl_extend("force", opts, { desc = "Tasks: WAITING" }))
+  map("n", prefix .. "ts", "<cmd>ChronosSomeday<cr>",
+    vim.tbl_extend("force", opts, { desc = "Tasks: SOMEDAY" }))
   
-  -- Capture keymaps
-  map("n", prefix .. "q", "<cmd>ChronosQuick<cr>",
-    vim.tbl_extend("force", opts, { desc = "Quick capture to inbox" }))
-  map("n", prefix .. "c", "<cmd>ChronosCapture<cr>",
-    vim.tbl_extend("force", opts, { desc = "Full task capture" }))
-  map("n", prefix .. "p", "<cmd>ChronosProject<cr>",
-    vim.tbl_extend("force", opts, { desc = "Create project" }))
+  -- ┌─────────────────────────────────────────────────────────────┐
+  -- │ PROJECT PICKERS: <leader>xp{key}                            │
+  -- └─────────────────────────────────────────────────────────────┘
+  map("n", prefix .. "pp", "<cmd>ChronosProjects<cr>",
+    vim.tbl_extend("force", opts, { desc = "Projects: list" }))
+  map("n", prefix .. "pn", "<cmd>ChronosProject<cr>",
+    vim.tbl_extend("force", opts, { desc = "Projects: new" }))
+  
+  -- ┌─────────────────────────────────────────────────────────────┐
+  -- │ CAPTURE: <leader>xc{key}                                    │
+  -- └─────────────────────────────────────────────────────────────┘
+  map("n", prefix .. "cq", "<cmd>ChronosQuick<cr>",
+    vim.tbl_extend("force", opts, { desc = "Capture: quick" }))
+  map("n", prefix .. "cc", "<cmd>ChronosCapture<cr>",
+    vim.tbl_extend("force", opts, { desc = "Capture: full" }))
+  
+  -- ┌─────────────────────────────────────────────────────────────┐
+  -- │ OTHER: <leader>x{key}                                       │
+  -- └─────────────────────────────────────────────────────────────┘
+  map("n", prefix .. "/", "<cmd>ChronosSearch<cr>",
+    vim.tbl_extend("force", opts, { desc = "Search tasks" }))
+  map("n", prefix .. "a", "<cmd>ChronosArchive<cr>",
+    vim.tbl_extend("force", opts, { desc = "Archive management" }))
+  map("n", prefix .. "r", "<cmd>ChronosRemindersSync<cr>",
+    vim.tbl_extend("force", opts, { desc = "Reminders sync" }))
+  map("n", prefix .. "s", "<cmd>ChronosStatus<cr>",
+    vim.tbl_extend("force", opts, { desc = "Daemon status" }))
 end
 
 -- ============================================================================
