@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.9.1"
+M._VERSION = "0.10.0"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -1064,6 +1064,324 @@ function M.pick_archive()
   })
 end
 
+--- Unified task picker with state filtering
+--- Shows all active tasks, filterable by state using ctrl keys
+function M.pick_all()
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("fzf-lua required", vim.log.levels.ERROR)
+    return
+  end
+  
+  -- Fetch all active states
+  local all_tasks = {}
+  for _, state in ipairs({"NEXT", "TODO", "WAITING", "SOMEDAY"}) do
+    local tasks = M.tasks(state, 100)
+    for _, t in ipairs(tasks) do
+      table.insert(all_tasks, t)
+    end
+  end
+  
+  if #all_tasks == 0 then
+    vim.notify("No active tasks found", vim.log.levels.INFO)
+    return
+  end
+  
+  -- Build display with state prefix for filtering
+  local items = {}
+  local task_map = {}
+  
+  local state_icons = {
+    NEXT = "󰁔",
+    TODO = "󰄲",
+    WAITING = "󰈸",
+    SOMEDAY = "󰋚",
+  }
+  
+  for _, task in ipairs(all_tasks) do
+    local icon = state_icons[task.state] or "󰄲"
+    local file = vim.fn.fnamemodify(task.file or "", ":t:r")
+    -- Include state in display for filtering
+    local display = string.format("%s %-8s %s  %s", icon, task.state, task.title or "Untitled", file)
+    table.insert(items, display)
+    task_map[display] = task
+  end
+  
+  local function get_selected_tasks(selected)
+    local result = {}
+    for _, sel in ipairs(selected or {}) do
+      if task_map[sel] then
+        table.insert(result, task_map[sel])
+      end
+    end
+    return result
+  end
+  
+  local function reopen()
+    vim.schedule(function()
+      if M.is_running() then M.query("gtd", "refresh", nil) end
+      vim.defer_fn(function() M.pick_all() end, 100)
+    end)
+  end
+  
+  fzf.fzf_exec(items, {
+    prompt = "Tasks ❯ ",
+    fzf_opts = {
+      ["--multi"] = true,
+      ["--header"] = "󰌌 Filter: NEXT/TODO/WAIT/SOME | ^D:done ^X:del ^A:archive ^R:refile",
+    },
+    actions = {
+      ["default"] = function(selected)
+        if selected and selected[1] then
+          local task = task_map[selected[1]]
+          if task and task.file then
+            vim.cmd("edit " .. vim.fn.fnameescape(task.file))
+            if task.line then
+              vim.api.nvim_win_set_cursor(0, {task.line, 0})
+              vim.cmd("normal! zz")
+            end
+          end
+        end
+      end,
+      ["ctrl-d"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        local count = mark_tasks_done(sel_tasks)
+        vim.notify(string.format("✓ Marked %d task(s) DONE", count), vim.log.levels.INFO)
+        reopen()
+      end,
+      ["ctrl-x"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        vim.ui.select({ "Yes, delete", "Cancel" }, {
+          prompt = string.format("Delete %d task(s)?", #sel_tasks),
+        }, function(choice)
+          if choice == "Yes, delete" then
+            local count = delete_tasks(sel_tasks)
+            vim.notify(string.format("🗑 Deleted %d task(s)", count), vim.log.levels.INFO)
+          end
+          reopen()
+        end)
+      end,
+      ["ctrl-a"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        local count = archive_tasks(sel_tasks)
+        vim.notify(string.format("📦 Archived %d task(s)", count), vim.log.levels.INFO)
+        reopen()
+      end,
+      ["ctrl-r"] = function(selected)
+        local sel_tasks = get_selected_tasks(selected)
+        if #sel_tasks == 0 then return end
+        local projects = get_projects()
+        local refile_items = { "Inbox.org" }
+        for _, p in ipairs(projects) do
+          table.insert(refile_items, p.name .. " (" .. vim.fn.fnamemodify(p.path, ":h:t") .. ")")
+        end
+        fzf.fzf_exec(refile_items, {
+          prompt = "Refile to ❯ ",
+          winopts = { height = 0.4, width = 0.5 },
+          actions = {
+            ["default"] = function(target)
+              if target and target[1] then
+                local target_path = inbox_path()
+                if not target[1]:match("Inbox.org") then
+                  local proj_name = vim.trim(target[1]:match("^([^(]+)") or "")
+                  for _, p in ipairs(projects) do
+                    if p.name == proj_name then target_path = p.path break end
+                  end
+                end
+                local count = refile_tasks(sel_tasks, target_path)
+                vim.notify(string.format("📁 Refiled %d → %s", count, vim.fn.fnamemodify(target_path, ":t")), vim.log.levels.INFO)
+              end
+              reopen()
+            end,
+            ["esc"] = function() reopen() end,
+          },
+        })
+      end,
+      ["esc"] = function() end,
+    },
+    winopts = { height = 0.7, width = 0.85 },
+  })
+end
+
+--- Archive entire project file
+---@param project table Project object with path
+local function archive_project(project)
+  if not project or not project.path then return false end
+  
+  local archive_dir = gtd_home() .. "/Archive"
+  vim.fn.mkdir(archive_dir, "p")
+  
+  local source_name = vim.fn.fnamemodify(project.path, ":t")
+  local archive_path = archive_dir .. "/" .. source_name
+  
+  -- If archive already exists, append content
+  if vim.fn.filereadable(archive_path) == 1 then
+    local archive_content = vim.fn.readfile(archive_path)
+    local source_content = vim.fn.readfile(project.path)
+    table.insert(archive_content, "")
+    table.insert(archive_content, "# Archived: " .. os.date("%Y-%m-%d %H:%M"))
+    for _, line in ipairs(source_content) do
+      table.insert(archive_content, line)
+    end
+    vim.fn.writefile(archive_content, archive_path)
+  else
+    vim.fn.rename(project.path, archive_path)
+  end
+  
+  -- Delete source if it still exists (was appended)
+  if vim.fn.filereadable(project.path) == 1 then
+    vim.fn.delete(project.path)
+  end
+  
+  return true
+end
+
+--- Project picker with actions
+function M.pick_projects()
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("fzf-lua required", vim.log.levels.ERROR)
+    return
+  end
+  
+  local projects = get_projects()
+  
+  if #projects == 0 then
+    vim.notify("No projects found", vim.log.levels.INFO)
+    return
+  end
+  
+  -- Get task counts per project from daemon
+  local task_counts = {}
+  local all_tasks = {}
+  for _, state in ipairs({"NEXT", "TODO", "WAITING", "SOMEDAY"}) do
+    for _, t in ipairs(M.tasks(state, 500) or {}) do
+      table.insert(all_tasks, t)
+    end
+  end
+  for _, t in ipairs(all_tasks) do
+    local proj = t.project or vim.fn.fnamemodify(t.file or "", ":t:r")
+    task_counts[proj] = (task_counts[proj] or 0) + 1
+  end
+  
+  local items = {}
+  local proj_map = {}
+  
+  for _, p in ipairs(projects) do
+    local count = task_counts[p.name] or 0
+    local area_part = p.area and (" [" .. p.area .. "]") or ""
+    local display = string.format("%s %s%s  (%d tasks)", capture_glyphs.project, p.name, area_part, count)
+    table.insert(items, display)
+    proj_map[display] = p
+  end
+  
+  local function get_selected_projects(selected)
+    local result = {}
+    for _, sel in ipairs(selected or {}) do
+      if proj_map[sel] then
+        table.insert(result, proj_map[sel])
+      end
+    end
+    return result
+  end
+  
+  local function reopen()
+    vim.schedule(function()
+      if M.is_running() then M.query("gtd", "refresh", nil) end
+      vim.defer_fn(function() M.pick_projects() end, 100)
+    end)
+  end
+  
+  fzf.fzf_exec(items, {
+    prompt = "Projects ❯ ",
+    fzf_opts = {
+      ["--multi"] = true,
+      ["--header"] = "󰌌 Enter:open | ^T:tasks | ^N:new task | ^A:archive | ^X:delete",
+    },
+    actions = {
+      ["default"] = function(selected)
+        if selected and selected[1] then
+          local proj = proj_map[selected[1]]
+          if proj and proj.path then
+            vim.cmd("edit " .. vim.fn.fnameescape(proj.path))
+          end
+        end
+      end,
+      ["ctrl-t"] = function(selected)
+        -- Show tasks for this project
+        if selected and selected[1] then
+          local proj = proj_map[selected[1]]
+          if proj then
+            -- Filter tasks by project file
+            M.pick_tasks({ 
+              filter_file = proj.path, 
+              title = proj.name .. " Tasks" 
+            })
+          end
+        end
+      end,
+      ["ctrl-n"] = function(selected)
+        -- Create new task in this project
+        if selected and selected[1] then
+          local proj = proj_map[selected[1]]
+          if proj then
+            M.capture_task({ 
+              target = proj.path, 
+              level = 2,
+              area = proj.area,
+            })
+          end
+        end
+      end,
+      ["ctrl-a"] = function(selected)
+        local sel_projs = get_selected_projects(selected)
+        if #sel_projs == 0 then return end
+        
+        local names = {}
+        for _, p in ipairs(sel_projs) do table.insert(names, p.name) end
+        
+        vim.ui.select({ "Yes, archive", "Cancel" }, {
+          prompt = string.format("Archive %d project(s)? (%s)", #sel_projs, table.concat(names, ", ")),
+        }, function(choice)
+          if choice == "Yes, archive" then
+            local count = 0
+            for _, p in ipairs(sel_projs) do
+              if archive_project(p) then count = count + 1 end
+            end
+            vim.notify(string.format("📦 Archived %d project(s)", count), vim.log.levels.INFO)
+          end
+          reopen()
+        end)
+      end,
+      ["ctrl-x"] = function(selected)
+        local sel_projs = get_selected_projects(selected)
+        if #sel_projs == 0 then return end
+        
+        local names = {}
+        for _, p in ipairs(sel_projs) do table.insert(names, p.name) end
+        
+        vim.ui.select({ "Yes, DELETE permanently", "Cancel" }, {
+          prompt = string.format("DELETE %d project(s)? (%s) - THIS CANNOT BE UNDONE!", #sel_projs, table.concat(names, ", ")),
+        }, function(choice)
+          if choice == "Yes, DELETE permanently" then
+            local count = 0
+            for _, p in ipairs(sel_projs) do
+              if vim.fn.delete(p.path) == 0 then count = count + 1 end
+            end
+            vim.notify(string.format("🗑 Deleted %d project(s)", count), vim.log.levels.INFO)
+          end
+          reopen()
+        end)
+      end,
+      ["esc"] = function() end,
+    },
+    winopts = { height = 0.6, width = 0.8 },
+  })
+end
+
 --- Search tasks with fzf
 ---@param initial_query string|nil Initial search query
 function M.pick_search(initial_query)
@@ -1165,6 +1483,14 @@ function M.setup_commands()
     M.pick_archive()
   end, { desc = "Manage archived tasks" })
   
+  vim.api.nvim_create_user_command("ChronosAll", function()
+    M.pick_all()
+  end, { desc = "All tasks (NEXT/TODO/WAITING/SOMEDAY)" })
+  
+  vim.api.nvim_create_user_command("ChronosProjects", function()
+    M.pick_projects()
+  end, { desc = "Project picker" })
+  
   vim.api.nvim_create_user_command("ChronosRemindersSync", function()
     local result = M.reminders_sync()
     if result then
@@ -1208,6 +1534,10 @@ function M.setup_keymaps(prefix)
     vim.tbl_extend("force", opts, { desc = "Chronos TODO tasks" }))
   map("n", prefix .. "w", "<cmd>ChronosWaiting<cr>",
     vim.tbl_extend("force", opts, { desc = "Chronos WAITING tasks" }))
+  map("n", prefix .. "a", "<cmd>ChronosAll<cr>",
+    vim.tbl_extend("force", opts, { desc = "Chronos ALL tasks" }))
+  map("n", prefix .. "P", "<cmd>ChronosProjects<cr>",
+    vim.tbl_extend("force", opts, { desc = "Chronos projects" }))
   map("n", prefix .. "/", "<cmd>ChronosSearch<cr>",
     vim.tbl_extend("force", opts, { desc = "Chronos search" }))
   map("n", prefix .. "A", "<cmd>ChronosArchive<cr>",
