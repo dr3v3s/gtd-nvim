@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.5.0"
+M._VERSION = "0.6.0"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -718,19 +718,20 @@ end
 -- ============================================================================
 
 --- Create a Zettelkasten note for a task or project
----@param opts table Options: title, id, type ("task"|"project"), area
+---@param opts table Options: title, id, type ("task"|"project"), area, state
 ---@return string|nil path Path to created note, or nil on failure
 local function create_zk_note(opts)
   local title = opts.title
   local id = opts.id or generate_task_id()
   local note_type = opts.type or "task"
+  local state = opts.state or "TODO"
   
   -- Determine directory
   local dir
   if note_type == "project" then
     dir = zk_home() .. "/Projects"
   else
-    dir = zk_home() .. "/GTD"  -- Task notes go to GTD subfolder
+    dir = zk_home() .. "/GTD"
   end
   vim.fn.mkdir(dir, "p")
   
@@ -743,39 +744,30 @@ local function create_zk_note(opts)
     return path
   end
   
-  -- Build note content
+  -- Build minimal note content with state heading for uniqueness
   local lines = {
     "# " .. title,
     "",
-    "**Created:** " .. os.date("%Y-%m-%d %H:%M"),
     "**ID:** " .. id,
+    "**Created:** " .. os.date("%Y-%m-%d %H:%M"),
   }
   
-  if opts.area then
-    table.insert(lines, "**Area:** " .. opts.area)
-  end
-  
   if note_type == "project" then
-    table.insert(lines, "**Type:** Project")
-    table.insert(lines, "**Status:** Active")
+    table.insert(lines, "**Type:** PROJECT")
+    if opts.area then
+      table.insert(lines, "**Area:** " .. opts.area)
+    end
     table.insert(lines, "")
     table.insert(lines, "## Outcome")
     table.insert(lines, "")
-    table.insert(lines, opts.outcome or "_What does success look like?_")
-    table.insert(lines, "")
     table.insert(lines, "## Notes")
-    table.insert(lines, "")
-    table.insert(lines, "## References")
-    table.insert(lines, "")
-    table.insert(lines, "## Backlinks")
   else
-    table.insert(lines, "**Type:** Task Note")
-    table.insert(lines, "")
-    table.insert(lines, "## Context")
+    table.insert(lines, "**Type:** " .. state)
+    if opts.area then
+      table.insert(lines, "**Area:** " .. opts.area)
+    end
     table.insert(lines, "")
     table.insert(lines, "## Notes")
-    table.insert(lines, "")
-    table.insert(lines, "## Backlinks")
   end
   
   if write_file(path, lines) then
@@ -817,7 +809,7 @@ local function build_task_entry(opts)
   table.insert(lines, ":PROPERTIES:")
   table.insert(lines, ":TASK_ID:   " .. id)
   table.insert(lines, ":ID:        " .. id)
-  table.insert(lines, ":ZK_LINK:   [[zk:" .. id .. "]]")
+  table.insert(lines, ":ZK_LINK:   " .. id)
   table.insert(lines, ":CREATED:   " .. format_inactive_timestamp())
   if opts.zk_note then table.insert(lines, ":ZK_NOTE:   " .. format_zk_note_property(opts.zk_note)) end
   if opts.area then table.insert(lines, ":AREA:      " .. opts.area) end
@@ -845,7 +837,7 @@ local function build_project_entry(opts)
   table.insert(lines, ":PROPERTIES:")
   table.insert(lines, ":ID:        " .. id)
   table.insert(lines, ":TASK_ID:   " .. id)
-  table.insert(lines, ":ZK_LINK:   [[zk:" .. id .. "]]")
+  table.insert(lines, ":ZK_LINK:   " .. id)
   table.insert(lines, ":CREATED:   " .. format_inactive_timestamp())
   if opts.zk_note then table.insert(lines, ":ZK_NOTE:   " .. format_zk_note_property(opts.zk_note)) end
   if opts.description then table.insert(lines, ":DESCRIPTION: " .. opts.description) end
@@ -1121,12 +1113,13 @@ function M._task_finalize(data)
   local task_id = generate_task_id()
   local zk_note_path = nil
   
-  -- Create ZK note if requested
+  -- Create ZK note if requested (silently, don't open)
   if data.create_zk_note then
     zk_note_path = create_zk_note({
       title = data.title,
       id = task_id,
       type = "task",
+      state = data.state,
       area = data.area,
     })
   end
@@ -1151,14 +1144,9 @@ function M._task_finalize(data)
     local dest = vim.fn.fnamemodify(target, ":t:r")
     local msg = string.format("%s %s → %s", icon, data.title, dest)
     if zk_note_path then
-      msg = msg .. " + ZK note"
+      msg = msg .. " +note"
     end
     vim.notify(msg, vim.log.levels.INFO)
-    
-    -- Open ZK note if created
-    if zk_note_path then
-      vim.cmd("edit " .. vim.fn.fnameescape(zk_note_path))
-    end
     
     if M.is_running() then M.query("gtd", "refresh", nil) end
   else
@@ -1281,14 +1269,13 @@ function M._project_finalize(data)
   local id = generate_task_id()
   local zk_note_path = nil
   
-  -- Create ZK note if requested
+  -- Create ZK note if requested (silently, don't open)
   if data.create_zk_note then
     zk_note_path = create_zk_note({
       title = data.name,
       id = id,
       type = "project",
       area = data.area,
-      outcome = data.outcome,
     })
   end
   
@@ -1319,18 +1306,12 @@ function M._project_finalize(data)
     local loc = data.area and (data.area .. "/") or "Projects/"
     local msg = capture_glyphs.project .. " " .. data.name .. " → " .. loc .. data.slug .. ".org"
     if zk_note_path then
-      msg = msg .. " + ZK note"
+      msg = msg .. " +note"
     end
     vim.notify(msg, vim.log.levels.INFO)
     
-    -- Open ZK note if created, otherwise open project
-    if zk_note_path then
-      vim.cmd("edit " .. vim.fn.fnameescape(zk_note_path))
-      -- Also open project in split
-      vim.cmd("vsplit " .. vim.fn.fnameescape(path))
-    else
-      vim.cmd("edit " .. vim.fn.fnameescape(path))
-    end
+    -- Always open the project file
+    vim.cmd("edit " .. vim.fn.fnameescape(path))
     
     if M.is_running() then M.query("gtd", "refresh", nil) end
   else
