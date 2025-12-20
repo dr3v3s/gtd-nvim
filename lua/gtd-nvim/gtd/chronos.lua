@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.4.0"
+M._VERSION = "0.5.0"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -674,6 +674,11 @@ local function gtd_home()
   return (ok and shared.gtd_home) and shared.gtd_home() or vim.fn.expand("~/Documents/GTD")
 end
 
+local function zk_home()
+  local ok, shared = pcall(require, "gtd-nvim.gtd.shared")
+  return (ok and shared.notes_home) and shared.notes_home() or vim.fn.expand("~/Documents/Notes")
+end
+
 local function inbox_path()
   return gtd_home() .. "/Inbox.org"
 end
@@ -708,6 +713,85 @@ local function write_file(path, lines)
   return true
 end
 
+-- ============================================================================
+-- ZETTELKASTEN NOTE CREATION
+-- ============================================================================
+
+--- Create a Zettelkasten note for a task or project
+---@param opts table Options: title, id, type ("task"|"project"), area
+---@return string|nil path Path to created note, or nil on failure
+local function create_zk_note(opts)
+  local title = opts.title
+  local id = opts.id or generate_task_id()
+  local note_type = opts.type or "task"
+  
+  -- Determine directory
+  local dir
+  if note_type == "project" then
+    dir = zk_home() .. "/Projects"
+  else
+    dir = zk_home() .. "/GTD"  -- Task notes go to GTD subfolder
+  end
+  vim.fn.mkdir(dir, "p")
+  
+  -- Generate filename: {id}-{slug}.md
+  local filename = id .. "-" .. slugify(title) .. ".md"
+  local path = dir .. "/" .. filename
+  
+  -- Don't overwrite existing
+  if vim.fn.filereadable(path) == 1 then
+    return path
+  end
+  
+  -- Build note content
+  local lines = {
+    "# " .. title,
+    "",
+    "**Created:** " .. os.date("%Y-%m-%d %H:%M"),
+    "**ID:** " .. id,
+  }
+  
+  if opts.area then
+    table.insert(lines, "**Area:** " .. opts.area)
+  end
+  
+  if note_type == "project" then
+    table.insert(lines, "**Type:** Project")
+    table.insert(lines, "**Status:** Active")
+    table.insert(lines, "")
+    table.insert(lines, "## Outcome")
+    table.insert(lines, "")
+    table.insert(lines, opts.outcome or "_What does success look like?_")
+    table.insert(lines, "")
+    table.insert(lines, "## Notes")
+    table.insert(lines, "")
+    table.insert(lines, "## References")
+    table.insert(lines, "")
+    table.insert(lines, "## Backlinks")
+  else
+    table.insert(lines, "**Type:** Task Note")
+    table.insert(lines, "")
+    table.insert(lines, "## Context")
+    table.insert(lines, "")
+    table.insert(lines, "## Notes")
+    table.insert(lines, "")
+    table.insert(lines, "## Backlinks")
+  end
+  
+  if write_file(path, lines) then
+    return path
+  end
+  return nil
+end
+
+--- Format ZK_NOTE property value
+---@param path string Full path to note
+---@return string Property value like [[file:path][name]]
+local function format_zk_note_property(path)
+  local name = vim.fn.fnamemodify(path, ":t")
+  return string.format("[[file:%s][%s]]", path, name)
+end
+
 --- Build GTD-SPEC compliant task entry
 local function build_task_entry(opts)
   local lines = {}
@@ -735,6 +819,7 @@ local function build_task_entry(opts)
   table.insert(lines, ":ID:        " .. id)
   table.insert(lines, ":ZK_LINK:   [[zk:" .. id .. "]]")
   table.insert(lines, ":CREATED:   " .. format_inactive_timestamp())
+  if opts.zk_note then table.insert(lines, ":ZK_NOTE:   " .. format_zk_note_property(opts.zk_note)) end
   if opts.area then table.insert(lines, ":AREA:      " .. opts.area) end
   if opts.effort then table.insert(lines, ":Effort:    " .. opts.effort) end
   if opts.state == "WAITING" then
@@ -762,6 +847,7 @@ local function build_project_entry(opts)
   table.insert(lines, ":TASK_ID:   " .. id)
   table.insert(lines, ":ZK_LINK:   [[zk:" .. id .. "]]")
   table.insert(lines, ":CREATED:   " .. format_inactive_timestamp())
+  if opts.zk_note then table.insert(lines, ":ZK_NOTE:   " .. format_zk_note_property(opts.zk_note)) end
   if opts.description then table.insert(lines, ":DESCRIPTION: " .. opts.description) end
   if opts.area then table.insert(lines, ":AREA:      " .. opts.area) end
   table.insert(lines, ":END:")
@@ -956,7 +1042,7 @@ function M._task_step_schedule(data)
     -- WAITING: Ask for follow-up date and who/what we're waiting for
     vim.ui.input({ prompt = "Waiting for (person/thing): " }, function(wf)
       if not wf or wf == "" then
-        vim.schedule(function() M._task_finalize(data) end)
+        vim.schedule(function() M._task_step_zk(data) end)
         return
       end
       data.waiting_for = wf
@@ -976,7 +1062,7 @@ function M._task_step_schedule(data)
               prompt = string.format("Due [%s] (%s): ", due_default, DATE_HINT)
             }, function(d)
               data.deadline = parse_smart_date(d, follow_up) or due_default
-              M._task_finalize(data)
+              M._task_step_zk(data)
             end)
           end)
         end)
@@ -984,7 +1070,7 @@ function M._task_step_schedule(data)
     end)
   elseif data.state == "SOMEDAY" then
     -- SOMEDAY: No dates needed
-    vim.schedule(function() M._task_finalize(data) end)
+    vim.schedule(function() M._task_step_zk(data) end)
   else
     -- NEXT/TODO: Ask for DEFER and DUE
     vim.ui.input({
@@ -1002,23 +1088,59 @@ function M._task_step_schedule(data)
             data.deadline = parse_smart_date(d, defer_date) or due_default
           end
           -- DUE is optional - empty means no deadline
-          M._task_finalize(data)
+          M._task_step_zk(data)
         end)
       end)
     end)
   end
 end
 
+--- Task wizard: ZK note step (optional)
+function M._task_step_zk(data)
+  local fzf = require("fzf-lua")
+  
+  fzf.fzf_exec({
+    capture_glyphs.todo .. " Create task only",
+    capture_glyphs.area .. " Create task + ZK note",
+  }, {
+    prompt = "Note ❯ ",
+    winopts = { height = 0.25, width = 0.4 },
+    actions = {
+      ["default"] = function(sel)
+        if sel and sel[1] and sel[1]:match("ZK note") then
+          data.create_zk_note = true
+        end
+        vim.schedule(function() M._task_finalize(data) end)
+      end,
+    },
+  })
+end
+
 --- Task wizard: Create task
 function M._task_finalize(data)
+  local task_id = generate_task_id()
+  local zk_note_path = nil
+  
+  -- Create ZK note if requested
+  if data.create_zk_note then
+    zk_note_path = create_zk_note({
+      title = data.title,
+      id = task_id,
+      type = "task",
+      area = data.area,
+    })
+  end
+  
   local lines = build_task_entry({
     title = data.title,
     state = data.state,
     level = data.level or 1,
+    task_id = task_id,
     scheduled = data.scheduled,
     deadline = data.deadline,
     area = data.area,
     waiting_for = data.waiting_for,
+    zk_note = zk_note_path,
   })
   
   local target = data.path or inbox_path()
@@ -1027,7 +1149,16 @@ function M._task_finalize(data)
   if append_to_file(target, lines) then
     local icon = capture_glyphs[data.state:lower()] or capture_glyphs.todo
     local dest = vim.fn.fnamemodify(target, ":t:r")
-    vim.notify(string.format("%s %s → %s", icon, data.title, dest), vim.log.levels.INFO)
+    local msg = string.format("%s %s → %s", icon, data.title, dest)
+    if zk_note_path then
+      msg = msg .. " + ZK note"
+    end
+    vim.notify(msg, vim.log.levels.INFO)
+    
+    -- Open ZK note if created
+    if zk_note_path then
+      vim.cmd("edit " .. vim.fn.fnameescape(zk_note_path))
+    end
     
     if M.is_running() then M.query("gtd", "refresh", nil) end
   else
@@ -1108,8 +1239,29 @@ end
 function M._project_step_action(data)
   vim.ui.input({ prompt = capture_glyphs.next .. " First action (optional): " }, function(action)
     data.first_action = (action and action ~= "") and action or nil
-    vim.schedule(function() M._project_finalize(data) end)
+    vim.schedule(function() M._project_step_zk(data) end)
   end)
+end
+
+--- Project wizard: ZK note step
+function M._project_step_zk(data)
+  local fzf = require("fzf-lua")
+  
+  fzf.fzf_exec({
+    capture_glyphs.project .. " Create project only",
+    capture_glyphs.area .. " Create project + ZK note",
+  }, {
+    prompt = "Note ❯ ",
+    winopts = { height = 0.25, width = 0.4 },
+    actions = {
+      ["default"] = function(sel)
+        if sel and sel[1] and sel[1]:match("ZK note") then
+          data.create_zk_note = true
+        end
+        vim.schedule(function() M._project_finalize(data) end)
+      end,
+    },
+  })
 end
 
 --- Project wizard: Create file
@@ -1127,6 +1279,19 @@ function M._project_finalize(data)
   end
   
   local id = generate_task_id()
+  local zk_note_path = nil
+  
+  -- Create ZK note if requested
+  if data.create_zk_note then
+    zk_note_path = create_zk_note({
+      title = data.name,
+      id = id,
+      type = "project",
+      area = data.area,
+      outcome = data.outcome,
+    })
+  end
+  
   local file_lines = { "#+TITLE: " .. data.name, "#+FILETAGS: :project:", "" }
   
   local proj_lines = build_project_entry({
@@ -1134,6 +1299,7 @@ function M._project_finalize(data)
     task_id = id,
     area = data.area,
     outcome = data.outcome,
+    zk_note = zk_note_path,
   })
   for _, l in ipairs(proj_lines) do table.insert(file_lines, l) end
   
@@ -1151,8 +1317,21 @@ function M._project_finalize(data)
   vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
   if write_file(path, file_lines) then
     local loc = data.area and (data.area .. "/") or "Projects/"
-    vim.notify(capture_glyphs.project .. " " .. data.name .. " → " .. loc .. data.slug .. ".org", vim.log.levels.INFO)
-    vim.cmd("edit " .. vim.fn.fnameescape(path))
+    local msg = capture_glyphs.project .. " " .. data.name .. " → " .. loc .. data.slug .. ".org"
+    if zk_note_path then
+      msg = msg .. " + ZK note"
+    end
+    vim.notify(msg, vim.log.levels.INFO)
+    
+    -- Open ZK note if created, otherwise open project
+    if zk_note_path then
+      vim.cmd("edit " .. vim.fn.fnameescape(zk_note_path))
+      -- Also open project in split
+      vim.cmd("vsplit " .. vim.fn.fnameescape(path))
+    else
+      vim.cmd("edit " .. vim.fn.fnameescape(path))
+    end
+    
     if M.is_running() then M.query("gtd", "refresh", nil) end
   else
     vim.notify("Failed to create project", vim.log.levels.ERROR)
