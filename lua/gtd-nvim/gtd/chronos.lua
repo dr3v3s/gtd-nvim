@@ -12,7 +12,7 @@
 
 local M = {}
 
-M._VERSION = "0.8.1"
+M._VERSION = "0.8.2"
 M._UPDATED = "2025-12-20"
 
 -- ============================================================================
@@ -301,6 +301,31 @@ local function format_task_for_fzf(task)
   local file = vim.fn.fnamemodify(task.file or "", ":t:r")
   
   return string.format("%s %s  %s", icon, title, file)
+end
+
+-- ============================================================================
+-- PATH HELPERS (needed by task operations)
+-- ============================================================================
+
+local function gtd_home()
+  local ok, shared = pcall(require, "gtd-nvim.gtd.shared")
+  return (ok and shared.gtd_home) and shared.gtd_home() or vim.fn.expand("~/Documents/GTD")
+end
+
+local function zk_home()
+  local ok, shared = pcall(require, "gtd-nvim.gtd.shared")
+  return (ok and shared.notes_home) and shared.notes_home() or vim.fn.expand("~/Documents/Notes")
+end
+
+local function inbox_path()
+  return gtd_home() .. "/Inbox.org"
+end
+
+local function ensure_file(path, title)
+  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+  if vim.fn.filereadable(path) == 0 then
+    vim.fn.writefile({ "#+TITLE: " .. title, "" }, path)
+  end
 end
 
 -- ============================================================================
@@ -997,27 +1022,6 @@ end
 
 local DATE_HINT = "+1d, +2w, +3m, 25, 12-25"
 local DEFAULT_DUE_DAYS = 3  -- DUE = DEFER + 3 days
-
-local function gtd_home()
-  local ok, shared = pcall(require, "gtd-nvim.gtd.shared")
-  return (ok and shared.gtd_home) and shared.gtd_home() or vim.fn.expand("~/Documents/GTD")
-end
-
-local function zk_home()
-  local ok, shared = pcall(require, "gtd-nvim.gtd.shared")
-  return (ok and shared.notes_home) and shared.notes_home() or vim.fn.expand("~/Documents/Notes")
-end
-
-local function inbox_path()
-  return gtd_home() .. "/Inbox.org"
-end
-
-local function ensure_file(path, title)
-  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
-  if vim.fn.filereadable(path) == 0 then
-    vim.fn.writefile({ "#+TITLE: " .. title, "" }, path)
-  end
-end
 
 local function slugify(title)
   local s = title:lower()
