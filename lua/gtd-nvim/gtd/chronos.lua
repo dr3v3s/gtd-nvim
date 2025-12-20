@@ -12,8 +12,8 @@
 
 local M = {}
 
-M._VERSION = "0.3.0"
-M._UPDATED = "2025-12-19"
+M._VERSION = "0.4.0"
+M._UPDATED = "2025-12-20"
 
 -- ============================================================================
 -- CONFIGURATION
@@ -587,9 +587,87 @@ local function format_active_date(date_str)
   return os.date("<%Y-%m-%d %a>")
 end
 
-local function future_date(days)
-  return os.date("%Y-%m-%d", os.time() + (days * 24 * 60 * 60))
+local function future_date(days, from_date)
+  local base_time
+  if from_date and from_date:match("^%d%d%d%d%-%d%d%-%d%d$") then
+    local y, m, d = from_date:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    base_time = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d) })
+  else
+    base_time = os.time()
+  end
+  return os.date("%Y-%m-%d", base_time + (days * 24 * 60 * 60))
 end
+
+--- Parse smart date input: +1d, +2w, +3m, 25, 12-25, 2025-12-25
+local function parse_smart_date(input, base_date)
+  if not input or input == "" then return nil end
+  input = input:gsub("^%s+", ""):gsub("%s+$", "")
+  if input == "" then return nil end
+  
+  local base_time
+  if base_date and base_date:match("^%d%d%d%d%-%d%d%-%d%d$") then
+    local y, m, d = base_date:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    base_time = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d) })
+  else
+    base_time = os.time()
+  end
+  local base = os.date("*t", base_time)
+  
+  -- Full date YYYY-MM-DD
+  if input:match("^%d%d%d%d%-%d%d%-%d%d$") then return input end
+  
+  -- Relative days +Nd or +N
+  local rel_days = input:match("^%+(%d+)d?$")
+  if rel_days then
+    return os.date("%Y-%m-%d", base_time + (tonumber(rel_days) * 86400))
+  end
+  
+  -- Relative weeks +Nw
+  local rel_weeks = input:match("^%+(%d+)w$")
+  if rel_weeks then
+    return os.date("%Y-%m-%d", base_time + (tonumber(rel_weeks) * 7 * 86400))
+  end
+  
+  -- Relative months +Nm
+  local rel_months = input:match("^%+(%d+)m$")
+  if rel_months then
+    local months = tonumber(rel_months)
+    local new_month = base.month + months
+    local new_year = base.year
+    while new_month > 12 do
+      new_month = new_month - 12
+      new_year = new_year + 1
+    end
+    local max_day = ({ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 })[new_month]
+    if new_month == 2 and ((new_year % 4 == 0 and new_year % 100 ~= 0) or (new_year % 400 == 0)) then
+      max_day = 29
+    end
+    return string.format("%04d-%02d-%02d", new_year, new_month, math.min(base.day, max_day))
+  end
+  
+  -- Month-day MM-DD
+  local mm, dd = input:match("^(%d%d?)%-(%d%d?)$")
+  if mm and dd then
+    local month, day = tonumber(mm), tonumber(dd)
+    if month >= 1 and month <= 12 and day >= 1 and day <= 31 then
+      return string.format("%04d-%02d-%02d", base.year, month, day)
+    end
+  end
+  
+  -- Day only D or DD
+  local day_only = input:match("^(%d%d?)$")
+  if day_only then
+    local day = tonumber(day_only)
+    if day >= 1 and day <= 31 then
+      return string.format("%04d-%02d-%02d", base.year, base.month, day)
+    end
+  end
+  
+  return nil
+end
+
+local DATE_HINT = "+1d, +2w, +3m, 25, 12-25"
+local DEFAULT_DUE_DAYS = 3  -- DUE = DEFER + 3 days
 
 local function gtd_home()
   local ok, shared = pcall(require, "gtd-nvim.gtd.shared")
@@ -870,40 +948,65 @@ function M._task_step_dest(data)
   })
 end
 
---- Task wizard: Schedule step
+--- Task wizard: Schedule step (DEFER and DUE dates)
 function M._task_step_schedule(data)
-  local fzf = require("fzf-lua")
+  local today = os.date("%Y-%m-%d")
   
-  fzf.fzf_exec({
-    capture_glyphs.calendar .. " Today",
-    capture_glyphs.calendar .. " Tomorrow",
-    capture_glyphs.calendar .. " Next week",
-    capture_glyphs.calendar .. " No date",
-  }, {
-    prompt = "When ❯ ",
-    winopts = { height = 0.3, width = 0.35 },
-    actions = {
-      ["default"] = function(sel)
-        if sel and sel[1] then
-          if sel[1]:match("Today") then data.scheduled = os.date("%Y-%m-%d")
-          elseif sel[1]:match("Tomorrow") then data.scheduled = future_date(1)
-          elseif sel[1]:match("week") then data.scheduled = future_date(7)
-          end
-        end
-        
-        if data.state == "WAITING" then
+  if data.state == "WAITING" then
+    -- WAITING: Ask for follow-up date and who/what we're waiting for
+    vim.ui.input({ prompt = "Waiting for (person/thing): " }, function(wf)
+      if not wf or wf == "" then
+        vim.schedule(function() M._task_finalize(data) end)
+        return
+      end
+      data.waiting_for = wf
+      
+      vim.schedule(function()
+        local follow_default = future_date(7)  -- 1 week follow-up
+        vim.ui.input({
+          prompt = string.format("Follow-up [%s] (%s): ", follow_default, DATE_HINT)
+        }, function(f)
+          local follow_up = parse_smart_date(f) or follow_default
+          data.scheduled = follow_up
+          
+          -- DUE date
           vim.schedule(function()
-            vim.ui.input({ prompt = "Waiting for: " }, function(wf)
-              data.waiting_for = wf
+            local due_default = future_date(DEFAULT_DUE_DAYS, follow_up)
+            vim.ui.input({
+              prompt = string.format("Due [%s] (%s): ", due_default, DATE_HINT)
+            }, function(d)
+              data.deadline = parse_smart_date(d, follow_up) or due_default
               M._task_finalize(data)
             end)
           end)
-        else
-          vim.schedule(function() M._task_finalize(data) end)
-        end
-      end,
-    },
-  })
+        end)
+      end)
+    end)
+  elseif data.state == "SOMEDAY" then
+    -- SOMEDAY: No dates needed
+    vim.schedule(function() M._task_finalize(data) end)
+  else
+    -- NEXT/TODO: Ask for DEFER and DUE
+    vim.ui.input({
+      prompt = string.format("Defer [%s] (%s): ", today, DATE_HINT)
+    }, function(s)
+      local defer_date = parse_smart_date(s) or today
+      data.scheduled = defer_date
+      
+      vim.schedule(function()
+        local due_default = future_date(DEFAULT_DUE_DAYS, defer_date)
+        vim.ui.input({
+          prompt = string.format("Due [%s] (%s): ", due_default, DATE_HINT)
+        }, function(d)
+          if d and d ~= "" then
+            data.deadline = parse_smart_date(d, defer_date) or due_default
+          end
+          -- DUE is optional - empty means no deadline
+          M._task_finalize(data)
+        end)
+      end)
+    end)
+  end
 end
 
 --- Task wizard: Create task
@@ -913,6 +1016,7 @@ function M._task_finalize(data)
     state = data.state,
     level = data.level or 1,
     scheduled = data.scheduled,
+    deadline = data.deadline,
     area = data.area,
     waiting_for = data.waiting_for,
   })
