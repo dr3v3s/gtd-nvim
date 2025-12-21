@@ -5,7 +5,7 @@
 -- Provides real-time task data, search, and Apple Reminders bidirectional sync
 --
 -- @module gtd-nvim.gtd.chronos
--- @version 0.13.0
+-- @version 0.13.1
 -- @updated 2025-12-21
 -- @see ~/Developer/chronos (daemon source)
 -- ============================================================================
@@ -2011,10 +2011,6 @@ function M.pick_areas()
   end
   
   local areas_raw = M.areas()
-  if #areas_raw == 0 then
-    vim.notify("No areas found", vim.log.levels.INFO)
-    return
-  end
   
   local items = {}
   local area_map = {}
@@ -2068,7 +2064,7 @@ function M.pick_areas()
   fzf.fzf_exec(items, {
     prompt = "Areas ❯ ",
     fzf_opts = {
-      ["--header"] = "Enter:definition | ^P:projects | ^T:tasks | ^R:review",
+      ["--header"] = "Enter:definition | ^P:projects | ^T:tasks | ^R:review | ^N:new | ^A:archive",
     },
     actions = {
       ["default"] = function(selected)
@@ -2164,6 +2160,86 @@ function M.pick_areas()
           end
         end
         reopen()
+      end,
+      ["ctrl-n"] = function()
+        -- Create new area
+        vim.schedule(function()
+          vim.ui.input({ prompt = "󰠱 Area number (e.g., 60): " }, function(num)
+            if not num or num == "" then return end
+            
+            vim.schedule(function()
+              vim.ui.input({ prompt = "󰠱 Area name: " }, function(name)
+                if not name or name == "" then return end
+                
+                local area_id = num .. "-" .. name:gsub("%s+", "-")
+                local area_path = gtd_home() .. "/Areas/" .. area_id
+                
+                if vim.fn.isdirectory(area_path) == 1 then
+                  vim.notify("Area already exists: " .. area_id, vim.log.levels.ERROR)
+                  reopen()
+                  return
+                end
+                
+                -- Create area directory
+                vim.fn.mkdir(area_path, "p")
+                
+                -- Create _AREA.md template
+                local def_content = {
+                  "# " .. name,
+                  "",
+                  "TODO: Define this area of responsibility.",
+                  "",
+                  "## Responsibilities",
+                  "",
+                  "- ",
+                  "",
+                  "## Standards to Maintain",
+                  "",
+                  "- ",
+                  "",
+                  "## Review Questions",
+                  "",
+                  "- [ ] ",
+                }
+                vim.fn.writefile(def_content, area_path .. "/_AREA.md")
+                
+                vim.notify("󰠱 Created area: " .. area_id, vim.log.levels.INFO)
+                
+                -- Open the definition for editing
+                vim.cmd("edit " .. vim.fn.fnameescape(area_path .. "/_AREA.md"))
+              end)
+            end)
+          end)
+        end)
+      end,
+      ["ctrl-a"] = function(selected)
+        -- Archive area (move to Archive/Areas/{area_id}_{timestamp})
+        if not selected or not selected[1] then return end
+        
+        local area = area_map[selected[1]]
+        if not area then return end
+        
+        vim.ui.select({ "Yes, archive " .. area.name, "Cancel" }, {
+          prompt = "Archive area? All projects and tasks will be moved to Archive.",
+        }, function(choice)
+          if choice and choice:match("^Yes") then
+            local timestamp = os.date("%Y%m%d_%H%M%S")
+            local archive_base = gtd_home() .. "/Archive/Areas"
+            local archive_path = archive_base .. "/" .. area.id .. "_" .. timestamp
+            
+            vim.fn.mkdir(archive_base, "p")
+            
+            -- Move the entire area directory
+            local ok = vim.fn.rename(area.path, archive_path)
+            if ok == 0 then
+              vim.notify(string.format("📦 Archived %s → Archive/Areas/%s_%s", 
+                area.name, area.id, timestamp), vim.log.levels.INFO)
+            else
+              vim.notify("Failed to archive area", vim.log.levels.ERROR)
+            end
+          end
+          reopen()
+        end)
       end,
       ["esc"] = function() end,
     },
@@ -2935,9 +3011,10 @@ function M._task_step_dest(data)
   fzf.fzf_exec({
     capture_glyphs.inbox .. " Inbox (review later)",
     capture_glyphs.project .. " Project...",
+    capture_glyphs.area .. " Area...",
   }, {
     prompt = "To ❯ ",
-    winopts = { height = 0.25, width = 0.35 },
+    winopts = { height = 0.3, width = 0.35 },
     actions = {
       ["default"] = function(sel)
         if not sel or not sel[1] then return end
@@ -2966,6 +3043,48 @@ function M._task_step_dest(data)
                         data.path, data.level, data.area = p.path, 2, p.area
                         break
                       end
+                    end
+                  else
+                    data.path, data.level = inbox_path(), 1
+                  end
+                  vim.schedule(function() M._task_step_schedule(data) end)
+                end,
+              },
+            })
+          end)
+        elseif sel[1]:match("Area") then
+          -- Capture to area inbox (standalone task in area)
+          vim.schedule(function()
+            local areas = M.areas()
+            if #areas == 0 then
+              vim.notify("No areas found", vim.log.levels.WARN)
+              data.path, data.level = inbox_path(), 1
+              vim.schedule(function() M._task_step_schedule(data) end)
+              return
+            end
+            
+            local items = {}
+            local area_map = {}
+            for _, a in ipairs(areas) do
+              local display = capture_glyphs.area .. " " .. a.name
+              table.insert(items, display)
+              area_map[display] = a
+            end
+            
+            fzf.fzf_exec(items, {
+              prompt = "Area ❯ ",
+              winopts = { height = 0.4, width = 0.4 },
+              actions = {
+                ["default"] = function(area_sel)
+                  if area_sel and area_sel[1] then
+                    local area = area_map[area_sel[1]]
+                    if area then
+                      -- Use area Inbox.org (create if needed)
+                      local area_inbox = area.path .. "/Inbox.org"
+                      ensure_file(area_inbox, area.name .. " Inbox")
+                      data.path = area_inbox
+                      data.level = 1
+                      data.area = area.id
                     end
                   else
                     data.path, data.level = inbox_path(), 1
