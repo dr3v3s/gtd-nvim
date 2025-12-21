@@ -764,7 +764,9 @@ function M.open_mailto(uri)
 end
 
 function M.open_file(path)
+  print("M.open_file() called with: " .. tostring(path))
   local expanded = expand_path(path)
+  print("Expanded to: " .. tostring(expanded))
   if vim.fn.filereadable(expanded) == 1 then
     vim.cmd("edit " .. vim.fn.fnameescape(expanded))
   elseif vim.fn.isdirectory(expanded) == 1 then
@@ -779,24 +781,49 @@ local function get_link_under_cursor()
   local line = vim.api.nvim_get_current_line()
   local col = vim.api.nvim_win_get_cursor(0)[2] + 1
   
-  -- Wiki-link: [[target]] or [[target|alias]]
-  for link_start, target, link_end in line:gmatch("()%[%[([^%]|]+)[^%]]*%]%]()") do
+  -- Org property URL: :URL: https://... (anywhere on line opens it)
+  local prop_url = line:match("^%s*:URL:%s*(https?://[^%s]+)")
+  if prop_url then
+    return { type = "url", target = prop_url }
+  end
+  
+  -- Org property ZK_NOTE: :ZK_NOTE: [[file:path][desc]] (anywhere on line opens it)
+  local zk_note_path = line:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]")
+  if zk_note_path then
+    return { type = "file", target = zk_note_path }
+  end
+  
+  -- Org property ZK_LINK: :ZK_LINK: ID (find note by ID)
+  local zk_link_id = line:match("^%s*:ZK_LINK:%s*(%d+)")
+  if zk_link_id then
+    return { type = "zk", target = zk_link_id }
+  end
+  
+  -- Org file link: [[file:path][desc]] or [[file:path]] -- CHECK FIRST!
+  -- With description: [[file:path][desc]]
+  for link_start, path, link_end in line:gmatch("()%[%[file:([^%]]+)%]%[[^%]]*%]%]()") do
     if col >= link_start and col <= link_end then
-      return { type = "wiki", target = target }
+      return { type = "file", target = path }
+    end
+  end
+  -- Simple form: [[file:path]]
+  for link_start, path, link_end in line:gmatch("()%[%[file:([^%]]+)%]%]()") do
+    if col >= link_start and col <= link_end then
+      return { type = "file", target = path }
     end
   end
   
-  -- ZK ID link: [[zk:ID]]
+  -- ZK ID link: [[zk:ID]] -- CHECK BEFORE wiki-link
   for link_start, zk_id, link_end in line:gmatch("()%[%[zk:([^%]]+)%]%]()") do
     if col >= link_start and col <= link_end then
       return { type = "zk", target = zk_id }
     end
   end
   
-  -- Org file link: [[file:path][desc]] or [[file:path]]
-  for link_start, path, link_end in line:gmatch("()%[%[file:([^%]]+)%][^%]]*%]()") do
+  -- Wiki-link: [[target]] or [[target|alias]] -- LAST for [[...]] patterns
+  for link_start, target, link_end in line:gmatch("()%[%[([^%]|]+)[^%]]*%]%]()") do
     if col >= link_start and col <= link_end then
-      return { type = "file", target = path }
+      return { type = "wiki", target = target }
     end
   end
   
@@ -832,6 +859,36 @@ end
 
 --- Open link under cursor (main entry point)
 function M.open()
+  local line = vim.api.nvim_get_current_line()
+  
+  -- DEBUG
+  print("M.open() called - line: " .. line:sub(1, 50))
+  
+  -- Handle org properties first (cursor position doesn't matter)
+  -- ZK_NOTE: [[file:path][desc]]
+  local zk_note = line:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]")
+  if zk_note then
+    print("ZK_NOTE matched, opening: " .. zk_note)
+    M.open_file(zk_note)
+    return
+  end
+  
+  print("ZK_NOTE did NOT match, falling through...")
+  
+  -- URL property: :URL: https://...
+  local url_prop = line:match("^%s*:URL:%s*(https?://[^%s]+)")
+  if url_prop then
+    sys_open_url(url_prop)
+    return
+  end
+  
+  -- ZK_LINK property: :ZK_LINK: ID
+  local zk_link = line:match("^%s*:ZK_LINK:%s*(%d+)")
+  if zk_link then
+    M.open_zk(zk_link)
+    return
+  end
+  
   local link = get_link_under_cursor()
   
   if not link then
@@ -951,5 +1008,40 @@ M.open_at_point = function(opts)
   -- opts.floating_preview is ignored in this implementation
   M.open()
 end
+
+--- Debug: Show what link pattern matches current line
+function M.debug_link()
+  local line = vim.api.nvim_get_current_line()
+  local col = vim.api.nvim_win_get_cursor(0)[2] + 1
+  
+  print("Line: " .. line)
+  print("Col: " .. col)
+  print("")
+  
+  -- Test ZK_NOTE pattern
+  local zk_note = line:match(":ZK_NOTE:%s*%[%[file:([^%]]+)%]")
+  if zk_note then
+    print("✓ ZK_NOTE matched: " .. zk_note)
+  else
+    print("✗ ZK_NOTE did not match")
+  end
+  
+  -- Test ZK_LINK pattern
+  local zk_link = line:match("^%s*:ZK_LINK:%s*(%d+)")
+  if zk_link then
+    print("✓ ZK_LINK matched: " .. zk_link)
+  else
+    print("✗ ZK_LINK did not match")
+  end
+  
+  -- Test wiki pattern (problematic)
+  for s, target, e in line:gmatch("()%[%[([^%]|]+)[^%]]*%]%]()") do
+    if col >= s and col <= e then
+      print("! Wiki pattern matched: " .. target .. " (start=" .. s .. " end=" .. e .. ")")
+    end
+  end
+end
+
+vim.api.nvim_create_user_command("LinkDebug", function() require("utils.link_open").debug_link() end, {})
 
 return M
