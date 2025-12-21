@@ -5,7 +5,7 @@
 -- Provides real-time task data, search, and Apple Reminders bidirectional sync
 --
 -- @module gtd-nvim.gtd.chronos
--- @version 0.12.0
+-- @version 0.13.0
 -- @updated 2025-12-21
 -- @see ~/Developer/chronos (daemon source)
 -- ============================================================================
@@ -250,6 +250,33 @@ function M.project_info(project_id)
   local data, err = M.query("gtd", "project_info", { project_id = project_id })
   if not data then
     log("Project info error: " .. (err or "unknown"))
+    return nil
+  end
+  return data
+end
+
+-- ============================================================================
+-- AREAS (Horizon 2)
+-- ============================================================================
+
+--- Get all areas with statistics
+---@return table[] Areas array
+function M.areas()
+  local data, err = M.query("gtd", "areas", nil)
+  if not data then
+    log("Areas error: " .. (err or "unknown"))
+    return {}
+  end
+  return data
+end
+
+--- Get detailed info for a single area
+---@param area_id string Area ID (e.g., "10-Personal")
+---@return table|nil Area info
+function M.area_info(area_id)
+  local data, err = M.query("gtd", "area_info", { area_id = area_id })
+  if not data then
+    log("Area info error: " .. (err or "unknown"))
     return nil
   end
   return data
@@ -1027,9 +1054,12 @@ function M.pick_tasks(opts)
   -- Helper to reopen picker after action
   local function reopen()
     vim.schedule(function()
-      if M.is_running() then M.query("gtd", "refresh", nil) end
-      -- Small delay to let daemon refresh
-      vim.defer_fn(function() M.pick_tasks(opts) end, 100)
+      -- Wait for file system to sync, then refresh daemon index
+      vim.defer_fn(function()
+        if M.is_running() then M.query("gtd", "refresh", nil) end
+        -- Wait for daemon to complete re-indexing before reopening
+        vim.defer_fn(function() M.pick_tasks(opts) end, 200)
+      end, 50)
     end)
   end
   
@@ -1186,7 +1216,8 @@ function M.pick_archive()
   
   local function reopen()
     vim.schedule(function()
-      vim.defer_fn(function() M.pick_archive() end, 100)
+      -- Wait for daemon to complete re-indexing before reopening
+      vim.defer_fn(function() M.pick_archive() end, 250)
     end)
   end
   
@@ -1327,8 +1358,12 @@ function M.pick_all()
   
   local function reopen()
     vim.schedule(function()
-      if M.is_running() then M.query("gtd", "refresh", nil) end
-      vim.defer_fn(function() M.pick_all() end, 100)
+      -- Wait for file system to sync, then refresh daemon index
+      vim.defer_fn(function()
+        if M.is_running() then M.query("gtd", "refresh", nil) end
+        -- Wait for daemon to complete re-indexing before reopening
+        vim.defer_fn(function() M.pick_all() end, 200)
+      end, 50)
     end)
   end
   
@@ -1447,6 +1482,94 @@ local function archive_project(project)
   return true
 end
 
+--- Toggle ONGOING property on a project file
+---@param project table Project object with path
+---@return boolean success
+---@return boolean new_state True if now ongoing, false if now active
+local function toggle_ongoing(project)
+  if not project or not project.path then return false, false end
+  
+  local lines = vim.fn.readfile(project.path)
+  if #lines == 0 then return false, false end
+  
+  local in_properties = false
+  local has_ongoing = false
+  local ongoing_line = nil
+  local properties_end = nil
+  
+  -- Find ONGOING property
+  for i, line in ipairs(lines) do
+    if line:match("^%s*:PROPERTIES:%s*$") then
+      in_properties = true
+    elseif line:match("^%s*:END:%s*$") and in_properties then
+      properties_end = i
+      in_properties = false
+      break
+    elseif in_properties and line:match("^%s*:ONGOING:%s*") then
+      has_ongoing = true
+      ongoing_line = i
+    end
+  end
+  
+  if has_ongoing and ongoing_line then
+    -- Remove ONGOING property
+    table.remove(lines, ongoing_line)
+    vim.fn.writefile(lines, project.path)
+    return true, false
+  elseif properties_end then
+    -- Add ONGOING property before :END:
+    table.insert(lines, properties_end, ":ONGOING: t")
+    vim.fn.writefile(lines, project.path)
+    return true, true
+  end
+  
+  return false, false
+end
+
+--- Toggle ON_HOLD property on a project file
+---@param project table Project object with path
+---@return boolean success
+---@return boolean new_state True if now on hold, false if now active
+local function toggle_on_hold(project)
+  if not project or not project.path then return false, false end
+  
+  local lines = vim.fn.readfile(project.path)
+  if #lines == 0 then return false, false end
+  
+  local in_properties = false
+  local has_on_hold = false
+  local on_hold_line = nil
+  local properties_end = nil
+  
+  -- Find ON_HOLD property
+  for i, line in ipairs(lines) do
+    if line:match("^%s*:PROPERTIES:%s*$") then
+      in_properties = true
+    elseif line:match("^%s*:END:%s*$") and in_properties then
+      properties_end = i
+      in_properties = false
+      break
+    elseif in_properties and line:match("^%s*:ON_HOLD:%s*") then
+      has_on_hold = true
+      on_hold_line = i
+    end
+  end
+  
+  if has_on_hold and on_hold_line then
+    -- Remove ON_HOLD property
+    table.remove(lines, on_hold_line)
+    vim.fn.writefile(lines, project.path)
+    return true, false
+  elseif properties_end then
+    -- Add ON_HOLD property before :END:
+    table.insert(lines, properties_end, ":ON_HOLD: t")
+    vim.fn.writefile(lines, project.path)
+    return true, true
+  end
+  
+  return false, false
+end
+
 --- Project picker with actions
 function M.pick_projects()
   local ok, fzf = pcall(require, "fzf-lua")
@@ -1462,13 +1585,15 @@ function M.pick_projects()
   -- 1. Exclude Reminders/ folder (synced lists, not GTD projects)
   -- 2. Exclude projects with <2 tasks (not real projects)
   -- 3. Exclude ONGOING areas (unless user wants all)
+  -- 4. Exclude ON_HOLD projects (paused/deferred)
   local projects = {}
   for _, p in ipairs(projects_raw) do
     local is_reminders = p.file and p.file:match("/Reminders/")
     local has_tasks = p.tasks and p.tasks.total >= 1  -- At least 1 child task
     local is_ongoing = p.ongoing
+    local is_on_hold = p.on_hold
     
-    if not is_reminders and has_tasks and not is_ongoing then
+    if not is_reminders and has_tasks and not is_ongoing and not is_on_hold then
       table.insert(projects, p)
     end
   end
@@ -1551,8 +1676,12 @@ function M.pick_projects()
   
   local function reopen()
     vim.schedule(function()
-      if M.is_running() then M.query("gtd", "refresh", nil) end
-      vim.defer_fn(function() M.pick_projects() end, 100)
+      -- Wait for file system to sync, then refresh daemon index
+      vim.defer_fn(function()
+        if M.is_running() then M.query("gtd", "refresh", nil) end
+        -- Wait for daemon to complete re-indexing before reopening
+        vim.defer_fn(function() M.pick_projects() end, 200)
+      end, 50)
     end)
   end
   
@@ -1560,7 +1689,7 @@ function M.pick_projects()
     prompt = "Projects ❯ ",
     fzf_opts = {
       ["--multi"] = true,
-      ["--header"] = "󰌌 Enter:open | ^T:tasks | ^N:new task | ^I:info | ^A:archive | ^X:delete",
+      ["--header"] = "Enter:open | ^T:tasks | ^N:new | ^I:info | ^O:ongoing | ^H:hold | ^A:archive",
     },
     actions = {
       ["default"] = function(selected)
@@ -1649,6 +1778,34 @@ function M.pick_projects()
         -- Stay in picker
         vim.schedule(function() M.pick_projects() end)
       end,
+      ["ctrl-o"] = function(selected)
+        -- Toggle ongoing status (mark as area vs active project)
+        local sel_projs = get_selected_projects(selected)
+        if #sel_projs == 0 then return end
+        
+        for _, p in ipairs(sel_projs) do
+          local ok, is_ongoing = toggle_ongoing(p)
+          if ok then
+            local status = is_ongoing and "󰑖 ongoing" or "󰷐 active"
+            vim.notify(string.format("%s → %s", p.name, status), vim.log.levels.INFO)
+          end
+        end
+        reopen()
+      end,
+      ["ctrl-h"] = function(selected)
+        -- Toggle on-hold status (pause/defer project)
+        local sel_projs = get_selected_projects(selected)
+        if #sel_projs == 0 then return end
+        
+        for _, p in ipairs(sel_projs) do
+          local ok, is_on_hold = toggle_on_hold(p)
+          if ok then
+            local status = is_on_hold and "⏸ on hold" or "󰷐 active"
+            vim.notify(string.format("%s → %s", p.name, status), vim.log.levels.INFO)
+          end
+        end
+        reopen()
+      end,
       ["ctrl-a"] = function(selected)
         local sel_projs = get_selected_projects(selected)
         if #sel_projs == 0 then return end
@@ -1696,6 +1853,7 @@ function M.pick_projects()
 end
 
 --- Pick all projects including ongoing areas and Reminders
+--- Sorted: Active projects → Ongoing areas → Reminders
 function M.pick_all_projects()
   local ok, fzf = pcall(require, "fzf-lua")
   if not ok then
@@ -1703,49 +1861,99 @@ function M.pick_all_projects()
     return
   end
   
-  local projects = M.projects_info()
+  local projects_raw = M.projects_info()
   
-  if #projects == 0 then
+  if #projects_raw == 0 then
     vim.notify("No projects found", vim.log.levels.INFO)
     return
   end
   
+  -- Categorize projects
+  local active = {}
+  local on_hold = {}
+  local ongoing = {}
+  local reminders = {}
+  
+  for _, p in ipairs(projects_raw) do
+    local is_reminders = p.file and p.file:match("/Reminders/")
+    local is_ongoing = p.ongoing
+    local is_on_hold = p.on_hold
+    local has_tasks = p.tasks and p.tasks.total >= 1
+    
+    if is_reminders then
+      table.insert(reminders, p)
+    elseif is_on_hold then
+      table.insert(on_hold, p)
+    elseif is_ongoing then
+      table.insert(ongoing, p)
+    elseif has_tasks then
+      table.insert(active, p)
+    else
+      -- Empty non-ongoing projects go with active (at end)
+      table.insert(active, p)
+    end
+  end
+  
+  -- Build sorted list: active → on_hold → ongoing → reminders
   local items = {}
   local proj_map = {}
   
-  for _, p in ipairs(projects) do
-    local tasks = p.tasks or {}
-    local is_reminders = p.file and p.file:match("/Reminders/")
-    local is_ongoing = p.ongoing
-    
-    -- Build prefix icon
-    local icon = capture_glyphs.project
-    if is_reminders then
-      icon = "󰅖"  -- reminders icon
-    elseif is_ongoing then
-      icon = "󰑖"  -- ongoing/refresh icon
+  local function add_projects(list, icon_override)
+    for _, p in ipairs(list) do
+      local tasks = p.tasks or {}
+      local is_reminders = p.file and p.file:match("/Reminders/")
+      local is_ongoing = p.ongoing
+      local is_on_hold = p.on_hold
+      
+      -- Build prefix icon
+      local icon = icon_override or capture_glyphs.project
+      if not icon_override then
+        if is_reminders then
+          icon = "󰅖"  -- reminders icon
+        elseif is_on_hold then
+          icon = "⏸"   -- paused icon
+        elseif is_ongoing then
+          icon = "󰑖"  -- ongoing/refresh icon
+        end
+      end
+      
+      -- Task counts
+      local task_info = string.format("(%d)", tasks.total or 0)
+      
+      local area_part = p.area and (" [" .. p.area .. "]") or ""
+      local display = string.format("%s %s%s  %s", icon, p.title, area_part, task_info)
+      
+      table.insert(items, display)
+      proj_map[display] = {
+        name = p.title,
+        path = p.file,
+        area = p.area,
+        project_id = p.project_id,
+      }
     end
-    
-    -- Task counts
-    local task_info = string.format("(%d tasks)", tasks.total or 0)
-    
-    local area_part = p.area and (" [" .. p.area .. "]") or ""
-    local display = string.format("%s %s%s  %s", icon, p.title, area_part, task_info)
-    
-    table.insert(items, display)
-    proj_map[display] = {
-      name = p.title,
-      path = p.file,
-      area = p.area,
-      project_id = p.project_id,
-    }
+  end
+  
+  add_projects(active)
+  add_projects(on_hold)
+  add_projects(ongoing)
+  add_projects(reminders)
+  
+  local function reopen()
+    vim.schedule(function()
+      -- Wait for file system to sync, then refresh daemon index
+      vim.defer_fn(function()
+        if M.is_running() then M.query("gtd", "refresh", nil) end
+        -- Wait for daemon to complete re-indexing before reopening
+        vim.defer_fn(function() M.pick_all_projects() end, 200)
+      end, 50)
+    end)
   end
   
   fzf.fzf_exec(items, {
     prompt = "All Projects ❯ ",
     fzf_opts = {
       ["--multi"] = true,
-      ["--header"] = "󰌌 Enter:open | 󰷐 project | 󰅖 reminders | 󰑖 ongoing",
+      ["--header"] = "󰷐 active → ⏸ hold → 󰑖 ongoing → 󰅖 reminders | ^O:ongoing ^H:hold",
     },
     actions = {
       ["default"] = function(selected)
@@ -1756,9 +1964,210 @@ function M.pick_all_projects()
           end
         end
       end,
+      ["ctrl-o"] = function(selected)
+        -- Toggle ongoing status
+        if not selected or #selected == 0 then return end
+        
+        for _, sel in ipairs(selected) do
+          local proj = proj_map[sel]
+          if proj then
+            local ok, is_ongoing = toggle_ongoing(proj)
+            if ok then
+              local status = is_ongoing and "󰑖 ongoing" or "󰷐 active"
+              vim.notify(string.format("%s → %s", proj.name, status), vim.log.levels.INFO)
+            end
+          end
+        end
+        reopen()
+      end,
+      ["ctrl-h"] = function(selected)
+        -- Toggle on-hold status
+        if not selected or #selected == 0 then return end
+        
+        for _, sel in ipairs(selected) do
+          local proj = proj_map[sel]
+          if proj then
+            local ok, is_on_hold = toggle_on_hold(proj)
+            if ok then
+              local status = is_on_hold and "⏸ on hold" or "󰷐 active"
+              vim.notify(string.format("%s → %s", proj.name, status), vim.log.levels.INFO)
+            end
+          end
+        end
+        reopen()
+      end,
       ["esc"] = function() end,
     },
     winopts = { height = 0.6, width = 0.8 },
+  })
+end
+
+--- Areas of Responsibility picker (Horizon 2)
+function M.pick_areas()
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("fzf-lua required", vim.log.levels.ERROR)
+    return
+  end
+  
+  local areas_raw = M.areas()
+  if #areas_raw == 0 then
+    vim.notify("No areas found", vim.log.levels.INFO)
+    return
+  end
+  
+  local items = {}
+  local area_map = {}
+  
+  for _, a in ipairs(areas_raw) do
+    local tasks = a.tasks or {}
+    local by_state = tasks.by_state or {}
+    
+    -- Build status indicators
+    local parts = {}
+    if by_state.NEXT and by_state.NEXT > 0 then
+      table.insert(parts, "󰁔" .. by_state.NEXT)
+    end
+    if by_state.TODO and by_state.TODO > 0 then
+      table.insert(parts, "󰄲" .. by_state.TODO)
+    end
+    if by_state.WAITING and by_state.WAITING > 0 then
+      table.insert(parts, "󰈸" .. by_state.WAITING)
+    end
+    if tasks.overdue and tasks.overdue > 0 then
+      table.insert(parts, "⚠️" .. tasks.overdue)
+    end
+    if tasks.done_this_week and tasks.done_this_week > 0 then
+      table.insert(parts, "✓" .. tasks.done_this_week)
+    end
+    
+    local status = #parts > 0 and table.concat(parts, " ") or ""
+    local proj_info = string.format("[%d projects]", a.project_count or 0)
+    
+    local display = string.format("󰠱 %s %s  %s", a.name, proj_info, status)
+    
+    table.insert(items, display)
+    area_map[display] = {
+      id = a.id,
+      name = a.name,
+      path = a.path,
+      definition = a.definition,
+      has_definition = a.has_definition,
+    }
+  end
+  
+  local function reopen()
+    vim.schedule(function()
+      vim.defer_fn(function()
+        if M.is_running() then M.query("gtd", "refresh", nil) end
+        vim.defer_fn(function() M.pick_areas() end, 200)
+      end, 50)
+    end)
+  end
+  
+  fzf.fzf_exec(items, {
+    prompt = "Areas ❯ ",
+    fzf_opts = {
+      ["--header"] = "Enter:definition | ^P:projects | ^T:tasks | ^R:review",
+    },
+    actions = {
+      ["default"] = function(selected)
+        -- Open area definition
+        if selected and selected[1] then
+          local area = area_map[selected[1]]
+          if area and area.path then
+            local def_path = area.path .. "/_AREA.md"
+            if vim.fn.filereadable(def_path) == 1 then
+              vim.cmd("edit " .. vim.fn.fnameescape(def_path))
+            else
+              vim.notify("No _AREA.md found for " .. area.name, vim.log.levels.WARN)
+            end
+          end
+        end
+      end,
+      ["ctrl-p"] = function(selected)
+        -- Show projects in this area
+        if selected and selected[1] then
+          local area = area_map[selected[1]]
+          if area then
+            M.pick_tasks({
+              filter_file = area.path,
+              filter_state = "PROJECT",
+              title = area.name .. " Projects",
+            })
+          end
+        end
+      end,
+      ["ctrl-t"] = function(selected)
+        -- Show all tasks in this area
+        if selected and selected[1] then
+          local area = area_map[selected[1]]
+          if area then
+            M.pick_tasks({
+              filter_file = area.path,
+              title = area.name .. " Tasks",
+            })
+          end
+        end
+      end,
+      ["ctrl-r"] = function(selected)
+        -- Area review view
+        if selected and selected[1] then
+          local area = area_map[selected[1]]
+          if area then
+            local info = M.area_info(area.id)
+            if info then
+              local lines = {
+                "═══════════════════════════════════════════════",
+                "󰠱 " .. info.name:upper(),
+                "═══════════════════════════════════════════════",
+              }
+              
+              if info.definition then
+                table.insert(lines, "")
+                table.insert(lines, info.definition.description or "")
+                table.insert(lines, "")
+                
+                -- Tasks summary
+                table.insert(lines, "Tasks:")
+                local tasks = info.tasks or {}
+                table.insert(lines, string.format("  Total active: %d", tasks.total or 0))
+                if tasks.by_state then
+                  for state, count in pairs(tasks.by_state) do
+                    if state ~= "DONE" and state ~= "CANCELLED" and count > 0 then
+                      table.insert(lines, string.format("  %s: %d", state, count))
+                    end
+                  end
+                end
+                if tasks.overdue and tasks.overdue > 0 then
+                  table.insert(lines, string.format("  ⚠️ Overdue: %d", tasks.overdue))
+                end
+                if tasks.due_this_week and tasks.due_this_week > 0 then
+                  table.insert(lines, string.format("  📅 Due this week: %d", tasks.due_this_week))
+                end
+                if tasks.done_this_week and tasks.done_this_week > 0 then
+                  table.insert(lines, string.format("  ✓ Done this week: %d", tasks.done_this_week))
+                end
+                
+                -- Review questions
+                if info.definition.review_questions and #info.definition.review_questions > 0 then
+                  table.insert(lines, "")
+                  table.insert(lines, "Review Questions:")
+                  for _, q in ipairs(info.definition.review_questions) do
+                    table.insert(lines, "  □ " .. q)
+                  end
+                end
+              end
+              
+              vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO, { title = "Area Review" })
+            end
+          end
+        end
+        reopen()
+      end,
+      ["esc"] = function() end,
+    },
+    winopts = { height = 0.5, width = 0.7 },
   })
 end
 
@@ -1942,6 +2351,10 @@ function M.setup_commands()
     M.pick_convert_to_project()
   end, { desc = "Convert file to project" })
   
+  vim.api.nvim_create_user_command("ChronosAreas", function()
+    M.pick_areas()
+  end, { desc = "Areas of Responsibility (Horizon 2)" })
+  
   vim.api.nvim_create_user_command("ChronosRemindersSync", function()
     local result = M.reminders_sync()
     if result then
@@ -2006,6 +2419,12 @@ function M.setup_keymaps(prefix)
     vim.tbl_extend("force", opts, { desc = "Projects: new" }))
   map("n", prefix .. "pc", "<cmd>ChronosConvertProject<cr>",
     vim.tbl_extend("force", opts, { desc = "Projects: convert file" }))
+  
+  -- ┌─────────────────────────────────────────────────────────────┐
+  -- │ AREAS (Horizon 2): <leader>xo{key}                          │
+  -- └─────────────────────────────────────────────────────────────┘
+  map("n", prefix .. "oa", "<cmd>ChronosAreas<cr>",
+    vim.tbl_extend("force", opts, { desc = "Areas: all" }))
   
   -- ┌─────────────────────────────────────────────────────────────┐
   -- │ CAPTURE: <leader>xc{key}                                    │
@@ -2347,6 +2766,7 @@ local function build_project_entry(opts)
   table.insert(lines, ":TASK_ID:   " .. id)
   table.insert(lines, ":ZK_LINK:   " .. id)
   table.insert(lines, ":CREATED:   " .. format_inactive_timestamp())
+  if opts.ongoing then table.insert(lines, ":ONGOING:   t") end
   if opts.zk_note then table.insert(lines, ":ZK_NOTE:   " .. format_zk_note_property(opts.zk_note)) end
   if opts.description then table.insert(lines, ":DESCRIPTION: " .. opts.description) end
   if opts.area then table.insert(lines, ":AREA:      " .. opts.area) end
@@ -2872,6 +3292,27 @@ function M._project_step_zk(data)
         if sel and sel[1] and sel[1]:match("ZK note") then
           data.create_zk_note = true
         end
+        vim.schedule(function() M._project_step_type(data) end)
+      end,
+    },
+  })
+end
+
+--- Project wizard: Project type (active/ongoing)
+function M._project_step_type(data)
+  local fzf = require("fzf-lua")
+  
+  fzf.fzf_exec({
+    "󰷐 Active project (has defined end)",
+    "󰑖 Ongoing area (continuous maintenance)",
+  }, {
+    prompt = "Type ❯ ",
+    winopts = { height = 0.25, width = 0.5 },
+    actions = {
+      ["default"] = function(sel)
+        if sel and sel[1] and sel[1]:match("Ongoing") then
+          data.ongoing = true
+        end
         vim.schedule(function() M._project_finalize(data) end)
       end,
     },
@@ -2913,6 +3354,7 @@ function M._project_finalize(data)
     area = data.area,
     outcome = data.outcome,
     zk_note = zk_note_path,
+    ongoing = data.ongoing,
   })
   for _, l in ipairs(proj_lines) do table.insert(file_lines, l) end
   
