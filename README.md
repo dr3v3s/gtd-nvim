@@ -1,241 +1,183 @@
 # gtd-nvim
 
-A complete **Getting Things Done (GTD)** system for Neovim, integrated with Zettelkasten for knowledge management.
+**Getting Things Done for Neovim** — Comprehensive GTD workflow powered by Chronos daemon.
 
-Built with Lua, org-mode files, and fzf-lua for a fast, keyboard-driven workflow.
+[![Version](https://img.shields.io/badge/version-0.13.1-blue.svg)](lua/gtd-nvim/gtd/chronos.lua)
+[![Neovim](https://img.shields.io/badge/neovim-0.9+-green.svg)](https://neovim.io)
 
-## Features
+## Overview
 
-- **Capture** – Quick inbox capture with optional ZK notes
-- **Clarify** – Process tasks with status, dates, tags, WAITING FOR metadata
-- **Organize** – Refile tasks to projects and areas
-- **Reflect** – GTD lists (Next Actions, Projects, Waiting, Someday, Stuck)
-- **Engage** – Task management with archive/delete operations
-- **Areas of Focus** – Organize projects by life area
-- **WAITING FOR** – Track delegated items with full metadata
-- **Zettelkasten** – Integrated note-taking system
-- **Health Checks** – Built-in diagnostics (`:checkhealth gtd-nvim`)
+gtd-nvim provides a complete GTD implementation for Neovim using org-mode files. It integrates with the Chronos daemon for:
+
+- Real-time task data and metrics
+- Full-text search with FTS5
+- Apple Reminders bidirectional sync
+- Areas of Responsibility (Horizon 2)
 
 ## Requirements
 
-- Neovim >= 0.9.0
-- [fzf-lua](https://github.com/ibhagwan/fzf-lua) (for pickers)
-- [nvim-orgmode](https://github.com/nvim-orgmode/orgmode) (optional, for org syntax)
-- [which-key.nvim](https://github.com/folke/which-key.nvim) (optional, for keymap hints)
+- Neovim 0.9+
+- [fzf-lua](https://github.com/ibhagwan/fzf-lua)
+- [Chronos daemon](https://github.com/dr3v3s/chronos) running
+- Nerd Font for icons
 
 ## Installation
 
-### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
-
 ```lua
-{
-  "dr3v3s/gtd-nvim",
-  dependencies = {
-    "ibhagwan/fzf-lua",
-    "nvim-orgmode/orgmode",  -- optional
-    "folke/which-key.nvim",  -- optional
-  },
+-- lazy.nvim
+return {
+  dir = "~/projects/gtd-nvim",
+  name = "chronos-gtd",
+  lazy = false,
+  dependencies = { "ibhagwan/fzf-lua" },
   config = function()
-    require("gtd-nvim").setup({
-      -- GTD directories
-      gtd_root = vim.fn.expand("~/Documents/GTD"),
-      inbox_file = "Inbox.org",
-      projects_dir = "Projects",
-      areas_dir = "Areas",
-      
-      -- Zettelkasten
-      zk_root = vim.fn.expand("~/Documents/Notes"),
-      zk_projects = "Projects",
-      
-      -- Keymaps (default: enabled with <leader>c prefix)
-      keymaps = {
-        enabled = true,
-        prefix = "<leader>c",
-      },
+    require("gtd-nvim.gtd.chronos").setup({
+      keymaps = "<leader>x",
     })
   end,
 }
 ```
 
-### Using local path (for development)
+## Keybindings
 
-```lua
-{
-  dir = "~/projects/gtd-nvim",
-  config = function()
-    require("gtd-nvim").setup()
-  end,
-}
-```
+All commands use `<leader>x` prefix.
 
-## Keymaps
+### Tasks
 
-All keymaps use the configurable prefix (default: `<leader>c`).
+| Key | Description |
+|-----|-------------|
+| `<leader>xta` | All active tasks |
+| `<leader>xtn` | NEXT actions |
+| `<leader>xtt` | TODO tasks |
+| `<leader>xtw` | WAITING tasks |
+| `<leader>xts` | SOMEDAY tasks |
+
+### Projects
+
+| Key | Description |
+|-----|-------------|
+| `<leader>xpp` | Active projects |
+| `<leader>xpa` | All projects (grouped by status) |
+| `<leader>xpn` | Create new project |
+| `<leader>xpc` | Convert file to project |
+
+### Areas
+
+| Key | Description |
+|-----|-------------|
+| `<leader>xoa` | Areas of Responsibility |
+
+### Capture
+
+| Key | Description |
+|-----|-------------|
+| `<leader>xcq` | Quick capture |
+| `<leader>xcc` | Full capture wizard |
+| `<leader>xcv` | Capture from clipboard |
+
+### Other
+
+| Key | Description |
+|-----|-------------|
+| `<leader>x/` | Search tasks |
+| `<leader>xa` | Archive browser |
+| `<leader>xr` | Reminders sync |
+| `<leader>xs` | Daemon status |
+
+## Picker Actions
+
+### Task Picker
 
 | Key | Action |
 |-----|--------|
-| **Capture** ||
-| `<leader>cc` | Capture → Inbox |
-| **Status** ||
-| `<leader>cs` | Change task status |
-| **Clarify / Lists** ||
-| `<leader>clt` | Clarify current task |
-| `<leader>cll` | Clarify from list (fzf) |
-| `<leader>clp` | Link task → project |
-| `<leader>clm` | Lists menu |
-| `<leader>cln` | Next Actions |
-| `<leader>clP` | Projects |
-| `<leader>cls` | Someday/Maybe |
-| `<leader>clw` | Waiting For |
-| `<leader>clx` | Stuck Projects |
-| `<leader>cla` | Search All |
-| **Refile / Projects** ||
-| `<leader>cr` | Refile current task |
-| `<leader>cR` | Refile any task (fzf) |
-| `<leader>cp` | New project |
-| `<leader>cP` | Convert task → project |
-| **Manage** ||
-| `<leader>cmt` | Manage tasks |
-| `<leader>cmp` | Manage projects |
-| `<leader>cmh` | Help menu |
-| **Health** ||
-| `<leader>ch` | Health check |
+| `Enter` | Open task |
+| `Ctrl-D` | Mark DONE |
+| `Ctrl-X` | Mark CANCELLED |
+| `Ctrl-N` | Set to NEXT |
+| `Ctrl-A` | Archive |
+| `Ctrl-R` | Refile |
 
-### Customizing Keymaps
+### Project Picker
 
-```lua
-require("gtd-nvim").setup({
-  keymaps = {
-    enabled = true,
-    prefix = "<leader>g",  -- Change prefix
-    keys = {
-      capture = "c",        -- <leader>gc
-      clarify_task = "t",   -- <leader>gt
-      lists_next = "n",     -- <leader>gn
-      -- Set to false to disable specific keys
-      manage_help = false,
-    },
-  },
-})
-```
+| Key | Action |
+|-----|--------|
+| `Enter` | Open project |
+| `Ctrl-T` | Show tasks |
+| `Ctrl-O` | Toggle ONGOING |
+| `Ctrl-H` | Toggle ON_HOLD |
+| `Ctrl-A` | Archive |
 
-### Disable All Keymaps
+### Areas Picker
 
-```lua
-require("gtd-nvim").setup({
-  keymaps = false,  -- Use commands instead
-})
-```
+| Key | Action |
+|-----|--------|
+| `Enter` | Open definition |
+| `Ctrl-P` | Show projects |
+| `Ctrl-T` | Show tasks |
+| `Ctrl-R` | Review dashboard |
+| `Ctrl-N` | Create area |
+| `Ctrl-A` | Archive area |
+
+## Documentation
+
+See [docs/CHRONOS.md](docs/CHRONOS.md) for complete documentation including:
+
+- All keybindings and commands
+- Capture workflows
+- Project properties (ONGOING, ON_HOLD)
+- Areas of Responsibility
+- API functions
+- Troubleshooting
 
 ## Commands
 
-All features are also available as commands:
-
 | Command | Description |
 |---------|-------------|
-| `:GtdCapture` | Capture to inbox |
-| `:GtdClarify` | Clarify at cursor |
-| `:GtdRefile` | Refile to project |
-| `:GtdProjectNew` | Create new project |
-| `:GtdNextActions` | Show next actions |
-| `:GtdProjects` | Show projects |
-| `:GtdWaiting` | Show waiting items |
-| `:GtdSomedayMaybe` | Show someday/maybe |
-| `:GtdStuckProjects` | Show stuck projects |
-| `:GtdMenu` | Lists menu |
-| `:GtdManageTasks` | Task manager |
-| `:GtdManageProjects` | Project manager |
-| `:GtdHealth` | Health check |
+| `:ChronosStatus` | Daemon status |
+| `:ChronosAll` | All tasks |
+| `:ChronosNext` | NEXT actions |
+| `:ChronosTodo` | TODO tasks |
+| `:ChronosWaiting` | WAITING tasks |
+| `:ChronosSomeday` | SOMEDAY tasks |
+| `:ChronosSearch {query}` | Search tasks |
+| `:ChronosProjects` | Active projects |
+| `:ChronosAllProjects` | All projects |
+| `:ChronosProject` | New project wizard |
+| `:ChronosAreas` | Areas picker |
+| `:ChronosArchive` | Archive browser |
+| `:ChronosQuick {text}` | Quick capture |
+| `:ChronosCapture` | Full capture |
+| `:ChronosRemindersSync` | Sync reminders |
 
+## Icons
 
-## Directory Structure
+| Icon | Meaning |
+|------|---------|
+| 󰁔 | NEXT |
+| 󰄲 | TODO |
+| 󰈸 | WAITING |
+| 󰋚 | SOMEDAY |
+| 󰷐 | PROJECT |
+| ⏸ | ON_HOLD |
+| 󰑖 | ONGOING |
+| 󰠱 | Area |
+| 󰄳 | DONE |
 
-The plugin expects this directory structure:
+## Version History
 
-```
-~/Documents/GTD/           # gtd_root
-├── Inbox.org              # Captured items land here
-├── Archive.org            # Archived items
-├── Projects/              # Project files
-│   ├── project-name.org
-│   └── ...
-└── Areas/                 # Areas of focus
-    ├── Work/
-    │   ├── Inbox.org
-    │   └── projects...
-    ├── Personal/
-    └── ...
+- **0.13.1** — Area management (create/archive), task capture to areas
+- **0.13.0** — Areas picker, Horizon 2 support
+- **0.12.3** — Picker refresh timing fixes
+- **0.12.2** — ON_HOLD property, project status sections
+- **0.12.0** — ONGOING property, project pickers from daemon
+- **0.11.0** — Project creation wizard enhancements
+- **0.10.0** — Full capture workflow, smart dates
 
-~/Documents/Notes/         # zk_root
-├── Projects/              # Project notes
-├── People/                # People notes
-├── Reading/               # Book/article notes
-└── ...
-```
+## Related
 
-## API
-
-Access modules directly for custom integrations:
-
-```lua
-local gtd = require("gtd-nvim")
-
--- Direct module access
-gtd.gtd.capture({})
-gtd.gtd.clarify({ promote_if_needed = true })
-
--- Submodules
-local lists = require("gtd-nvim.gtd.lists")
-lists.next_actions()
-
-local manage = require("gtd-nvim.gtd.manage")
-manage.manage_tasks()
-
--- Zettelkasten
-local zk = require("gtd-nvim.zettelkasten")
-zk.new_note()
-```
-
-## Configuration Options
-
-```lua
-require("gtd-nvim").setup({
-  -- GTD directories
-  gtd_root = "~/Documents/GTD",
-  inbox_file = "Inbox.org",
-  projects_dir = "Projects",
-  areas_dir = "Areas",
-  archive_file = "Archive.org",
-  
-  -- Zettelkasten directories
-  zk_root = "~/Documents/Notes",
-  zk_projects = "Projects",
-  
-  -- UI settings
-  border = "rounded",
-  
-  -- Behavior
-  auto_save = true,
-  quiet_capture = true,  -- Minimal notifications
-  
-  -- Keymaps
-  keymaps = {
-    enabled = true,
-    prefix = "<leader>c",
-    keys = { ... },  -- See mappings.lua for all options
-  },
-})
-```
-
-## Health Check
-
-Run `:GtdHealth` or `:checkhealth gtd-nvim` to verify your setup.
+- [Chronos](https://github.com/dr3v3s/chronos) — GTD daemon
+- [GTD-SPEC](https://github.com/dr3v3s/chronos/blob/main/docs/GTD-SPEC.md) — Org-mode format
 
 ## License
 
 MIT
-
-## Credits
-
-- Inspired by David Allen's [Getting Things Done](https://gettingthingsdone.com/) methodology
-- Built for the Neovim community
