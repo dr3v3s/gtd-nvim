@@ -5,15 +5,15 @@
 -- Provides real-time task data, search, and Apple Reminders bidirectional sync
 --
 -- @module gtd-nvim.gtd.chronos
--- @version 0.13.1
--- @updated 2025-12-21
+-- @version 0.15.0
+-- @updated 2025-12-22
 -- @see ~/Developer/chronos (daemon source)
 -- ============================================================================
 
 local M = {}
 
-M._VERSION = "0.11.2"
-M._UPDATED = "2025-12-20"
+M._VERSION = "0.15.0"
+M._UPDATED = "2025-12-22"
 
 -- ============================================================================
 -- CONFIGURATION
@@ -176,6 +176,366 @@ function M.statusline()
   end
   
   return table.concat(parts, " ")
+end
+
+-- ============================================================================
+-- SYNC STATUS (for statusline integration)
+-- ============================================================================
+
+-- Cache for sync status (updated periodically)
+local sync_cache = {
+  daemon_ok = false,
+  reminders_ok = false,
+  last_check = 0,
+  last_sync = nil,
+  connection_mode = "unknown",
+  version = nil,
+}
+local SYNC_CACHE_TTL = 5000  -- 5 seconds
+
+--- Get comprehensive sync status
+---@return table {daemon_ok, reminders_ok, connection_mode, version, last_sync}
+function M.sync_status()
+  local now = vim.loop.now()
+  
+  -- Return cached if fresh
+  if now - sync_cache.last_check < SYNC_CACHE_TTL then
+    return sync_cache
+  end
+  
+  sync_cache.last_check = now
+  sync_cache.daemon_ok = false
+  sync_cache.reminders_ok = false
+  
+  -- Check daemon via ping
+  local ping_data, ping_err = M.query(nil, "ping", nil)
+  if ping_data then
+    sync_cache.daemon_ok = true
+    if ping_data.version then
+      sync_cache.version = ping_data.version
+    end
+  else
+    log("Daemon ping failed: " .. (ping_err or "unknown"))
+    return sync_cache
+  end
+  
+  -- Check reminders provider status
+  local rem_status, rem_err = M.query("reminders", "status", nil)
+  if rem_status then
+    sync_cache.reminders_ok = rem_status.bridge_available or false
+    sync_cache.connection_mode = rem_status.connection_mode or "unknown"
+    if rem_status.last_sync then
+      sync_cache.last_sync = rem_status.last_sync
+    end
+  else
+    log("Reminders status failed: " .. (rem_err or "unknown"))
+  end
+  
+  return sync_cache
+end
+
+--- Format sync status for statusline (compact)
+--- Returns: "󰅟" (synced), "󰅞" (partial), "󰅜" (offline)
+---@return string icon, string|nil tooltip
+function M.sync_statusline()
+  local status = M.sync_status()
+  
+  if not status.daemon_ok then
+    return "󰅜", "Chronos daemon offline"
+  end
+  
+  if status.reminders_ok then
+    return "󰅟", "Synced"
+  end
+  
+  return "󰅞", "Daemon OK, Reminders unavailable"
+end
+
+--- Quick daemon connection check (cached)
+---@return boolean
+function M.is_connected()
+  local status = M.sync_status()
+  return status.daemon_ok
+end
+
+--- Get daemon version (cached)
+---@return string|nil
+function M.daemon_version()
+  local status = M.sync_status()
+  return status.version
+end
+
+--- Get detailed sync status for display (not cached as aggressively)
+---@return table Detailed status info
+function M.detailed_status()
+  local result = {
+    daemon = { ok = false, version = nil, providers = {} },
+    gtd = { ok = false, task_count = 0, last_refresh = nil },
+    reminders = { ok = false, connection = "unknown", lists = 0 },
+    bridge = { ok = false, version = nil },
+  }
+  
+  -- Check daemon
+  local ping, _ = M.query(nil, "ping", nil)
+  if ping then
+    result.daemon.ok = true
+    result.daemon.version = ping.version
+    result.daemon.providers = ping.providers or {}
+  else
+    return result
+  end
+  
+  -- Check GTD metrics
+  local metrics, _ = M.query("gtd", "metrics", nil)
+  if metrics then
+    result.gtd.ok = true
+    result.gtd.task_count = metrics.total or 0
+    result.gtd.next_count = metrics.next or 0
+    result.gtd.inbox_count = metrics.inbox or 0
+  end
+  
+  -- Check Reminders provider
+  local rem_status, _ = M.query("reminders", "status", nil)
+  if rem_status then
+    result.reminders.ok = rem_status.bridge_available or false
+    result.reminders.connection = rem_status.connection_mode or "unknown"
+    result.reminders.lists = rem_status.list_count or 0
+    result.bridge.ok = rem_status.bridge_available or false
+    result.bridge.version = rem_status.bridge_version
+  end
+  
+  return result
+end
+
+--- Show comprehensive status in a floating window
+function M.show_status()
+  local status = M.detailed_status()
+  
+  local lines = {
+    "╭─────────────────────────────────────╮",
+    "│        Chronos Sync Status          │",
+    "├─────────────────────────────────────┤",
+  }
+  
+  -- Daemon status
+  local daemon_icon = status.daemon.ok and "󰄳" or "󰅜"
+  local daemon_ver = status.daemon.version or "unknown"
+  table.insert(lines, string.format("│ %s Daemon: %s", daemon_icon, daemon_ver))
+  
+  -- GTD status
+  if status.gtd.ok then
+    table.insert(lines, string.format("│ 󰄳 GTD: %d tasks (󰁔 %d next, 󰇮 %d inbox)",
+      status.gtd.task_count, status.gtd.next_count or 0, status.gtd.inbox_count or 0))
+  else
+    table.insert(lines, "│ 󰅜 GTD: Not available")
+  end
+  
+  -- Reminders status
+  if status.reminders.ok then
+    table.insert(lines, string.format("│ 󰄳 Reminders: %s (%d lists)",
+      status.reminders.connection, status.reminders.lists))
+  else
+    table.insert(lines, "│ 󰅞 Reminders: Not available")
+  end
+  
+  -- Bridge status
+  if status.bridge.ok then
+    local bridge_ver = status.bridge.version or "unknown"
+    table.insert(lines, string.format("│ 󰄳 Bridge: %s", bridge_ver))
+  else
+    table.insert(lines, "│ 󰅜 Bridge: Not running")
+  end
+  
+  table.insert(lines, "╰─────────────────────────────────────╯")
+  
+  -- Create floating window
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_option(buf, "modifiable", false)
+  
+  local width = 39
+  local height = #lines
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "none",
+  })
+  
+  -- Close on any key
+  vim.keymap.set("n", "<Esc>", function() vim.api.nvim_win_close(win, true) end, { buffer = buf })
+  vim.keymap.set("n", "q", function() vim.api.nvim_win_close(win, true) end, { buffer = buf })
+  vim.keymap.set("n", "<CR>", function() vim.api.nvim_win_close(win, true) end, { buffer = buf })
+end
+
+-- ============================================================================
+-- LUALINE COMPONENTS
+-- ============================================================================
+
+--- Lualine component for GTD metrics
+--- Usage: require('lualine').setup { sections = { lualine_x = { require('gtd-nvim.gtd.chronos').lualine_gtd } } }
+function M.lualine_gtd()
+  local m = M.metrics()
+  if not m then return "" end
+  
+  local parts = {}
+  if m.next and m.next > 0 then
+    table.insert(parts, "󰁔" .. m.next)
+  end
+  if m.waiting and m.waiting > 0 then
+    table.insert(parts, "󰈸" .. m.waiting)
+  end
+  if m.inbox and m.inbox > 0 then
+    table.insert(parts, "󰇮" .. m.inbox)
+  end
+  
+  return table.concat(parts, " ")
+end
+
+--- Lualine component for sync status
+--- Returns icon only: 󰅟 (all ok), 󰅞 (partial), 󰅜 (offline)
+function M.lualine_sync()
+  local icon, _ = M.sync_statusline()
+  return icon
+end
+
+-- ============================================================================
+-- TASK WRITE OPERATIONS (via daemon API)
+-- ============================================================================
+
+--- Create a new task via daemon
+---@param opts table {title, state, dest, scheduled, deadline, tags, props, body}
+---@return table|nil {task_id, file, line} or nil on error
+function M.create_task(opts)
+  if not opts.title or opts.title == "" then
+    vim.notify("[chronos] Title required", vim.log.levels.ERROR)
+    return nil
+  end
+  
+  local data, err = M.query("gtd", "create", {
+    title = opts.title,
+    state = opts.state or "TODO",
+    dest = opts.dest or "inbox",
+    scheduled = opts.scheduled,
+    deadline = opts.deadline,
+    tags = opts.tags,
+    props = opts.props,
+    body = opts.body,
+  })
+  
+  if not data then
+    vim.notify("[chronos] Create failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+    return nil
+  end
+  
+  log("Created task: " .. data.task_id)
+  return data
+end
+
+--- Update an existing task via daemon
+---@param task_id string The TASK_ID to update
+---@param opts table {title, state, scheduled, deadline, tags, props, body}
+---@return table|nil {task_id, file, line, changed} or nil on error
+function M.update_task(task_id, opts)
+  if not task_id or task_id == "" then
+    vim.notify("[chronos] task_id required", vim.log.levels.ERROR)
+    return nil
+  end
+  
+  local params = vim.tbl_extend("force", { task_id = task_id }, opts or {})
+  local data, err = M.query("gtd", "update", params)
+  
+  if not data then
+    vim.notify("[chronos] Update failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+    return nil
+  end
+  
+  log("Updated task: " .. task_id .. " changed: " .. table.concat(data.changed or {}, ", "))
+  return data
+end
+
+--- Complete a task via daemon
+---@param task_id string The TASK_ID to complete
+---@param note string|nil Optional completion note
+---@return table|nil {task_id, file, line, closed_at, recurring} or nil on error
+function M.complete_task(task_id, note)
+  if not task_id or task_id == "" then
+    vim.notify("[chronos] task_id required", vim.log.levels.ERROR)
+    return nil
+  end
+  
+  local data, err = M.query("gtd", "complete", {
+    task_id = task_id,
+    note = note,
+  })
+  
+  if not data then
+    vim.notify("[chronos] Complete failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+    return nil
+  end
+  
+  local msg = "Completed: " .. task_id
+  if data.recurring then
+    msg = "Advanced recurring: " .. task_id
+  end
+  log(msg)
+  return data
+end
+
+--- Refile a task to a different file via daemon
+---@param task_id string The TASK_ID to refile
+---@param dest string Destination: "inbox", "project:slug", or file path
+---@return table|nil {task_id, from_file, from_line, to_file, to_line} or nil on error
+function M.refile_task(task_id, dest)
+  if not task_id or task_id == "" then
+    vim.notify("[chronos] task_id required", vim.log.levels.ERROR)
+    return nil
+  end
+  if not dest or dest == "" then
+    vim.notify("[chronos] dest required", vim.log.levels.ERROR)
+    return nil
+  end
+  
+  local data, err = M.query("gtd", "refile", {
+    task_id = task_id,
+    dest = dest,
+  })
+  
+  if not data then
+    vim.notify("[chronos] Refile failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+    return nil
+  end
+  
+  log("Refiled: " .. task_id .. " to " .. data.to_file)
+  return data
+end
+
+--- Delete a task via daemon
+---@param task_id string The TASK_ID to delete
+---@param hard boolean|nil True to remove from file, false to mark CANCELLED
+---@return table|nil {task_id, file, hard} or nil on error
+function M.delete_task(task_id, hard)
+  if not task_id or task_id == "" then
+    vim.notify("[chronos] task_id required", vim.log.levels.ERROR)
+    return nil
+  end
+  
+  local data, err = M.query("gtd", "delete", {
+    task_id = task_id,
+    hard = hard or false,
+  })
+  
+  if not data then
+    vim.notify("[chronos] Delete failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+    return nil
+  end
+  
+  local action = data.hard and "Deleted" or "Cancelled"
+  log(action .. ": " .. task_id)
+  return data
 end
 
 -- ============================================================================
