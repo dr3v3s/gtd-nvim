@@ -5,14 +5,14 @@
 -- Import/Export: Reminders ↔ GTD tasks
 --
 -- Architecture:
---   READ (quick): Kairos daemon (fast, but limited data: id, title, list, priority)
+--   READ (quick): Chronos daemon (fast, but limited data: id, title, list, priority)
 --   READ (full):  AppleScript (slower, but includes body, dates, all fields)
 --   WRITE:        AppleScript (create, update, complete reminders)
 --
 -- @module gtd-nvim.gtd.reminders
 -- @version 1.0.0
 -- @requires shared (>= 1.0.0)
--- @see kairos.lua for daemon integration
+-- @see chronos_client.lua for daemon integration
 -- ============================================================================
 
 local M = {}
@@ -90,7 +90,7 @@ end
 -- ============================================================================
 -- KAIROS INTEGRATION (Quick reads via daemon)
 -- ============================================================================
--- Kairos provides fast access to reminders but with limited data.
+-- Chronos provides fast access to reminders but with limited data.
 -- Use for browsing/metrics; use AppleScript for full data or writes.
 
 local function safe_require(name)
@@ -98,27 +98,27 @@ local function safe_require(name)
   return ok and mod or nil
 end
 
---- Get reminders via Kairos (fast, limited data)
+--- Get reminders via Chronos (fast, limited data)
 --- Returns: { {id, title, list, isCompleted, priority}, ... }
-function M.kairos_list()
-  local kairos = safe_require("gtd-nvim.gtd.kairos")
-  if not kairos then
-    return nil, "Kairos not available"
+function M.chronos_client_list()
+  local chronos_client = safe_require("gtd-nvim.gtd.chronos_client")
+  if not chronos_client then
+    return nil, "Chronos not available"
   end
-  return kairos.reminders_all()
+  return chronos_client.reminders_all()
 end
 
---- Get reminders metrics via Kairos
+--- Get reminders metrics via Chronos
 --- Returns: { total, incomplete, by_list }
-function M.kairos_metrics()
-  local kairos = safe_require("gtd-nvim.gtd.kairos")
-  if not kairos then
-    return nil, "Kairos not available"
+function M.chronos_client_metrics()
+  local chronos_client = safe_require("gtd-nvim.gtd.chronos_client")
+  if not chronos_client then
+    return nil, "Chronos not available"
   end
-  return kairos.reminders_metrics()
+  return chronos_client.reminders_metrics()
 end
 
---- Quick browse reminders using Kairos (fzf picker)
+--- Quick browse reminders using Chronos (fzf picker)
 function M.browse()
   local fzf_ok, fzf = pcall(require, "fzf-lua")
   if not fzf_ok then
@@ -126,10 +126,10 @@ function M.browse()
     return
   end
   
-  local reminders, err = M.kairos_list()
+  local reminders, err = M.chronos_client_list()
   if not reminders then
     -- Fall back to AppleScript
-    vim.notify("Kairos unavailable, using AppleScript...", vim.log.levels.INFO)
+    vim.notify("Chronos unavailable, using AppleScript...", vim.log.levels.INFO)
     reminders, err = M.fetch_reminders()
     if not reminders then
       vim.notify("Failed to fetch reminders: " .. (err or "unknown"), vim.log.levels.ERROR)

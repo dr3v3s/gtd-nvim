@@ -1,8 +1,15 @@
 -- ~/.config/nvim/lua/gtd/lists.lua
 -- Enhanced GTD Lists: Next Actions, Projects, Someday/Maybe, Waiting with rich context & search
 -- Enhanced WAITING FOR support with full metadata display and management
+--
+-- File:    lua/gtd-nvim/gtd/lists.lua
+-- Version: 1.1.0
+-- Updated: 2025-12-23
 
 local M = {}
+
+M._VERSION = "1.2.0"
+M._UPDATED = "2025-12-27"
 
 -- Load shared for config access
 local shared = require("gtd-nvim.gtd.shared")
@@ -236,6 +243,16 @@ local function scan_all_headings()
   local out = {}
   
   for _,path in ipairs(files) do
+    -- Skip archive directories and junk files
+    local path_lower = path:lower()
+    if path_lower:match("/archive/") 
+       or path_lower:match("/archivedeleted/")
+       or path_lower:match("/archive%.org$")
+       or path_lower:match("inbox_trash%.org$")
+       or path_lower:match("simple_reminders%.org$") then
+      goto continue_file
+    end
+    
     local L = readf(path)
     local context = extract_context_from_path(path)
     
@@ -268,6 +285,7 @@ local function scan_all_headings()
         })
       end
     end
+    ::continue_file::
   end
   return out
 end
@@ -1078,6 +1096,34 @@ function M.waiting_urgent()
 end
 
 -- ---------------------------- Search & Filter ----------------------------
+
+-- Show all Inbox items (unprocessed captures)
+function M.inbox()
+  local function is_inbox_item(item, _L)
+    if not item.path then return false end
+    -- Items in Inbox.org files
+    return item.path:match("Inbox%.org$") and item.state and item.state ~= "DONE" and item.state ~= "CANCELLED"
+  end
+  
+  show_list(is_inbox_item, "Inbox Items", "inbox", {})
+end
+
+-- Show all Overdue items (deadline passed)
+function M.overdue()
+  local function is_overdue_item(item, _L)
+    if not item.deadline then return false end
+    if item.state == "DONE" or item.state == "CANCELLED" then return false end
+    
+    local today = os.date("%Y-%m-%d")
+    local deadline_date = item.deadline:match("^%d%d%d%d%-%d%d%-%d%d") or item.deadline:match("(%d%d%d%d%-%d%d%-%d%d)")
+    if not deadline_date then return false end
+    
+    return deadline_date < today
+  end
+  
+  show_list(is_overdue_item, "Overdue Items", "overdue", {})
+end
+
 function M.search_all()
   local function all_active_items(item, L)
     return item.state and item.state ~= "DONE"
@@ -1196,10 +1242,10 @@ function M.menu()
   })
 end
 
--- ---------------------------- Calendar Integration (via Kairos) ----------------------------
+-- ---------------------------- Calendar Integration (via Chronos) ----------------------------
 
--- Load kairos module for calendar functions (replaces icalbuddy)
-local kairos = safe_require("gtd-nvim.gtd.kairos")
+-- Load chronos-client module for calendar functions
+local chronos_client = safe_require("gtd-nvim.gtd.chronos-client")
 
 -- Show today's GTD agenda (comprehensive view)
 -- MUST DO: Calendar events, Scheduled today, Due today
@@ -1208,18 +1254,18 @@ function M.agenda(date)
   date = date or os.date("%Y-%m-%d")
   local g = shared and shared.glyphs or {}
   
-  -- Check kairos availability (calendar integration optional)
-  local has_kairos = kairos and kairos.is_available()
+  -- Check chronos_client availability (calendar integration optional)
+  local has_chronos_client = chronos_client and chronos_client.is_available()
   
   -- DEBUG: Log what we're working with
-  vim.notify(string.format("Agenda: kairos=%s, available=%s", 
-    tostring(kairos ~= nil), 
-    tostring(has_kairos)), vim.log.levels.INFO)
+  vim.notify(string.format("Agenda: chronos_client=%s, available=%s", 
+    tostring(chronos_client ~= nil), 
+    tostring(has_chronos_client)), vim.log.levels.INFO)
   
   -- Force refresh GTD data to ensure we have latest changes
-  if has_kairos then
-    local refresh_ok, refresh_err = kairos.refresh("gtd")
-    vim.notify(string.format("Kairos refresh: ok=%s, err=%s", 
+  if has_chronos_client then
+    local refresh_ok, refresh_err = chronos_client.refresh("gtd")
+    vim.notify(string.format("Chronos refresh: ok=%s, err=%s", 
       tostring(refresh_ok), tostring(refresh_err or "nil")), vim.log.levels.INFO)
     -- Small delay to let refresh complete
     vim.wait(100, function() return false end)
@@ -1229,9 +1275,9 @@ function M.agenda(date)
   local all_tasks = {}
   local calendar_events = {}
   
-  if has_kairos then
+  if has_chronos_client then
     -- Synchronous task fetch for reliability
-    local tasks_data, tasks_err = kairos.query("gtd", "tasks", {})
+    local tasks_data, tasks_err = chronos_client.query("gtd", "tasks", {})
     vim.notify(string.format("Tasks query: got=%s, err=%s", 
       tostring(tasks_data ~= nil and #(tasks_data or {}) or 0),
       tostring(tasks_err or "nil")), vim.log.levels.INFO)
@@ -1241,15 +1287,15 @@ function M.agenda(date)
     end
     
     -- Synchronous calendar fetch
-    local cal_data, cal_err = kairos.calendar_today()
+    local cal_data, cal_err = chronos_client.calendar_today()
     if cal_data and type(cal_data) == "table" then
       calendar_events = cal_data
     end
   end
   
-  -- Fallback if Kairos returned nothing
+  -- Fallback if Chronos returned nothing
   if #all_tasks == 0 then
-    vim.notify("Kairos returned 0 tasks, using fallback scan", vim.log.levels.WARN)
+    vim.notify("Chronos returned 0 tasks, using fallback scan", vim.log.levels.WARN)
     local items = shared.scan_gtd_files_robust({ root = shared.gtd_home() })
     for _, item in ipairs(items) do
       table.insert(all_tasks, {
@@ -1554,8 +1600,8 @@ function M.agenda(date)
     if #display == 0 then
       -- Debug: show what we got
       local debug_msg = string.format(
-        "Agenda empty. Tasks received: %d, Kairos: %s, Next: %d, Someday: %d, Overdue: %d",
-        #all_tasks, tostring(has_kairos), #next_actions, #someday, #overdue
+        "Agenda empty. Tasks received: %d, Chronos: %s, Next: %d, Someday: %d, Overdue: %d",
+        #all_tasks, tostring(has_chronos_client), #next_actions, #someday, #overdue
       )
       vim.notify(debug_msg, vim.log.levels.WARN)
       return
@@ -1705,19 +1751,19 @@ end
 
 -- Show free time slots
 function M.free_slots(date)
-  if not kairos then
-    vim.notify("Calendar integration not available (kairos module missing)", vim.log.levels.WARN)
+  if not chronos_client then
+    vim.notify("Calendar integration not available (chronos_client module missing)", vim.log.levels.WARN)
     vim.schedule(function() M.menu() end)
     return
   end
-  if not kairos.is_available() then
-    vim.notify("Kairos daemon not running - start terminal to initialize", vim.log.levels.WARN)
+  if not chronos_client.is_available() then
+    vim.notify("Chronos daemon not running - start terminal to initialize", vim.log.levels.WARN)
     vim.schedule(function() M.menu() end)
     return
   end
   
   -- Fetch today's events
-  local events, err = kairos.calendar_today()
+  local events, err = chronos_client.calendar_today()
   if not events then
     vim.notify("Failed to fetch calendar: " .. (err or "unknown"), vim.log.levels.ERROR)
     vim.schedule(function() M.menu() end)
@@ -1725,7 +1771,7 @@ function M.free_slots(date)
   end
   
   -- Calculate free slots
-  local slots = kairos.calculate_free_slots(events, 9, 18, 30)  -- 9-18, min 30 min
+  local slots = chronos_client.calculate_free_slots(events, 9, 18, 30)  -- 9-18, min 30 min
   
   if #slots == 0 then
     vim.notify("No free time slots found today (9 AM - 6 PM)", vim.log.levels.INFO)

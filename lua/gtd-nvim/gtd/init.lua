@@ -12,8 +12,8 @@
 local M = {}
 
 -- Version information
-M._VERSION = "1.3.0"
-M._UPDATED = "2024-12-19"
+M._VERSION = "1.4.0"
+M._UPDATED = "2025-12-23"
 
 -- ------------------------ Config ------------------------
 -- NOTE: These are fallback defaults. Use config module for user settings!
@@ -89,8 +89,6 @@ end
 
 -- Core modules
 local task_id = safe_require "gtd-nvim.gtd.utils.task_id"
-local capture = safe_require "gtd-nvim.gtd.capture"
-local clarify = safe_require "gtd-nvim.gtd.clarify"
 local organize = safe_require "gtd-nvim.gtd.organize"
 local projects = safe_require "gtd-nvim.gtd.projects"
 local manage = safe_require "gtd-nvim.gtd.manage"
@@ -98,13 +96,18 @@ local review = safe_require "gtd-nvim.gtd.review"
 local editor = safe_require "gtd-nvim.gtd.editor"
 local lists = safe_require "gtd-nvim.gtd.lists"
 local areas = safe_require "gtd-nvim.gtd.areas"
+local agenda = safe_require "gtd-nvim.gtd.agenda"
 local reminders = safe_require "gtd-nvim.gtd.reminders"
-local status = safe_require "gtd-nvim.gtd.status"
 
--- Kairos daemon integration (calendar/reminders via EventKit)
-local kairos = safe_require "gtd-nvim.gtd.kairos"
+-- V2 modules (composable system)
+local capture_v2 = safe_require "gtd-nvim.capture"
+local clarify_v2 = safe_require "gtd-nvim.capture.workflows.clarify"
+local status_v2 = safe_require "gtd-nvim.capture.workflows.status"
 
--- Chronos daemon integration (GTD orchestration engine)
+-- Chronos client integration (daemon + bridge)
+local chronos_client = safe_require "gtd-nvim.gtd.chronos-client"
+
+-- Chronos UI module (pickers, capture, etc.)
 local chronos = safe_require "gtd-nvim.gtd.chronos"
 
 -- ============================================================================
@@ -129,19 +132,19 @@ function M.health()
   if not reminders then table.insert(warnings, "Missing gtd.reminders") end
   if not status then table.insert(warnings, "Missing gtd.status") end
 
-  -- Kairos daemon
-  if not kairos then
-    table.insert(warnings, "Missing gtd.kairos (calendar/reminders unavailable)")
+  -- Chronos client (daemon + bridge)
+  if not chronos_client then
+    table.insert(warnings, "Missing gtd.chronos-client (calendar/reminders unavailable)")
   else
-    local kairos_status = kairos.status()
-    if not kairos_status.available then
-      table.insert(warnings, "Kairos daemon not available (socket missing)")
-    elseif not kairos_status.running then
-      table.insert(warnings, "Kairos daemon not running")
+    local client_status = chronos_client.status()
+    if not client_status.daemon_available and not client_status.bridge_available then
+      table.insert(warnings, "Chronos daemons not available (sockets missing)")
+    elseif not client_status.running then
+      table.insert(warnings, "Chronos daemon not running")
     end
   end
 
-  -- Chronos daemon
+  -- Chronos UI module
   if not chronos then
     table.insert(warnings, "Missing gtd.chronos (GTD orchestration unavailable)")
   else
@@ -265,14 +268,23 @@ end
 -- ============================================================================
 
 --- Show today's agenda (calendar events + GTD scheduled tasks)
---- Delegates to lists.agenda() for comprehensive GTD agenda view
+--- Delegates to agenda module for comprehensive GTD agenda view
 ---@param date string|nil Optional date in YYYY-MM-DD format (default: today)
 function M.agenda(date)
-  if not lists then
-    vim.notify("gtd.lists not loaded", vim.log.levels.ERROR)
-    return
+  -- Prefer new agenda module if available
+  if agenda and agenda.show then
+    return agenda.show(date)
   end
-  return lists.agenda(date)
+  -- Fallback to lists.agenda
+  if lists and lists.agenda then
+    return lists.agenda(date)
+  end
+  vim.notify("gtd.agenda not loaded", vim.log.levels.ERROR)
+end
+
+--- Show agenda (legacy alias)
+function M.show_agenda(date)
+  return M.agenda(date)
 end
 
 --- Find free time slots for scheduling
@@ -381,9 +393,9 @@ function M.browse_areas()
   vim.notify("gtd.areas.browse() not found", vim.log.levels.ERROR)
 end
 
---- Check if calendar is available (Kairos daemon running)
+--- Check if calendar is available (Chronos daemon/bridge running)
 function M.calendar_available()
-  return kairos and kairos.is_available() and kairos.is_running()
+  return chronos_client and chronos_client.is_available()
 end
 
 -- ============================================================================
@@ -634,10 +646,17 @@ function M.setup(user_cfg)
     end
   end)
 
-  -- Setup Kairos daemon integration
+  -- Setup Chronos client integration (daemon + bridge)
   pcall(function()
-    if kairos and kairos.setup then
-      kairos.setup {}
+    if chronos_client and chronos_client.setup then
+      chronos_client.setup {}
+    end
+  end)
+
+  -- Setup Agenda module
+  pcall(function()
+    if agenda and agenda.setup then
+      agenda.setup {}
     end
   end)
 

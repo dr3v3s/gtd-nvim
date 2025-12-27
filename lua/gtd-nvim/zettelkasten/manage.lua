@@ -4,7 +4,7 @@
 local M = {}
 
 -- Get core zettelkasten module
-local core = require("utils.zettelkasten")
+local core = require("utils.zettelkasten.core")
 
 ----------------------------------------------------------------------
 -- File Operations
@@ -132,42 +132,38 @@ function M.move_notes(paths)
   core.notify(("Moved %d file(s), %d failed."):format(moved, failed))
 end
 
+
 ----------------------------------------------------------------------
--- Management Interface
+-- Help Display
 ----------------------------------------------------------------------
 local function show_help()
   local lines = {
     "ZettelManage — Mass Management Keys",
     "",
     "MULTI-SELECT MODE:",
-    "  TAB       Mark/unmark file for batch operations",
+    "  TAB       Mark/unmark file",
     "  Shift-TAB Unmark file",
-    "  Alt-A     Select all files",
-    "  Alt-D     Deselect all files",
+    "  Alt-A     Select all",
+    "  Alt-D     Deselect all",
     "",
-    "ACTIONS (work on marked files or current file):",
+    "ACTIONS:",
     "  <Enter>   Open file",
-    "  Ctrl-D    Delete selected file(s) [CAREFUL!]",
-    "  Ctrl-A    Archive selected file(s) → Archive/",
-    "  Ctrl-R    Move selected file(s) → choose dir",
-    "  Ctrl-B    Show backlinks for selected file",
-    "  Ctrl-T    Browse tags in selected file",
-    "  ?         Show this help",
-    "",
-    "PRO TIPS:",
-    "  • Mark multiple files with TAB before deleting",
-    "  • Use Alt-A to select all, then Shift-TAB to deselect",
-    "  • Selection counter shows in prompt",
+    "  Ctrl-D    Delete selected",
+    "  Ctrl-A    Archive selected",
+    "  Ctrl-R    Move selected",
+    "  Ctrl-B    Show backlinks",
+    "  Ctrl-T    Show tags",
+    "  ?         This help",
   }
   
   local cols, rows = vim.o.columns, vim.o.lines
-  local w, h = math.max(70, math.floor(cols * 0.6)), #lines + 4
+  local w, h = math.max(50, math.floor(cols * 0.4)), #lines + 4
   local row, col = math.floor((rows - h) / 2), math.floor((cols - w) / 2)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   local win = vim.api.nvim_open_win(buf, true, {
     relative = "editor", row = row, col = col, width = w, height = h,
-    style = "minimal", border = "rounded", title = " Mass Management Help ", title_pos = "center",
+    style = "minimal", border = "rounded", title = " Help ", title_pos = "center",
   })
   
   local function close()
@@ -180,6 +176,9 @@ local function show_help()
   vim.keymap.set({ "n", "x" }, "<Esc>", close, { buffer = buf, nowait = true, silent = true })
 end
 
+----------------------------------------------------------------------
+-- Management Interface
+----------------------------------------------------------------------
 function M.manage_notes()
   local ok, fzf = pcall(require, "fzf-lua")
   if not ok then
@@ -187,12 +186,12 @@ function M.manage_notes()
     return
   end
   
-  local header = "[TAB] Multi-Select | [Enter] Open | [Ctrl-D] Delete | [Ctrl-A] Archive | [Ctrl-R] Move | [?] Help"
+  local header = "[TAB] Select | [Ctrl-D] Delete | [Ctrl-A] Archive | [Ctrl-R] Move | [?] Help"
   local paths = core.get_paths()
   
   fzf.files({
     cwd = paths.notes_dir,
-    prompt = "ZK ⟩ ",
+    prompt = "ZK Manage> ",
     file_icons = false,
     fzf_opts = {
       ["--multi"] = true,
@@ -202,27 +201,24 @@ function M.manage_notes()
       ["--pointer"] = "▶",
       ["--marker"] = "✓",
     },
-    fd_opts = "--type f --hidden" .. core.get_exclude_opts_string(),
+    fd_opts = core.FD_EXCLUDE_OPTS,
     actions = {
       ["default"] = fzf.actions.file_edit,
       ["ctrl-d"] = function(selected)
         local file_paths = core.sel_to_paths_fzf(selected)
         if #file_paths > 0 then
-          core.notify(string.format("About to delete %d file(s)...", #file_paths), vim.log.levels.WARN)
           M.delete_notes(file_paths)
         end
       end,
       ["ctrl-a"] = function(selected)
         local file_paths = core.sel_to_paths_fzf(selected)
         if #file_paths > 0 then
-          core.notify(string.format("Archiving %d file(s)...", #file_paths))
           M.archive_notes(file_paths)
         end
       end,
       ["ctrl-r"] = function(selected)
         local file_paths = core.sel_to_paths_fzf(selected)
         if #file_paths > 0 then
-          core.notify(string.format("Moving %d file(s)...", #file_paths))
           M.move_notes(file_paths)
         end
       end,
@@ -238,20 +234,19 @@ function M.manage_notes()
           local content = table.concat(vim.fn.readfile(file_paths[1]), "\n")
           local tags = core.extract_tags_from_content(content)
           if #tags > 0 then
-            core.notify("Tags: " .. table.concat(tags, ", "))
+            core.notify("Tags: #" .. table.concat(tags, " #"))
           else
-            core.notify("No tags found in file")
+            core.notify("No tags found")
           end
         end
       end,
       ["?"] = function(_) show_help() end,
-      ["alt-?"] = function(_) show_help() end,
     },
   })
 end
 
 ----------------------------------------------------------------------
--- Bulk Operations
+-- Bulk Tag Operations
 ----------------------------------------------------------------------
 function M.bulk_tag_add()
   local ok, fzf = pcall(require, "fzf-lua")
@@ -262,15 +257,16 @@ function M.bulk_tag_add()
   
   vim.ui.input({ prompt = "Tag to add: " }, function(tag)
     if not tag or tag == "" then return end
-    tag = tag:gsub("^#", "")  -- Remove leading # if present
+    tag = tag:gsub("^#", "")
     
     fzf.files({
       cwd = core.get_paths().notes_dir,
-      prompt = "Select files to tag ⟩ ",
+      prompt = "Select files> ",
       fzf_opts = {
         ["--multi"] = true,
-        ["--header"] = string.format("Adding tag: #%s | TAB to select | Enter to confirm", tag),
+        ["--header"] = "Adding #" .. tag .. " | TAB to select",
       },
+      fd_opts = core.FD_EXCLUDE_OPTS,
       actions = {
         ["default"] = function(selected)
           local file_paths = core.sel_to_paths_fzf(selected)
@@ -279,21 +275,16 @@ function M.bulk_tag_add()
           for _, path in ipairs(file_paths) do
             if vim.fn.filereadable(path) == 1 then
               local lines = vim.fn.readfile(path)
-              local found_tags_line = false
               
               for i, line in ipairs(lines) do
                 if line:match("^%*%*Tags:%*%*") or line:match("^Tags:") then
                   if not line:match("#" .. tag) then
                     lines[i] = line .. " #" .. tag
+                    vim.fn.writefile(lines, path)
                     tagged = tagged + 1
                   end
-                  found_tags_line = true
                   break
                 end
-              end
-              
-              if found_tags_line then
-                vim.fn.writefile(lines, path)
               end
             end
           end
@@ -313,7 +304,6 @@ function M.bulk_tag_remove()
     return
   end
   
-  -- Get all tags first
   local tags = core.get_all_tags()
   local tag_list = {}
   for tag in pairs(tags) do
@@ -322,12 +312,12 @@ function M.bulk_tag_remove()
   table.sort(tag_list)
   
   if #tag_list == 0 then
-    core.notify("No tags found", vim.log.levels.WARN)
+    core.notify("No tags found")
     return
   end
   
   fzf.fzf_exec(tag_list, {
-    prompt = "Select tag to remove ⟩ ",
+    prompt = "Remove tag> ",
     actions = {
       ["default"] = function(selected)
         local tag = selected[1]
@@ -335,11 +325,9 @@ function M.bulk_tag_remove()
         
         fzf.files({
           cwd = core.get_paths().notes_dir,
-          prompt = string.format("Remove #%s from files ⟩ ", tag),
-          fzf_opts = {
-            ["--multi"] = true,
-            ["--header"] = "TAB to select | Enter to confirm",
-          },
+          prompt = "Remove #" .. tag .. " from> ",
+          fzf_opts = { ["--multi"] = true },
+          fd_opts = core.FD_EXCLUDE_OPTS,
           actions = {
             ["default"] = function(file_selected)
               local file_paths = core.sel_to_paths_fzf(file_selected)
@@ -347,12 +335,20 @@ function M.bulk_tag_remove()
               
               for _, path in ipairs(file_paths) do
                 if vim.fn.filereadable(path) == 1 then
-                  local content = table.concat(vim.fn.readfile(path), "\n")
-                  local new_content = content:gsub("#" .. tag, "")
-                  new_content = new_content:gsub("%s+", " ")  -- Clean up extra spaces
+                  local lines = vim.fn.readfile(path)
+                  local modified = false
                   
-                  vim.fn.writefile(vim.split(new_content, "\n"), path)
-                  removed = removed + 1
+                  for i, line in ipairs(lines) do
+                    if line:match("#" .. vim.pesc(tag)) then
+                      lines[i] = line:gsub("%s*#" .. vim.pesc(tag), "")
+                      modified = true
+                    end
+                  end
+                  
+                  if modified then
+                    vim.fn.writefile(lines, path)
+                    removed = removed + 1
+                  end
                 end
               end
               
@@ -367,7 +363,7 @@ function M.bulk_tag_remove()
 end
 
 ----------------------------------------------------------------------
--- Setup Commands
+-- Setup
 ----------------------------------------------------------------------
 function M.setup_commands()
   vim.api.nvim_create_user_command("ZettelManage", M.manage_notes, {})
@@ -375,13 +371,8 @@ function M.setup_commands()
   vim.api.nvim_create_user_command("ZettelBulkUntag", M.bulk_tag_remove, {})
 end
 
-----------------------------------------------------------------------
--- Setup Keymaps
-----------------------------------------------------------------------
 function M.setup_keymaps()
-  vim.keymap.set("n", "<leader>zm", M.manage_notes, { desc = "Manage notes" })
-  vim.keymap.set("n", "<leader>zt", M.bulk_tag_add, { desc = "Bulk tag add" })
-  vim.keymap.set("n", "<leader>zT", M.bulk_tag_remove, { desc = "Bulk tag remove" })
+  vim.keymap.set("n", "<leader>zm", M.manage_notes, { desc = "Zettel: Manage notes" })
 end
 
 return M

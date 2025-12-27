@@ -4,33 +4,12 @@
 
 local M = {}
 
--- Lazy load config module
-local _gtd_config = nil
-local function get_gtd_config()
-  if not _gtd_config then
-    local ok, cfg = pcall(require, "gtd-nvim.config")
-    if ok then _gtd_config = cfg end
-  end
-  return _gtd_config
-end
-
-local function get_gtd_root()
-  local cfg = get_gtd_config()
-  if cfg then return cfg.gtd_home() end
-  return vim.fn.expand("~/Documents/GTD")
-end
-
 M.config = {
-  gtd_root = nil,  -- Uses config.gtd_home() if nil
+  gtd_root = vim.fn.expand("~/Documents/GTD"),
   backup = true,
   dry_run = false,  -- Set to true to preview changes without writing
   skip_archive = true,  -- Skip Archive.org and ArchiveDeleted
 }
-
--- Get effective GTD root
-function M.get_gtd_root()
-  return M.config.gtd_root or get_gtd_root()
-end
 
 -- Helpers
 local function read_file(path)
@@ -402,7 +381,7 @@ function M.report(opts)
   -- Show per-file details
   table.insert(report_lines, "DETAILS BY FILE:")
   for file, changes in pairs(results.file_changes) do
-    local short_file = file:gsub(M.get_gtd_root() .. "/", "")
+    local short_file = file:gsub(vim.fn.expand("~/Documents/GTD/"), "")
     table.insert(report_lines, string.format("  %s (%d changes):", short_file, #changes))
     for _, change in ipairs(changes) do
       local reason = change.reason or "unknown"

@@ -121,15 +121,20 @@ function M.check()
   -- Check GTD modules
   vim.health.start("GTD Modules")
   local modules = {
-    "gtd-nvim.gtd.capture",
-    "gtd-nvim.gtd.clarify",
+    -- V2 Capture system
+    "gtd-nvim.capture",
+    "gtd-nvim.capture.workflows.clarify",
+    "gtd-nvim.capture.workflows.status",
+    "gtd-nvim.capture.workflows.edit",
+    -- Core modules
     "gtd-nvim.gtd.organize",
     "gtd-nvim.gtd.manage",
     "gtd-nvim.gtd.lists",
     "gtd-nvim.gtd.projects",
     "gtd-nvim.gtd.areas",
+    "gtd-nvim.gtd.agenda",
     "gtd-nvim.gtd.shared",
-    "gtd-nvim.gtd.ui",
+    "gtd-nvim.gtd.chronos",
     "gtd-nvim.gtd.utils.task_id",
   }
   

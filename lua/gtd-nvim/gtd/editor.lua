@@ -22,7 +22,7 @@ local function safe_require(mod)
 end
 
 local shared = safe_require("gtd-nvim.gtd.shared")
-local clarify = safe_require("gtd-nvim.gtd.clarify")
+local clarify_v2 = safe_require("gtd-nvim.capture.workflows.clarify")
 local organize = safe_require("gtd-nvim.gtd.organize")
 local projects = safe_require("gtd-nvim.gtd.projects")
 local areas_mod = safe_require("gtd-nvim.gtd.areas")

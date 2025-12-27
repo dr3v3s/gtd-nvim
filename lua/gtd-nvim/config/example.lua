@@ -86,9 +86,10 @@ return {
   -- INTEGRATIONS
   -- ═══════════════════════════════════════════════════════════════════════════
   integrations = {
-    kairos = {
-      enabled = true,  -- Set to true if using Kairos daemon
-      socket = "~/.cache/kairos/kairos.sock",
+    chronos = {
+      enabled = true,  -- Set to true if using Chronos daemons
+      daemon_socket = "~/.cache/chronos/chronos.sock",
+      bridge_socket = "~/.cache/chronos/chronos-bridge.sock",
     },
     calendar = {
       enabled = true,  -- Set to true for calendar integration

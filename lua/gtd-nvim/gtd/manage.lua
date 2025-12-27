@@ -55,7 +55,7 @@ local function safe_require(name)
 end
 
 local org_dates = safe_require("gtd-nvim.gtd.utils.org_dates")  -- [OK] Added
-local clarify = safe_require("gtd-nvim.gtd.clarify")
+local clarify_v2 = safe_require("gtd-nvim.capture.workflows.clarify")
 local organize = safe_require("gtd-nvim.gtd.organize")
 
 -- ------------------------ Helpers ------------------------
@@ -703,10 +703,10 @@ function M.task_actions_menu(item, on_done)
           vim.cmd("edit " .. vim.fn.fnameescape(item.path))
           vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
 
-        elseif action == "Clarify" and clarify then
+        elseif action == "Clarify" and clarify_v2 then
           vim.cmd("edit " .. vim.fn.fnameescape(item.path))
           vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
-          clarify.clarify({})
+          clarify_v2.clarify()
 
         elseif action == "Archive (→ DONE)" then
           local P = paths()

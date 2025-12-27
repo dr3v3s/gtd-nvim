@@ -153,10 +153,11 @@ M.config = {
   -- INTEGRATIONS
   -- ═══════════════════════════════════════════════════════════════════════════
   integrations = {
-    kairos = {
-      enabled = false,
-      socket = "~/.cache/kairos/kairos.sock",
-      cache_dir = "~/.cache/kairos",
+    chronos = {
+      enabled = true,
+      daemon_socket = "~/.cache/chronos/chronos.sock",
+      bridge_socket = "~/.cache/chronos/chronos-bridge.sock",
+      cache_dir = "~/.cache/chronos",
     },
     calendar = {
       enabled = false,

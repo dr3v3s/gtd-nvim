@@ -220,7 +220,7 @@ function M.review()
 end
 
 --- Get integration settings
----@param name string|nil Integration name (kairos, calendar, etc.)
+---@param name string|nil Integration name (chronos, calendar, etc.)
 ---@return table Integration configuration
 function M.integrations(name)
   local int = M.get().integrations or {}
@@ -357,11 +357,12 @@ function M.validate()
     table.insert(issues, { level = "warn", message = "Notes home does not exist: " .. cfg.notes_home })
   end
   
-  -- Check Kairos socket if enabled
-  if cfg.integrations.kairos.enabled then
-    local socket = expand(cfg.integrations.kairos.socket)
-    if vim.fn.filereadable(socket) ~= 1 then
-      table.insert(issues, { level = "warn", message = "Kairos socket not found: " .. socket })
+  -- Check Chronos sockets if enabled
+  if cfg.integrations.chronos and cfg.integrations.chronos.enabled then
+    local daemon_socket = expand(cfg.integrations.chronos.daemon_socket or "")
+    local bridge_socket = expand(cfg.integrations.chronos.bridge_socket or "")
+    if vim.fn.filereadable(daemon_socket) ~= 1 and vim.fn.filereadable(bridge_socket) ~= 1 then
+      table.insert(issues, { level = "warn", message = "Chronos sockets not found" })
     end
   end
   

@@ -5,15 +5,43 @@
 -- Provides real-time task data, search, and Apple Reminders bidirectional sync
 --
 -- @module gtd-nvim.gtd.chronos
--- @version 0.15.0
--- @updated 2025-12-22
+-- @version 0.22.0
+-- @updated 2025-12-27
 -- @see ~/Developer/chronos (daemon source)
+-- @see gtd/chronos/utils.lua (shared utilities)
+-- @see gtd/chronos/actions.lua (task operations)
 -- ============================================================================
 
 local M = {}
 
-M._VERSION = "0.15.0"
-M._UPDATED = "2025-12-22"
+M._VERSION = "0.24.0"
+M._UPDATED = "2025-12-27"
+
+-- ============================================================================
+-- SUBMODULES
+-- ============================================================================
+
+-- Lazy-loaded submodules
+local _utils = nil
+local _actions = nil
+
+local function get_utils()
+  if not _utils then
+    _utils = require("gtd-nvim.gtd.chronos.utils")
+  end
+  return _utils
+end
+
+local function get_actions()
+  if not _actions then
+    _actions = require("gtd-nvim.gtd.chronos.actions")
+  end
+  return _actions
+end
+
+-- Expose submodules
+M.utils = setmetatable({}, { __index = function(_, k) return get_utils()[k] end })
+M.actions = setmetatable({}, { __index = function(_, k) return get_actions()[k] end })
 
 -- ============================================================================
 -- CONFIGURATION
@@ -132,6 +160,59 @@ function M.query(module, cmd, params)
   
   if data.success == false then
     return nil, data.error or "Query failed"
+  end
+  
+  return data.data, nil
+end
+
+--- Send query directly to chronos-bridge daemon via Unix socket
+---@param module string Provider name (mail, calendar, contacts, reminders)
+---@param cmd string Command to execute
+---@param params table|nil Optional parameters
+---@return table|nil, string|nil Response data or nil, error message
+function M.query_bridge(module, cmd, params)
+  local bridge_socket = vim.fn.expand("~/.cache/chronos/chronos-bridge.sock")
+  
+  if vim.fn.filereadable(bridge_socket) ~= 1 then
+    return nil, "chronos-bridge socket not available"
+  end
+  
+  local request = { module = module, cmd = cmd }
+  if params and next(params) then
+    request.params = params
+  end
+  
+  local json_request = vim.fn.json_encode(request)
+  
+  local nc_cmd = string.format(
+    'echo \'%s\' | nc -U %s 2>/dev/null',
+    json_request:gsub("'", "\\'"),
+    bridge_socket
+  )
+  
+  log("Bridge query: " .. json_request)
+  
+  local handle = io.popen(nc_cmd)
+  if not handle then
+    return nil, "Failed to connect to bridge socket"
+  end
+  
+  local response = handle:read("*a")
+  handle:close()
+  
+  if not response or response == "" then
+    return nil, "Empty response from bridge"
+  end
+  
+  log("Bridge response: " .. response:sub(1, 200))
+  
+  local decode_ok, data = pcall(vim.fn.json_decode, response)
+  if not decode_ok or not data then
+    return nil, "Failed to parse bridge response"
+  end
+  
+  if data.success == false then
+    return nil, data.error or "Bridge query failed"
   end
   
   return data.data, nil
@@ -273,6 +354,7 @@ function M.detailed_status()
     gtd = { ok = false, task_count = 0, last_refresh = nil },
     reminders = { ok = false, connection = "unknown", lists = 0 },
     bridge = { ok = false, version = nil },
+    mail = { ok = false, unread = 0 },
   }
   
   -- Check daemon
@@ -302,6 +384,16 @@ function M.detailed_status()
     result.reminders.lists = rem_status.list_count or 0
     result.bridge.ok = rem_status.bridge_available or false
     result.bridge.version = rem_status.bridge_version
+  end
+  
+  -- Check Mail via bridge (if available)
+  if result.bridge.ok then
+    local mail_stats, _ = M.query_bridge("mail", "stats", nil)
+    if mail_stats then
+      result.mail.ok = true
+      result.mail.unread = mail_stats.total_unread or 0
+      result.mail.inbox_unread = mail_stats.inbox_unread or 0
+    end
   end
   
   return result
@@ -344,6 +436,12 @@ function M.show_status()
     table.insert(lines, string.format("│ 󰄳 Bridge: %s", bridge_ver))
   else
     table.insert(lines, "│ 󰅜 Bridge: Not running")
+  end
+  
+  -- Mail status
+  if status.mail.ok then
+    table.insert(lines, string.format("│ 󰇮 Mail: %d unread (%d inbox)",
+      status.mail.unread or 0, status.mail.inbox_unread or 0))
   end
   
   table.insert(lines, "╰─────────────────────────────────────╯")
@@ -574,6 +672,23 @@ end
 ---@return table[]
 function M.waiting()
   return M.tasks("WAITING", 100)
+end
+
+--- Get all SOMEDAY tasks
+---@return table[]
+function M.someday()
+  return M.tasks("SOMEDAY", 100)
+end
+
+--- Get all overdue tasks
+---@return table[]
+function M.overdue()
+  local data, err = M.query("gtd", "overdue", nil)
+  if not data then
+    log("Overdue error: " .. (err or "unknown"))
+    return {}
+  end
+  return data or {}
 end
 
 --- Full-text search tasks
@@ -1372,13 +1487,22 @@ end
 -- ============================================================================
 
 --- Open fzf picker for tasks
----@param opts table Options: state, title
+---@param opts table Options: state, title, overdue (boolean)
 function M.pick_tasks(opts)
   opts = opts or {}
   local state = opts.state
   local title = opts.title or (state and (state .. " Tasks") or "All Tasks")
   
-  local tasks = state and M.tasks(state, 100) or M.tasks(nil, 100)
+  -- Fetch tasks based on options
+  local tasks
+  if opts.overdue then
+    tasks = M.overdue()
+    title = opts.title or "Overdue Tasks"
+  elseif state then
+    tasks = M.tasks(state, 100)
+  else
+    tasks = M.tasks(nil, 100)
+  end
   
   if #tasks == 0 then
     vim.notify("No tasks found", vim.log.levels.INFO)
@@ -2073,15 +2197,24 @@ function M.pick_projects()
         end
       end,
       ["ctrl-n"] = function(selected)
-        -- Create new task in this project
+        -- Create new task in this project (using capture v2)
         if selected and selected[1] then
           local proj = proj_map[selected[1]]
           if proj then
-            M.capture_task({ 
-              target = proj.path, 
-              level = 2,
-              area = proj.area,
-            })
+            local capture_v2_ok, capture_v2 = pcall(require, "gtd-nvim.capture")
+            if capture_v2_ok then
+              local Object = require("gtd-nvim.capture.model.object")
+              local obj = Object.new(Object.TYPE.TASK, {
+                _mode = Object.MODE.CREATE,
+                level = 2,
+                area = proj.area,
+              })
+              -- Set target file after construction (not in constructor's allowed fields)
+              obj._target_file = proj.path
+              capture_v2.task({ object = obj })
+            else
+              vim.notify("capture v2 not available", vim.log.levels.WARN)
+            end
           end
         end
       end,
@@ -2747,6 +2880,10 @@ function M.setup_commands()
     end
   end, { desc = "Show Chronos daemon status" })
   
+  vim.api.nvim_create_user_command("ChronosSyncStatus", function()
+    M.show_status()
+  end, { desc = "Show detailed Chronos sync status" })
+  
   vim.api.nvim_create_user_command("ChronosNext", function()
     M.pick_tasks({ state = "NEXT", title = "NEXT Actions" })
   end, { desc = "Pick NEXT actions via Chronos" })
@@ -2762,6 +2899,10 @@ function M.setup_commands()
   vim.api.nvim_create_user_command("ChronosSomeday", function()
     M.pick_tasks({ state = "SOMEDAY", title = "SOMEDAY Tasks" })
   end, { desc = "Pick SOMEDAY tasks via Chronos" })
+  
+  vim.api.nvim_create_user_command("ChronosOverdue", function()
+    M.pick_tasks({ overdue = true, title = "󰀧 Overdue Tasks" })
+  end, { desc = "Pick overdue tasks via Chronos" })
   
   vim.api.nvim_create_user_command("ChronosSearch", function(opts)
     M.pick_search(opts.args ~= "" and opts.args or nil)
@@ -2805,84 +2946,391 @@ function M.setup_commands()
     end
   end, { desc = "Trigger Reminders sync" })
   
-  -- Capture commands
+  -- Capture commands (using capture v2)
   vim.api.nvim_create_user_command("ChronosQuick", function(opts)
-    M.capture_quick(opts.args ~= "" and opts.args or nil)
+    local capture_v2 = require("gtd-nvim.capture")
+    capture_v2.quick()
   end, { desc = "Quick capture to inbox", nargs = "?" })
   
   vim.api.nvim_create_user_command("ChronosCapture", function()
-    M.capture_task()
+    local capture_v2 = require("gtd-nvim.capture")
+    capture_v2.task()
   end, { desc = "Full task capture wizard" })
   
   vim.api.nvim_create_user_command("ChronosClipboard", function()
-    M.capture_clipboard()
+    local capture_v2 = require("gtd-nvim.capture")
+    capture_v2.clipboard()
   end, { desc = "Capture from clipboard" })
   
   vim.api.nvim_create_user_command("ChronosProject", function()
-    M.create_project()
+    local capture_v2 = require("gtd-nvim.capture")
+    capture_v2.project()
   end, { desc = "Create new project" })
+  
+  -- Validation commands
+  vim.api.nvim_create_user_command("GtdValidateProjects", function()
+    local validate = require("gtd-nvim.gtd.scripts.validate_projects")
+    validate.validate()
+  end, { desc = "Validate GTD projects are at level 1" })
+  
+  vim.api.nvim_create_user_command("GtdMigrateProjects", function()
+    local migrate = require("gtd-nvim.gtd.scripts.migrate_projects")
+    migrate.migrate_interactive()
+  end, { desc = "Migrate nested projects to separate files" })
 end
 
---- Setup keymaps (optional, call separately)
+--- Setup keymaps with organized structure
+--- Structure:
+---   <prefix>c/i/v  - Capture (quick access)
+---   <prefix>s      - Change status
+---   <prefix>t/T    - Clarify task
+---   <prefix>r/R    - Refile
+---   <prefix>p/P    - Projects
+---   <prefix>k      - Link to project
+---   <prefix>l...   - Lists (agenda, next, projects, waiting, etc.)
+---   <prefix>m...   - Manage (bulk operations)
+---   <prefix>S...   - System (backup, config, sync, daemon)
+---   <prefix>h      - Health
+---   <prefix>w      - Weekly review
 ---@param prefix string|nil Keymap prefix (default: <leader>x)
 function M.setup_keymaps(prefix)
   prefix = prefix or "<leader>x"
   local map = vim.keymap.set
-  local opts = { silent = true }
+  local opts = { silent = true, noremap = true }
   
-  -- ┌─────────────────────────────────────────────────────────────┐
-  -- │ TASK PICKERS: <leader>xt{key}                               │
-  -- └─────────────────────────────────────────────────────────────┘
-  map("n", prefix .. "ta", "<cmd>ChronosAll<cr>",
-    vim.tbl_extend("force", opts, { desc = "Tasks: ALL" }))
-  map("n", prefix .. "tn", "<cmd>ChronosNext<cr>",
-    vim.tbl_extend("force", opts, { desc = "Tasks: NEXT" }))
-  map("n", prefix .. "tt", "<cmd>ChronosTodo<cr>",
-    vim.tbl_extend("force", opts, { desc = "Tasks: TODO" }))
-  map("n", prefix .. "tw", "<cmd>ChronosWaiting<cr>",
-    vim.tbl_extend("force", opts, { desc = "Tasks: WAITING" }))
-  map("n", prefix .. "ts", "<cmd>ChronosSomeday<cr>",
-    vim.tbl_extend("force", opts, { desc = "Tasks: SOMEDAY" }))
+  -- Helper to create mapping with description (no "GTD:" prefix - we're already in GTD group)
+  local function nmap(key, cmd, desc)
+    map("n", prefix .. key, cmd, vim.tbl_extend("force", opts, { desc = desc }))
+  end
   
-  -- ┌─────────────────────────────────────────────────────────────┐
-  -- │ PROJECT PICKERS: <leader>xp{key}                            │
-  -- └─────────────────────────────────────────────────────────────┘
-  map("n", prefix .. "pp", "<cmd>ChronosProjects<cr>",
-    vim.tbl_extend("force", opts, { desc = "Projects: active" }))
-  map("n", prefix .. "pa", "<cmd>ChronosAllProjects<cr>",
-    vim.tbl_extend("force", opts, { desc = "Projects: all (incl. ongoing)" }))
-  map("n", prefix .. "pn", "<cmd>ChronosProject<cr>",
-    vim.tbl_extend("force", opts, { desc = "Projects: new" }))
-  map("n", prefix .. "pc", "<cmd>ChronosConvertProject<cr>",
-    vim.tbl_extend("force", opts, { desc = "Projects: convert file" }))
+  -- Load modules
+  local capture_v2_ok, capture_v2 = pcall(require, "gtd-nvim.capture")
+  local edit_ok, edit_wf = pcall(require, "gtd-nvim.capture.workflows.edit")
+  local clarify_v2_ok, clarify_v2 = pcall(require, "gtd-nvim.capture.workflows.clarify")
+  local status_v2_ok, status_v2 = pcall(require, "gtd-nvim.capture.workflows.status")
+  local focus_ok, focus_step = pcall(require, "gtd-nvim.capture.steps.focus")
+  local organize = require("gtd-nvim.gtd.organize")
+  local gtd = require("gtd-nvim.gtd")
+  local agenda = require("gtd-nvim.gtd.agenda")
+  local lists = require("gtd-nvim.gtd.lists")
   
-  -- ┌─────────────────────────────────────────────────────────────┐
-  -- │ AREAS (Horizon 2): <leader>xo{key}                          │
-  -- └─────────────────────────────────────────────────────────────┘
-  map("n", prefix .. "oa", "<cmd>ChronosAreas<cr>",
-    vim.tbl_extend("force", opts, { desc = "Areas: all" }))
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- QUICK ACTIONS (single key - most frequently used)
+  -- ═══════════════════════════════════════════════════════════════════════════
   
-  -- ┌─────────────────────────────────────────────────────────────┐
-  -- │ CAPTURE: <leader>xc{key}                                    │
-  -- └─────────────────────────────────────────────────────────────┘
-  map("n", prefix .. "cq", "<cmd>ChronosQuick<cr>",
-    vim.tbl_extend("force", opts, { desc = "Capture: quick" }))
-  map("n", prefix .. "cc", "<cmd>ChronosCapture<cr>",
-    vim.tbl_extend("force", opts, { desc = "Capture: full" }))
-  map("n", prefix .. "cv", "<cmd>ChronosClipboard<cr>",
-    vim.tbl_extend("force", opts, { desc = "Capture: clipboard" }))
+  -- c = Full capture wizard (GTD flow: outcome first)
+  if capture_v2_ok then
+    nmap("c", function() capture_v2.task() end, "Capture")
+  else
+    vim.notify("capture v2 not loaded", vim.log.levels.WARN)
+  end
   
-  -- ┌─────────────────────────────────────────────────────────────┐
-  -- │ OTHER: <leader>x{key}                                       │
-  -- └─────────────────────────────────────────────────────────────┘
-  map("n", prefix .. "/", "<cmd>ChronosSearch<cr>",
-    vim.tbl_extend("force", opts, { desc = "Search tasks" }))
-  map("n", prefix .. "a", "<cmd>ChronosArchive<cr>",
-    vim.tbl_extend("force", opts, { desc = "Archive management" }))
-  map("n", prefix .. "r", "<cmd>ChronosRemindersSync<cr>",
-    vim.tbl_extend("force", opts, { desc = "Reminders sync" }))
-  map("n", prefix .. "s", "<cmd>ChronosStatus<cr>",
-    vim.tbl_extend("force", opts, { desc = "Daemon status" }))
+  -- t = Clarify/process task
+  if clarify_v2_ok then
+    nmap("t", function() clarify_v2.clarify() end, "Clarify task")
+  else
+    vim.notify("clarify v2 not loaded", vim.log.levels.WARN)
+  end
+  
+  -- s = Change status
+  if status_v2_ok then
+    nmap("s", function() status_v2.change_status() end, "Change status")
+  else
+    vim.notify("status v2 not loaded", vim.log.levels.WARN)
+  end
+  
+  -- r = Refile task
+  nmap("r", function()
+    if organize and organize.refile_to_project then
+      organize.refile_to_project()
+    end
+  end, "Refile task")
+  
+  -- e = Edit task (quick field picker)
+  if edit_ok then
+    nmap("e", function() edit_wf.quick_edit() end, "Edit task")
+  end
+  
+  -- a = Agenda (today)
+  nmap("a", function()
+    if agenda and agenda.show then
+      agenda.show()
+    end
+  end, "Agenda (today)")
+  
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- CAPTURE MENU <prefix>C... (extended capture options)
+  -- ═══════════════════════════════════════════════════════════════════════════
+  if capture_v2_ok then
+    nmap("Cq", function() capture_v2.quick() end, "Capture (quick)")
+    nmap("Cb", function() capture_v2.batch() end, "Capture (batch)")
+    nmap("Cv", function() capture_v2.clipboard() end, "Capture (clipboard)")
+  else
+    nmap("Cq", "<cmd>ChronosQuick<cr>", "Capture (quick)")
+    nmap("Cv", "<cmd>ChronosClipboard<cr>", "Capture (clipboard)")
+  end
+  
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- LISTS <prefix>l... (views and pickers)
+  -- ═══════════════════════════════════════════════════════════════════════════
+  nmap("la", function()
+    if agenda and agenda.show then agenda.show() end
+  end, "Agenda (today)")
+  
+  nmap("lA", function()
+    if agenda and agenda.week then agenda.week() end
+  end, "Agenda (week)")
+  
+  nmap("lt", function()
+    if agenda and agenda.tomorrow then agenda.tomorrow() end
+  end, "Agenda (tomorrow)")
+  
+  nmap("ln", "<cmd>ChronosNext<cr>", "Next actions")
+  nmap("lw", "<cmd>ChronosWaiting<cr>", "Waiting for")
+  nmap("ls", "<cmd>ChronosSomeday<cr>", "Someday/Maybe")
+  nmap("lo", "<cmd>ChronosOverdue<cr>", "Overdue tasks")
+  
+  -- Calls picker
+  local calls = require("gtd-nvim.gtd.calls")
+  nmap("lc", function()
+    if calls and calls.show then
+      calls.show()
+    else
+      vim.cmd("GtdCalls")
+    end
+  end, "Calls to make")
+  
+  nmap("lx", function()
+    if lists and lists.stuck_projects then
+      lists.stuck_projects()
+    end
+  end, "Stuck projects")
+  
+  nmap("li", function()
+    if lists and lists.inbox then
+      lists.inbox()
+    end
+  end, "Inbox")
+  
+  nmap("l/", "<cmd>ChronosSearch<cr>", "Search all")
+  
+  nmap("ll", function()
+    if lists and lists.menu then
+      lists.menu()
+    end
+  end, "Lists menu")
+  
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- MANAGE <prefix>m... (Bulk operations)
+  -- ═══════════════════════════════════════════════════════════════════════════
+  local manage = require("gtd-nvim.gtd.manage")
+  local areas = require("gtd-nvim.gtd.areas")
+  
+  nmap("mt", function()
+    if manage and manage.manage_tasks then
+      manage.manage_tasks()
+    end
+  end, "Manage tasks")
+  
+  nmap("mp", function()
+    if manage and manage.manage_projects then
+      manage.manage_projects()
+    end
+  end, "Manage projects")
+  
+  nmap("ma", function()
+    if areas and areas.manage then
+      areas.manage()
+    elseif areas and areas.browse then
+      areas.browse()
+    else
+      vim.cmd("ChronosAreas")
+    end
+  end, "Manage areas")
+  
+  nmap("m?", function()
+    if manage and manage.help_menu then
+      manage.help_menu()
+    end
+  end, "Help")
+  
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- PROJECTS <prefix>p... (Project operations)
+  -- ═══════════════════════════════════════════════════════════════════════════
+  if capture_v2_ok then
+    nmap("pc", function() capture_v2.project() end, "Create project")
+  else
+    nmap("pc", "<cmd>ChronosProject<cr>", "Create project")
+  end
+  nmap("pC", "<cmd>ChronosConvertProject<cr>", "Convert task → project")
+  nmap("pl", "<cmd>ChronosProjects<cr>", "List projects")
+  nmap("pk", function()
+    if gtd and gtd.link_task_to_project then
+      gtd.link_task_to_project({})
+    end
+  end, "Link task to project")
+  
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- FOCUS <prefix>f... (Focus areas)
+  -- ═══════════════════════════════════════════════════════════════════════════
+  if focus_ok then
+    nmap("ft", function() focus_step.toggle_focus_current_file() end, "Toggle focus (current)")
+    nmap("fl", function()
+      local focus_areas = focus_step.list_focus_areas()
+      if #focus_areas == 0 then
+        vim.notify("No Focus Areas set", vim.log.levels.INFO)
+        return
+      end
+      local fzf_ok, fzf = pcall(require, "fzf-lua")
+      if fzf_ok then
+        local items = {}
+        local lookup = {}
+        for _, fa in ipairs(focus_areas) do
+          local line = string.format("󰓎 %s  (%s)", fa.name, fa.area)
+          table.insert(items, line)
+          lookup[line] = fa
+        end
+        fzf.fzf_exec(items, {
+          prompt = "Focus Areas ❯ ",
+          winopts = { height = 0.4, width = 0.5 },
+          actions = {
+            ["default"] = function(sel)
+              if sel and sel[1] and lookup[sel[1]] then
+                vim.cmd("edit " .. lookup[sel[1]].file)
+              end
+            end,
+          },
+        })
+      end
+    end, "List focus areas")
+  end
+  
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- SYSTEM <prefix>S... (Config, backup, sync, daemon)
+  -- ═══════════════════════════════════════════════════════════════════════════
+  local backup_ok, backup = pcall(require, "gtd-nvim.configurator.backup")
+  local config_ok, configurator = pcall(require, "gtd-nvim.configurator")
+  
+  -- System menu (fzf picker)
+  nmap("SS", function()
+    local fzf_ok, fzf = pcall(require, "fzf-lua")
+    if not fzf_ok then
+      vim.notify("fzf-lua required", vim.log.levels.ERROR)
+      return
+    end
+    
+    local items = {
+      "  Configuration",
+      "  Setup Wizard",
+      "󰁯  Backup Menu",
+      "󰁯  Backup Now",
+      "󰑓  Sync Reminders",
+      "  Daemon Status",
+      "󰑐  Refresh Index",
+      "  Select Calendars",
+      "  Select Reminders",
+      "󰄲  Health Check",
+    }
+    
+    fzf.fzf_exec(items, {
+      prompt = "System> ",
+      actions = {
+        ["default"] = function(sel)
+          if not sel or not sel[1] then return end
+          local choice = sel[1]
+          vim.schedule(function()
+            if choice:match("Configuration") then
+              if configurator then configurator.open() end
+            elseif choice:match("Setup Wizard") then
+              if configurator then configurator.wizard() end
+            elseif choice:match("Backup Menu") then
+              if backup_ok then backup.menu() end
+            elseif choice:match("Backup Now") then
+              if backup_ok then backup.quick() end
+            elseif choice:match("Sync Reminders") then
+              M.reminders_sync()
+            elseif choice:match("Daemon Status") then
+              vim.cmd("ChronosStatus")
+            elseif choice:match("Refresh") then
+              local result = M.query("gtd", "refresh", {})
+              if result then
+                vim.notify("Index refreshed", vim.log.levels.INFO)
+              end
+            elseif choice:match("Select Calendars") then
+              if configurator then configurator.select_calendars() end
+            elseif choice:match("Select Reminders") then
+              if configurator then configurator.select_reminders() end
+            elseif choice:match("Health Check") then
+              if gtd and gtd.health then gtd.health() end
+            end
+          end)
+        end,
+      },
+      winopts = { height = 0.4, width = 0.4 },
+    })
+  end, "System menu")
+  
+  -- Direct system shortcuts
+  if config_ok then
+    nmap("Sc", function() configurator.open() end, "Configuration")
+    nmap("Sw", function() configurator.wizard() end, "Setup wizard")
+    nmap("SC", function() configurator.select_calendars() end, "Select calendars")
+    nmap("SR", function() configurator.select_reminders() end, "Select reminders")
+  end
+  
+  if backup_ok then
+    nmap("Sb", function() backup.menu() end, "Backup menu")
+    nmap("SB", function() backup.quick() end, "Backup now")
+  end
+  
+  nmap("Ss", "<cmd>ChronosRemindersSync<cr>", "Sync reminders")
+  nmap("Sd", "<cmd>ChronosStatus<cr>", "Daemon status")
+  
+  nmap("Sr", function()
+    local result = M.query("gtd", "refresh", {})
+    if result then
+      vim.notify("Index refresh triggered", vim.log.levels.INFO)
+    else
+      vim.notify("Refresh failed", vim.log.levels.ERROR)
+    end
+  end, "Refresh index")
+  
+  nmap("Sh", function()
+    if gtd and gtd.health then
+      gtd.health()
+    end
+  end, "Health check")
+  
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- MISC
+  -- ═══════════════════════════════════════════════════════════════════════════
+  local review = require("gtd-nvim.gtd.review")
+  nmap("w", function()
+    if review and review.start then
+      review.start()
+    elseif review and review.weekly then
+      review.weekly()
+    end
+  end, "Weekly review")
+  
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- WHICH-KEY REGISTRATION
+  -- ═══════════════════════════════════════════════════════════════════════════
+  local wk_ok, wk = pcall(require, "which-key")
+  if wk_ok and wk.add then
+    wk.add({
+      -- Root group
+      { prefix, group = "GTD", icon = "󰄲" },
+      
+      -- Subgroups
+      { prefix .. "C", group = "Capture", icon = "󰐕" },
+      { prefix .. "l", group = "Lists", icon = "" },
+      { prefix .. "p", group = "Projects", icon = "󰷐" },
+      { prefix .. "f", group = "Focus", icon = "󰓎" },
+      { prefix .. "m", group = "Manage", icon = "" },
+      { prefix .. "S", group = "System", icon = "" },
+    })
+  end
 end
 
 -- ============================================================================
@@ -2903,6 +3351,36 @@ function M.setup(opts)
   end
   
   M.setup_commands()
+  
+  -- Setup calls module
+  local calls_ok, calls = pcall(require, "gtd-nvim.gtd.calls")
+  if calls_ok and calls.setup then
+    calls.setup()
+  end
+  
+  -- Setup comms module
+  local comms_ok, comms = pcall(require, "gtd-nvim.gtd.comms")
+  if comms_ok and comms.setup then
+    comms.setup()
+  end
+  
+  -- Setup review module
+  local review_ok, review = pcall(require, "gtd-nvim.gtd.review")
+  if review_ok and review.setup then
+    review.setup()
+  end
+  
+  -- Setup lists module
+  local lists_ok, lists = pcall(require, "gtd-nvim.gtd.lists")
+  if lists_ok and lists.setup then
+    lists.setup()
+  end
+  
+  -- Setup agenda module
+  local agenda_ok, agenda = pcall(require, "gtd-nvim.gtd.agenda")
+  if agenda_ok and agenda.setup then
+    agenda.setup()
+  end
   
   -- Setup keymaps if requested
   if opts.keymaps then
@@ -3215,655 +3693,6 @@ local function build_project_entry(opts)
   end
   
   return lines, id
-end
-
--- ============================================================================
--- 1. QUICK CAPTURE (Inbox dump)
--- ============================================================================
-
---- Quick capture - one prompt, straight to Inbox as TODO
----@param title string|nil Pre-filled title
-function M.capture_quick(title)
-  local do_capture = function(t)
-    if not t or t == "" then return end
-    
-    local lines = build_task_entry({ title = t, state = "TODO", level = 1 })
-    ensure_file(inbox_path(), "Inbox")
-    
-    if append_to_file(inbox_path(), lines) then
-      vim.notify(capture_glyphs.inbox .. " " .. t, vim.log.levels.INFO)
-    else
-      vim.notify("Capture failed", vim.log.levels.ERROR)
-    end
-  end
-  
-  if title then
-    do_capture(title)
-  else
-    vim.ui.input({ prompt = capture_glyphs.inbox .. " Capture: " }, do_capture)
-  end
-end
-
---- Capture from system clipboard
---- Cleans up clipboard content, detects URLs, allows editing before save
-function M.capture_clipboard()
-  -- Try system clipboard first, then unnamed register
-  local clipboard = vim.fn.getreg("+")
-  if not clipboard or clipboard == "" then
-    clipboard = vim.fn.getreg('"')
-  end
-  
-  if not clipboard or clipboard == "" then
-    vim.notify("Clipboard is empty", vim.log.levels.WARN)
-    return
-  end
-  
-  -- Store original for URL detection
-  local original = clipboard
-  
-  -- Clean up: collapse whitespace, trim, limit length
-  local title = clipboard
-    :gsub("\r\n", " ")      -- Windows line endings
-    :gsub("\n", " ")        -- Unix line endings
-    :gsub("\t", " ")        -- Tabs
-    :gsub("%s+", " ")       -- Multiple spaces
-    :gsub("^%s+", "")       -- Leading whitespace
-    :gsub("%s+$", "")       -- Trailing whitespace
-  
-  -- Truncate very long clipboard content
-  if #title > 120 then
-    title = title:sub(1, 117) .. "..."
-  end
-  
-  if title == "" then
-    vim.notify("Clipboard contains only whitespace", vim.log.levels.WARN)
-    return
-  end
-  
-  -- Show what we captured and let user edit/confirm
-  vim.ui.input({
-    prompt = capture_glyphs.inbox .. " From clipboard: ",
-    default = title,
-  }, function(final_title)
-    if not final_title or final_title == "" then return end
-    
-    -- Build task with optional URL property
-    local props = {}
-    local body_lines = {}
-    
-    -- If clipboard was a URL, add it as property and body note
-    if original:match("^https?://[^%s]+$") then
-      props.URL = original:gsub("%s+$", "")
-      table.insert(body_lines, "")
-      table.insert(body_lines, "Source: " .. original)
-    end
-    
-    local lines = build_task_entry({
-      title = final_title,
-      state = "TODO",
-      level = 1,
-      extra_props = props,
-    })
-    
-    -- Add body lines after :END:
-    for _, line in ipairs(body_lines) do
-      table.insert(lines, line)
-    end
-    
-    ensure_file(inbox_path(), "Inbox")
-    
-    if append_to_file(inbox_path(), lines) then
-      vim.notify(capture_glyphs.inbox .. " " .. final_title, vim.log.levels.INFO)
-      -- Refresh daemon index
-      if M.is_running() then M.query("gtd", "refresh", nil) end
-    else
-      vim.notify("Capture failed", vim.log.levels.ERROR)
-    end
-  end)
-end
-
--- ============================================================================
--- 2. FULL TASK CAPTURE (Wizard)
--- ============================================================================
-
---- Full task capture wizard
---- Flow: Title → State → Destination → Schedule → (Extras) → Create
-function M.capture_task()
-  local ok, fzf = pcall(require, "fzf-lua")
-  if not ok then
-    vim.notify("fzf-lua required", vim.log.levels.ERROR)
-    return
-  end
-  
-  local data = {}
-  
-  -- Step 1: Title
-  vim.ui.input({ prompt = capture_glyphs.todo .. " Task: " }, function(title)
-    if not title or title == "" then return end
-    data.title = title
-    
-    -- Step 2: State
-    vim.schedule(function()
-      fzf.fzf_exec({
-        capture_glyphs.next .. " NEXT  (ready to do)",
-        capture_glyphs.todo .. " TODO  (not yet ready)",
-        capture_glyphs.waiting .. " WAITING (delegated/blocked)",
-        capture_glyphs.someday .. " SOMEDAY (maybe later)",
-      }, {
-        prompt = "State ❯ ",
-        winopts = { height = 0.3, width = 0.4 },
-        actions = {
-          ["default"] = function(sel)
-            if not sel or not sel[1] then return end
-            data.state = sel[1]:match("(%u+)%s") or "TODO"
-            vim.schedule(function() M._task_step_dest(data) end)
-          end,
-        },
-      })
-    end)
-  end)
-end
-
---- Task wizard: Destination step
-function M._task_step_dest(data)
-  local fzf = require("fzf-lua")
-  
-  fzf.fzf_exec({
-    capture_glyphs.inbox .. " Inbox (review later)",
-    capture_glyphs.project .. " Project...",
-    capture_glyphs.area .. " Area...",
-  }, {
-    prompt = "To ❯ ",
-    winopts = { height = 0.3, width = 0.35 },
-    actions = {
-      ["default"] = function(sel)
-        if not sel or not sel[1] then return end
-        
-        if sel[1]:match("Project") then
-          vim.schedule(function()
-            local projects = get_projects()
-            if #projects == 0 then
-              vim.notify("No projects found", vim.log.levels.WARN)
-              data.path, data.level = inbox_path(), 1
-              vim.schedule(function() M._task_step_schedule(data) end)
-              return
-            end
-            
-            local items = {}
-            for _, p in ipairs(projects) do table.insert(items, p.display) end
-            
-            fzf.fzf_exec(items, {
-              prompt = "Project ❯ ",
-              winopts = { height = 0.5, width = 0.5 },
-              actions = {
-                ["default"] = function(proj)
-                  if proj and proj[1] then
-                    for _, p in ipairs(projects) do
-                      if p.display == proj[1] then
-                        data.path, data.level, data.area = p.path, 2, p.area
-                        break
-                      end
-                    end
-                  else
-                    data.path, data.level = inbox_path(), 1
-                  end
-                  vim.schedule(function() M._task_step_schedule(data) end)
-                end,
-              },
-            })
-          end)
-        elseif sel[1]:match("Area") then
-          -- Capture to area inbox (standalone task in area)
-          vim.schedule(function()
-            local areas = M.areas()
-            if #areas == 0 then
-              vim.notify("No areas found", vim.log.levels.WARN)
-              data.path, data.level = inbox_path(), 1
-              vim.schedule(function() M._task_step_schedule(data) end)
-              return
-            end
-            
-            local items = {}
-            local area_map = {}
-            for _, a in ipairs(areas) do
-              local display = capture_glyphs.area .. " " .. a.name
-              table.insert(items, display)
-              area_map[display] = a
-            end
-            
-            fzf.fzf_exec(items, {
-              prompt = "Area ❯ ",
-              winopts = { height = 0.4, width = 0.4 },
-              actions = {
-                ["default"] = function(area_sel)
-                  if area_sel and area_sel[1] then
-                    local area = area_map[area_sel[1]]
-                    if area then
-                      -- Use area Inbox.org (create if needed)
-                      local area_inbox = area.path .. "/Inbox.org"
-                      ensure_file(area_inbox, area.name .. " Inbox")
-                      data.path = area_inbox
-                      data.level = 1
-                      data.area = area.id
-                    end
-                  else
-                    data.path, data.level = inbox_path(), 1
-                  end
-                  vim.schedule(function() M._task_step_schedule(data) end)
-                end,
-              },
-            })
-          end)
-        else
-          data.path, data.level = inbox_path(), 1
-          vim.schedule(function() M._task_step_schedule(data) end)
-        end
-      end,
-    },
-  })
-end
-
---- Task wizard: Schedule step (DEFER and DUE dates)
-function M._task_step_schedule(data)
-  local fzf = require("fzf-lua")
-  local today = os.date("%Y-%m-%d")
-  
-  if data.state == "WAITING" then
-    -- WAITING: Ask for follow-up date and who/what we're waiting for
-    vim.ui.input({ prompt = "Waiting for (person/thing): " }, function(wf)
-      if not wf or wf == "" then
-        vim.schedule(function() M._task_step_tags(data) end)
-        return
-      end
-      data.waiting_for = wf
-      
-      vim.schedule(function()
-        local follow_default = future_date(7)  -- 1 week follow-up
-        vim.ui.input({
-          prompt = string.format("Follow-up [%s] (%s): ", follow_default, DATE_HINT)
-        }, function(f)
-          local follow_up = parse_smart_date(f) or follow_default
-          data.scheduled = follow_up
-          
-          -- DUE date
-          vim.schedule(function()
-            local due_default = future_date(DEFAULT_DUE_DAYS, follow_up)
-            vim.ui.input({
-              prompt = string.format("Due [%s] (%s, '-' to skip): ", due_default, DATE_HINT)
-            }, function(d)
-              if d == "-" or d == "skip" then
-                data.deadline = nil
-              elseif d and d ~= "" then
-                data.deadline = parse_smart_date(d, follow_up) or due_default
-              else
-                data.deadline = due_default
-              end
-              M._task_step_tags(data)
-            end)
-          end)
-        end)
-      end)
-    end)
-  elseif data.state == "SOMEDAY" then
-    -- SOMEDAY: No dates needed
-    vim.schedule(function() M._task_step_tags(data) end)
-  else
-    -- NEXT/TODO: First ask if dates are needed
-    fzf.fzf_exec({
-      capture_glyphs.calendar .. " Skip dates (add later)",
-      capture_glyphs.calendar .. " Add dates now...",
-    }, {
-      prompt = "Dates ❯ ",
-      winopts = { height = 0.25, width = 0.35 },
-      actions = {
-        ["default"] = function(sel)
-          if not sel or not sel[1] or sel[1]:match("Skip") then
-            -- No dates
-            vim.schedule(function() M._task_step_tags(data) end)
-            return
-          end
-          
-          -- Add dates
-          vim.schedule(function()
-            vim.ui.input({
-              prompt = string.format("Defer [%s] (%s, '-' to skip): ", today, DATE_HINT)
-            }, function(s)
-              if s ~= "-" and s ~= "skip" then
-                data.scheduled = parse_smart_date(s) or today
-              end
-              
-              vim.schedule(function()
-                local due_default = future_date(DEFAULT_DUE_DAYS, data.scheduled or today)
-                vim.ui.input({
-                  prompt = string.format("Due [%s] (%s, '-' to skip): ", due_default, DATE_HINT)
-                }, function(d)
-                  if d ~= "-" and d ~= "skip" then
-                    if d and d ~= "" then
-                      data.deadline = parse_smart_date(d, data.scheduled) or due_default
-                    else
-                      data.deadline = due_default
-                    end
-                  end
-                  M._task_step_tags(data)
-                end)
-              end)
-            end)
-          end)
-        end,
-      },
-    })
-  end
-end
-
---- Task wizard: Context tags step (optional, multi-select)
-function M._task_step_tags(data)
-  local fzf = require("fzf-lua")
-  
-  -- Add "skip" option at top
-  local items = { capture_glyphs.tag .. " (skip - no tags)" }
-  for _, tag in ipairs(CONTEXT_TAGS) do
-    table.insert(items, capture_glyphs.tag .. " " .. tag)
-  end
-  
-  fzf.fzf_exec(items, {
-    prompt = "Tags ❯ ",
-    winopts = { height = 0.45, width = 0.35 },
-    fzf_opts = { ["--multi"] = true },
-    actions = {
-      ["default"] = function(selected)
-        if selected and #selected > 0 then
-          local tags = {}
-          for _, item in ipairs(selected) do
-            local tag = item:match("@%w+")
-            if tag then table.insert(tags, tag) end
-          end
-          if #tags > 0 then
-            data.tags = tags
-          end
-        end
-        vim.schedule(function() M._task_step_reference(data) end)
-      end,
-    },
-  })
-end
-
---- Task wizard: Reference step (optional file/URL)
-function M._task_step_reference(data)
-  vim.ui.input({
-    prompt = capture_glyphs.reference .. " Reference (file/URL, empty to skip): "
-  }, function(ref)
-    if ref and ref ~= "" then
-      -- Format as org link if it's a path
-      if ref:match("^[~/]") or ref:match("^file:") then
-        -- File path - wrap in org link syntax
-        local expanded = vim.fn.expand(ref)
-        data.reference = "[[file:" .. expanded .. "]]"
-      elseif ref:match("^https?://") then
-        -- URL - wrap in org link syntax
-        data.reference = "[[" .. ref .. "]]"
-      else
-        -- Plain text reference
-        data.reference = ref
-      end
-    end
-    vim.schedule(function() M._task_step_zk(data) end)
-  end)
-end
-
---- Task wizard: ZK note step (optional)
-function M._task_step_zk(data)
-  local fzf = require("fzf-lua")
-  
-  fzf.fzf_exec({
-    capture_glyphs.todo .. " Create task only",
-    capture_glyphs.area .. " Create task + ZK note",
-  }, {
-    prompt = "Note ❯ ",
-    winopts = { height = 0.25, width = 0.4 },
-    actions = {
-      ["default"] = function(sel)
-        if sel and sel[1] and sel[1]:match("ZK note") then
-          data.create_zk_note = true
-        end
-        vim.schedule(function() M._task_finalize(data) end)
-      end,
-    },
-  })
-end
-
---- Task wizard: Create task
-function M._task_finalize(data)
-  local task_id = generate_task_id()
-  local zk_note_path = nil
-  
-  -- Create ZK note if requested (silently, don't open)
-  if data.create_zk_note then
-    zk_note_path = create_zk_note({
-      title = data.title,
-      id = task_id,
-      type = "task",
-      state = data.state,
-      area = data.area,
-    })
-  end
-  
-  local lines = build_task_entry({
-    title = data.title,
-    state = data.state,
-    level = data.level or 1,
-    task_id = task_id,
-    scheduled = data.scheduled,
-    deadline = data.deadline,
-    tags = data.tags,
-    reference = data.reference,
-    area = data.area,
-    waiting_for = data.waiting_for,
-    zk_note = zk_note_path,
-  })
-  
-  local target = data.path or inbox_path()
-  ensure_file(target, vim.fn.fnamemodify(target, ":t:r"))
-  
-  if append_to_file(target, lines) then
-    local icon = capture_glyphs[data.state:lower()] or capture_glyphs.todo
-    local dest = vim.fn.fnamemodify(target, ":t:r")
-    local msg = string.format("%s %s → %s", icon, data.title, dest)
-    if zk_note_path then
-      msg = msg .. " +note"
-    end
-    vim.notify(msg, vim.log.levels.INFO)
-    
-    if M.is_running() then M.query("gtd", "refresh", nil) end
-  else
-    vim.notify("Capture failed", vim.log.levels.ERROR)
-  end
-end
-
--- ============================================================================
--- 3. PROJECT CREATION
--- ============================================================================
-
---- Create new project
---- Flow: Name → Area → Outcome → First action → Create file
-function M.create_project()
-  local ok, fzf = pcall(require, "fzf-lua")
-  if not ok then
-    vim.notify("fzf-lua required", vim.log.levels.ERROR)
-    return
-  end
-  
-  local data = {}
-  
-  -- Step 1: Name
-  vim.ui.input({ prompt = capture_glyphs.project .. " Project name: " }, function(name)
-    if not name or name == "" then return end
-    data.name = name
-    data.slug = slugify(name)
-    
-    -- Step 2: Area
-    vim.schedule(function()
-      local areas = get_areas()
-      local items = { capture_glyphs.project .. " Standalone (no area)" }
-      for _, a in ipairs(areas) do
-        table.insert(items, capture_glyphs.area .. " " .. a.name)
-      end
-      table.insert(items, capture_glyphs.area .. " + New area...")
-      
-      fzf.fzf_exec(items, {
-        prompt = "Area ❯ ",
-        winopts = { height = 0.4, width = 0.4 },
-        actions = {
-          ["default"] = function(sel)
-            if not sel or not sel[1] then return end
-            
-            if sel[1]:match("New area") then
-              vim.schedule(function()
-                vim.ui.input({ prompt = "New area: " }, function(aname)
-                  if aname and aname ~= "" then
-                    data.area = aname
-                    vim.fn.mkdir(gtd_home() .. "/Areas/" .. aname, "p")
-                  end
-                  vim.schedule(function() M._project_step_outcome(data) end)
-                end)
-              end)
-            elseif sel[1]:match("Standalone") then
-              data.area = nil
-              vim.schedule(function() M._project_step_outcome(data) end)
-            else
-              data.area = sel[1]:match(capture_glyphs.area .. " (.+)")
-              vim.schedule(function() M._project_step_outcome(data) end)
-            end
-          end,
-        },
-      })
-    end)
-  end)
-end
-
---- Project wizard: Outcome step
-function M._project_step_outcome(data)
-  vim.ui.input({ prompt = "Desired outcome (optional): " }, function(outcome)
-    data.outcome = (outcome and outcome ~= "") and outcome or nil
-    vim.schedule(function() M._project_step_action(data) end)
-  end)
-end
-
---- Project wizard: First action step
-function M._project_step_action(data)
-  vim.ui.input({ prompt = capture_glyphs.next .. " First action (optional): " }, function(action)
-    data.first_action = (action and action ~= "") and action or nil
-    vim.schedule(function() M._project_step_zk(data) end)
-  end)
-end
-
---- Project wizard: ZK note step
-function M._project_step_zk(data)
-  local fzf = require("fzf-lua")
-  
-  fzf.fzf_exec({
-    capture_glyphs.project .. " Create project only",
-    capture_glyphs.area .. " Create project + ZK note",
-  }, {
-    prompt = "Note ❯ ",
-    winopts = { height = 0.25, width = 0.4 },
-    actions = {
-      ["default"] = function(sel)
-        if sel and sel[1] and sel[1]:match("ZK note") then
-          data.create_zk_note = true
-        end
-        vim.schedule(function() M._project_step_type(data) end)
-      end,
-    },
-  })
-end
-
---- Project wizard: Project type (active/ongoing)
-function M._project_step_type(data)
-  local fzf = require("fzf-lua")
-  
-  fzf.fzf_exec({
-    "󰷐 Active project (has defined end)",
-    "󰑖 Ongoing area (continuous maintenance)",
-  }, {
-    prompt = "Type ❯ ",
-    winopts = { height = 0.25, width = 0.5 },
-    actions = {
-      ["default"] = function(sel)
-        if sel and sel[1] and sel[1]:match("Ongoing") then
-          data.ongoing = true
-        end
-        vim.schedule(function() M._project_finalize(data) end)
-      end,
-    },
-  })
-end
-
---- Project wizard: Create file
-function M._project_finalize(data)
-  local path
-  if data.area then
-    path = gtd_home() .. "/Areas/" .. data.area .. "/" .. data.slug .. ".org"
-  else
-    path = gtd_home() .. "/Projects/" .. data.slug .. ".org"
-  end
-  
-  if vim.fn.filereadable(path) == 1 then
-    vim.notify("Project exists: " .. path, vim.log.levels.ERROR)
-    return
-  end
-  
-  local id = generate_task_id()
-  local zk_note_path = nil
-  
-  -- Create ZK note if requested (silently, don't open)
-  if data.create_zk_note then
-    zk_note_path = create_zk_note({
-      title = data.name,
-      id = id,
-      type = "project",
-      area = data.area,
-    })
-  end
-  
-  local file_lines = { "#+TITLE: " .. data.name, "#+FILETAGS: :project:", "" }
-  
-  local proj_lines = build_project_entry({
-    title = data.name,
-    task_id = id,
-    area = data.area,
-    outcome = data.outcome,
-    zk_note = zk_note_path,
-    ongoing = data.ongoing,
-  })
-  for _, l in ipairs(proj_lines) do table.insert(file_lines, l) end
-  
-  if data.first_action then
-    table.insert(file_lines, "")
-    local action_lines = build_task_entry({
-      title = data.first_action,
-      state = "NEXT",
-      level = 2,
-      scheduled = os.date("%Y-%m-%d"),
-    })
-    for _, l in ipairs(action_lines) do table.insert(file_lines, l) end
-  end
-  
-  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
-  if write_file(path, file_lines) then
-    local loc = data.area and (data.area .. "/") or "Projects/"
-    local msg = capture_glyphs.project .. " " .. data.name .. " → " .. loc .. data.slug .. ".org"
-    if zk_note_path then
-      msg = msg .. " +note"
-    end
-    vim.notify(msg, vim.log.levels.INFO)
-    
-    -- Always open the project file
-    vim.cmd("edit " .. vim.fn.fnameescape(path))
-    
-    if M.is_running() then M.query("gtd", "refresh", nil) end
-  else
-    vim.notify("Failed to create project", vim.log.levels.ERROR)
-  end
 end
 
 return M

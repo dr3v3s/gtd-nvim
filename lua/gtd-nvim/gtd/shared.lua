@@ -30,20 +30,22 @@ M.MODULE_VERSIONS = {
   clarify   = "1.0.0",  -- Updated with bidirectional level adjustment
   organize  = "1.1.0",  -- Updated with level adjustment in refile
   manage    = "1.0.0",  -- Updated with gtd_sort
-  lists     = "1.0.0",  -- Updated: Kairos integration, glyphs
-  review    = "1.0.0",  -- Updated: Kairos past/future calendar
+  lists     = "1.0.0",  -- Updated: Chronos integration, glyphs
+  review    = "1.0.0",  -- Updated: Chronos past/future calendar
   projects  = "0.9.0",  -- Loaded in init, setup() called
   areas     = "0.9.0",  -- Loaded in init, setup() called
-  kairos    = "1.0.0",  -- Calendar/Reminders via Kairos daemon
-  reminders = "1.0.0",  -- Updated: Kairos quick reads, browse cmd
+  chronos_client = "1.1.0",  -- Calendar/Reminders via Chronos daemons + agenda
+  agenda    = "1.0.0",  -- NEW: Comprehensive daily agenda view
+  reminders = "1.0.0",  -- Updated: Chronos quick reads, browse cmd
   editor    = "1.0.0",  -- Loaded in init, setup() called
   ui        = "0.8.0",  -- Needs audit (may merge to shared)
   status    = "1.0.0",  -- Updated: uses shared.glyphs
   init      = "1.2.0",  -- All modules wired up
   config    = "1.0.0",  -- NEW: User configuration system
-  -- DELETED: calendar.lua (replaced by kairos.lua)
-  -- DELETED: icalbuddy.lua (replaced by kairos.lua)
+  -- DELETED: calendar.lua (replaced by chronos-client.lua)
+  -- DELETED: icalbuddy.lua (replaced by chronos-client.lua)
   -- DELETED: fzf.lua (consolidated into shared.lua)
+  -- DELETED: kairos.lua (replaced by daemon.lua / chronos)
 }
 
 -- Changelog entries (latest first)

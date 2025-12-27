@@ -11,8 +11,8 @@
 
 local M = {}
 
-M._VERSION = "1.1.0"
-M._UPDATED = "2024-12-19"
+M._VERSION = "1.2.0"
+M._UPDATED = "2025-12-23"
 
 -- Load shared utilities (single source of truth)
 local shared = require("gtd-nvim.gtd.shared")
@@ -30,6 +30,9 @@ M.cfg = {
   -- Capture behavior
   capture_to_inbox_only = true,  -- Skip destination picker, stay in inbox for review
   ask_for_area          = true,  -- Ask which area this task relates to
+  
+  -- Communication integration
+  comms_integration = true,  -- Enable contact lookup for @phone/@email tags
 
   -- Date defaults
   date_defaults = {
@@ -95,6 +98,7 @@ end
 -- [OK] Load GTD v2.0 utilities
 local task_id = safe_require("gtd.utils.task_id")
 local org_dates = safe_require("gtd.utils.org_dates")
+local comms = safe_require("gtd-nvim.gtd.comms")
 
 -- Fallback if utilities not available
 if not task_id then
@@ -984,10 +988,29 @@ function M.capture_quick()
 
             -- 3) Tags
             maybe_input({ prompt = g.ui.tag .. " Tags (space sep, optional): " }, function(tags)
+              vim.notify("[DEBUG] Tags callback entered, tags=" .. tostring(tags), vim.log.levels.WARN)
               local id = task_id.generate()
               local scheduled, deadline = "", ""
-
-              local function create_task_with_zk(zk_path)
+              
+              -- Communication integration variables
+              local comms_props = {}
+              local comms_action_fn = nil
+              local comms_contact = nil
+              
+              -- Convert tags to array for comms detection
+              local function get_tags_array()
+                local arr = {}
+                if tags and tags ~= "" then
+                  for tag in tags:gmatch("%S+") do
+                    table.insert(arr, tag)
+                  end
+                end
+                return arr
+              end
+              
+              -- Main capture flow (will be called after optional comms processing)
+              local function continue_with_capture()
+                local function create_task_with_zk(zk_path)
                 local lines = {}
 
                 -- Heading with tags
@@ -1065,6 +1088,16 @@ function M.capture_quick()
                   local waiting_props = generate_waiting_properties(waiting_data)
                   for _, prop in ipairs(waiting_props) do
                     table.insert(lines, prop)
+                  end
+                end
+                
+                -- Add COMMUNICATION properties (contact info from comms integration)
+                if comms_props and next(comms_props) then
+                  for key, value in pairs(comms_props) do
+                    if value and value ~= "" then
+                      local padded_key = key .. string.rep(" ", math.max(0, 10 - #key))
+                      table.insert(lines, ":" .. padded_key .. value)
+                    end
                   end
                 end
 
@@ -1221,6 +1254,46 @@ function M.capture_quick()
               else
                 -- For SOMEDAY items, we skip dates entirely
                 handle_zk_creation()
+              end
+              end  -- end continue_with_capture()
+              
+              vim.notify("[DEBUG] About to check comms: cfg=" .. tostring(M.cfg.comms_integration) .. " comms=" .. tostring(comms ~= nil), vim.log.levels.WARN)
+              
+              -- ══════════════════════════════════════════════════════════════
+              -- COMMUNICATION INTEGRATION
+              -- Check for @phone/@email/@message tags and lookup contact info
+              -- ══════════════════════════════════════════════════════════════
+              if M.cfg.comms_integration and comms and comms.detect_context then
+                local tags_array = get_tags_array()
+                vim.notify("[DEBUG] tags_array=" .. vim.inspect(tags_array), vim.log.levels.WARN)
+                local context_type = comms.detect_context(title, tags_array)
+                vim.notify("[DEBUG] context_type=" .. tostring(context_type), vim.log.levels.WARN)
+                
+                if context_type then
+                  -- Communication context detected - process it
+                  vim.notify("󰏲 Looking up contact...", vim.log.levels.INFO)
+                  comms.process_capture(title, tags_array, function(props, action_fn, contact, _info)
+                    -- Store results for use in task creation
+                    comms_props = props or {}
+                    comms_action_fn = action_fn
+                    comms_contact = contact
+                    -- Continue with main capture flow
+                    continue_with_capture()
+                    
+                    -- After task is created, prompt for action if available
+                    if action_fn and contact then
+                      vim.schedule(function()
+                        comms.prompt_action(action_fn, contact, context_type, nil)
+                      end)
+                    end
+                  end)
+                else
+                  -- No communication context, proceed normally
+                  continue_with_capture()
+                end
+              else
+                -- Comms integration disabled, proceed normally  
+                continue_with_capture()
               end
             end)
           end

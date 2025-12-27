@@ -1,12 +1,13 @@
 -- ~/.config/nvim/lua/utils/zettelkasten/init.lua
 -- Full Zettelkasten system loader with all submodules
+-- 
 -- Use: require("utils.zettelkasten.init") for full system
 -- Or:  require("utils.zettelkasten") for core only
 
 local M = {}
 
--- Load core module directly (via symlink to core.lua)
-local core = require("utils.zettelkasten")
+-- Load core module
+local core = require("utils.zettelkasten.core")
 
 -- Safely load submodules
 local function safe_require(name)
@@ -28,7 +29,7 @@ function M.setup(opts)
   -- Setup core first
   core.setup(opts)
   
-  -- Setup submodules (if they exist and have setup functions)
+  -- Setup submodules
   if capture and capture.setup_commands then capture.setup_commands() end
   if project and project.setup_commands then project.setup_commands() end
   if manage and manage.setup_commands then manage.setup_commands() end
@@ -44,7 +45,7 @@ function M.setup(opts)
     if people and people.setup_keymaps then people.setup_keymaps() end
   end
   
-  -- List loaded modules
+  -- Report loaded modules
   local loaded = { "core" }
   if capture then table.insert(loaded, "capture") end
   if project then table.insert(loaded, "project") end
@@ -52,29 +53,44 @@ function M.setup(opts)
   if reading then table.insert(loaded, "reading") end
   if people then table.insert(loaded, "people") end
   
-  core.notify("Zettelkasten: " .. table.concat(loaded, ", "))
+  core.notify("Zettelkasten loaded: " .. table.concat(loaded, ", "))
 end
 
 ----------------------------------------------------------------------
--- Re-export ALL core functions
+-- Re-export Core Functions
 ----------------------------------------------------------------------
-M.notify = core.notify
+-- Config & paths
 M.get_paths = core.get_paths
 M.get_config = core.get_config
-M.create_note_file = core.create_note_file
+M.notify = core.notify
+
+-- Note operations
 M.new_note = core.new_note
 M.quick_note = core.quick_note
 M.daily_note = core.daily_note
+M.create_note_file = core.create_note_file
+
+-- Search & navigation
 M.find_notes = core.find_notes
 M.search_notes = core.search_notes
-M.recent_notes = core.recent_notes
 M.search_all = core.search_all
+M.recent_notes = core.recent_notes
 M.browse_tags = core.browse_tags
 M.show_backlinks = core.show_backlinks
-M.show_stats = core.show_stats
-M.write_index = core.write_index
 
--- Utility exports for submodules
+-- Data functions
+M.get_all_notes = core.get_all_notes
+M.get_gtd_tasks = core.get_gtd_tasks
+M.get_all_tags = core.get_all_tags
+M.get_backlinks = core.get_backlinks
+M.extract_tags_from_content = core.extract_tags_from_content
+
+-- Cache & index
+M.clear_cache = core.clear_cache
+M.write_index = core.write_index
+M.show_stats = core.show_stats
+
+-- Utilities for submodules
 M.ensure_dir = core.ensure_dir
 M.file_exists = core.file_exists
 M.join = core.join
@@ -84,20 +100,26 @@ M.gen_filename = core.gen_filename
 M.apply_template = core.apply_template
 M.open_and_seed = core.open_and_seed
 M.find_content_row = core.find_content_row
+M.sel_to_paths_fzf = core.sel_to_paths_fzf
 M.have_fzf = core.have_fzf
 M.have_telescope = core.have_telescope
 
 ----------------------------------------------------------------------
--- Capture functions
+-- Capture Module Functions
 ----------------------------------------------------------------------
 if capture then
-  M.capture_quick_note = capture.quick_note
   M.capture_daily_note = capture.daily_note
+  M.capture_quick_note = capture.quick_note
   M.meeting_note = capture.meeting_note
+  M.capture_to_gtd = capture.capture_to_gtd
+  M.note_to_gtd_task = capture.note_to_gtd_task
+  M.browse_gtd_tasks = capture.browse_gtd_tasks
+  M.extract_meeting_actions = capture.extract_meeting_actions
+  M.refresh_daily_gtd = capture.refresh_daily_gtd
 end
 
 ----------------------------------------------------------------------
--- Project functions
+-- Project Module Functions
 ----------------------------------------------------------------------
 if project then
   M.new_project = project.new_project
@@ -108,7 +130,7 @@ if project then
 end
 
 ----------------------------------------------------------------------
--- Manage functions
+-- Manage Module Functions
 ----------------------------------------------------------------------
 if manage then
   M.manage_notes = manage.manage_notes
@@ -120,7 +142,7 @@ if manage then
 end
 
 ----------------------------------------------------------------------
--- Reading functions
+-- Reading Module Functions
 ----------------------------------------------------------------------
 if reading then
   M.new_book = reading.new_book
@@ -132,7 +154,7 @@ if reading then
 end
 
 ----------------------------------------------------------------------
--- People functions
+-- People Module Functions
 ----------------------------------------------------------------------
 if people then
   M.new_person = people.new_person

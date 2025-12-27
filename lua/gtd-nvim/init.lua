@@ -71,13 +71,11 @@ function M.setup(opts)
     })
   end
   
-  -- Setup GTD Capture (registers capture commands)
-  local capture = safe_require("gtd-nvim.gtd.capture")
-  if capture and capture.setup then
-    capture.setup({
+  -- Setup GTD Capture V2 (composable capture system)
+  local capture_v2 = safe_require("gtd-nvim.capture")
+  if capture_v2 and capture_v2.setup then
+    capture_v2.setup({
       gtd_dir = M.config.gtd_root,
-      inbox_file = M.config.gtd_root .. "/" .. M.config.inbox_file,
-      projects_dir = M.config.gtd_root .. "/" .. M.config.projects_dir,
     })
   end
   

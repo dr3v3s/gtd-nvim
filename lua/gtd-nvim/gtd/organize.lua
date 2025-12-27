@@ -835,15 +835,174 @@ local function move_subtree(bufnr, start, finish, destfile)
   notify("Moved task → " .. vim.fn.fnamemodify(destfile, ":.") .. level_msg, vim.log.levels.INFO)
 end
 
--- Public: Refile task at cursor
+-- Public: Refile task at cursor (or pick from list if not on heading)
 function M.refile_to_project()
   local bufnr = vim.api.nvim_get_current_buf()
+  
+  -- Check if on an org heading
+  local line = vim.api.nvim_get_current_line()
+  if not line:match("^%*+%s+") then
+    -- NOT on a heading - show task picker first
+    M._pick_task_then_refile()
+    return
+  end
+  
   local start, finish = extract_subtree(bufnr)
   if not start then
     notify("No task heading found to move", vim.log.levels.WARN)
     return
   end
 
+  M._do_refile(bufnr, start, finish)
+end
+
+-- Internal: Pick a task from the system, then refile it
+function M._pick_task_then_refile()
+  local fzf = safe_require("fzf-lua")
+  if not fzf then
+    notify("fzf-lua required", vim.log.levels.WARN)
+    return
+  end
+  
+  local root = shared.gtd_home()
+  
+  -- Find all tasks (similar to edit workflow)
+  local cmd = string.format(
+    "grep -rn '^\\*\\+\\s\\+\\(NEXT\\|TODO\\|WAITING\\|SOMEDAY\\|PROJECT\\)' %s --include='*.org' 2>/dev/null",
+    root
+  )
+  
+  local handle = io.popen(cmd)
+  if not handle then
+    notify("Could not search tasks", vim.log.levels.ERROR)
+    return
+  end
+  
+  local result = handle:read("*a")
+  handle:close()
+  
+  local items = {}
+  local state_icons = { 
+    NEXT = "󱥦", TODO = "󰄲", WAITING = "", SOMEDAY = "󰋚", PROJECT = "󰷐" 
+  }
+  
+  -- Sorting helpers
+  local function get_sort_group(filepath)
+    local fname = vim.fn.fnamemodify(filepath, ":t")
+    if fname == "Inbox.org" then return 1, "00-Inbox" end
+    local area = filepath:match("/Areas/([^/]+)/")
+    if area then return 2, area end
+    if filepath:match("/Projects/") then return 100, "Projects" end
+    return 999, "Other"
+  end
+  
+  for line in result:gmatch("[^\n]+") do
+    local file, lnum, content = line:match("^([^:]+):(%d+):(.+)$")
+    if file and lnum and content then
+      local state = content:match("^%*+%s+(%u+)")
+      local title = content:gsub("^%*+%s+%u+%s+", ""):gsub("%s*:.*:%s*$", "")
+      local tags = content:match(":([%w@:_-]+):%s*$") or ""
+      local sort_group, group_name = get_sort_group(file)
+      
+      table.insert(items, {
+        file = file,
+        lnum = tonumber(lnum),
+        state = state,
+        title = vim.trim(title),
+        tags = tags,
+        sort_group = sort_group,
+        group_name = group_name,
+      })
+    end
+  end
+  
+  -- Sort by group, then state
+  local state_order = { NEXT = 1, TODO = 2, WAITING = 3, PROJECT = 4, SOMEDAY = 5 }
+  table.sort(items, function(a, b)
+    if a.sort_group ~= b.sort_group then return a.sort_group < b.sort_group end
+    if a.group_name ~= b.group_name then return a.group_name < b.group_name end
+    local oa = state_order[a.state] or 99
+    local ob = state_order[b.state] or 99
+    if oa ~= ob then return oa < ob end
+    return a.title < b.title
+  end)
+  
+  -- Build display with group headers
+  local display_items = {}
+  local lookup = {}
+  local current_group = nil
+  
+  for _, item in ipairs(items) do
+    if item.group_name ~= current_group then
+      current_group = item.group_name
+      table.insert(display_items, string.format("━━━ %s ━━━", current_group))
+    end
+    
+    local icon = state_icons[item.state] or "󰄱"
+    local tag_str = item.tags ~= "" and (" :" .. item.tags .. ":") or ""
+    local display = string.format("  %s %-8s %s%s", icon, item.state, item.title, tag_str)
+    
+    table.insert(display_items, display)
+    lookup[display] = item
+  end
+  
+  if #display_items == 0 then
+    notify("No tasks found", vim.log.levels.INFO)
+    return
+  end
+  
+  -- Use shared actions
+  local fzf_actions_ok, fzf_actions = pcall(require, "gtd-nvim.capture.ui.fzf_actions")
+  local actions
+  
+  if fzf_actions_ok then
+    actions = fzf_actions.task_actions(lookup, function(item)
+      -- Primary action for refile picker: do the refile
+      vim.schedule(function()
+        vim.cmd("edit " .. item.file)
+        vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
+        vim.schedule(function()
+          local bufnr = vim.api.nvim_get_current_buf()
+          local start, finish = extract_subtree(bufnr)
+          if start then
+            M._do_refile(bufnr, start, finish)
+          end
+        end)
+      end)
+    end)
+  else
+    -- Fallback if shared actions not available
+    actions = {
+      ["default"] = function(sel)
+        if not sel or not sel[1] or sel[1]:match("^━━━") then return end
+        local item = lookup[sel[1]]
+        if item then
+          vim.schedule(function()
+            vim.cmd("edit " .. item.file)
+            vim.api.nvim_win_set_cursor(0, { item.lnum, 0 })
+            vim.schedule(function()
+              local bufnr = vim.api.nvim_get_current_buf()
+              local start, finish = extract_subtree(bufnr)
+              if start then
+                M._do_refile(bufnr, start, finish)
+              end
+            end)
+          end)
+        end
+      end,
+    }
+  end
+  
+  fzf.fzf_exec(display_items, {
+    prompt = "Refile task ❯ ",
+    winopts = { height = 0.75, width = 0.85 },
+    fzf_opts = fzf_actions_ok and fzf_actions.task_fzf_opts() or {},
+    actions = actions,
+  })
+end
+
+-- Internal: Perform the actual refile operation
+function M._do_refile(bufnr, start, finish)
   local targets = list_target_files()
   if #targets == 0 then
     notify("No target project/area files found", vim.log.levels.ERROR)
@@ -858,81 +1017,90 @@ function M.refile_to_project()
     return
   end
 
-  local display = {}
-  for _, f in ipairs(targets) do
-    table.insert(display, vim.fn.fnamemodify(f, ":."))
+  -- Sort and group destinations same as task picker
+  local function get_sort_group(filepath)
+    local fname = vim.fn.fnamemodify(filepath, ":t")
+    if fname == "Inbox.org" and not filepath:match("/Areas/") then 
+      return 1, "00-Inbox" 
+    end
+    local area = filepath:match("/Areas/([^/]+)/")
+    if area then return 2, area end
+    if filepath:match("/Projects/") then return 100, "Projects" end
+    return 999, "Other"
+  end
+  
+  -- Build sorted items
+  local items = {}
+  for _, filepath in ipairs(targets) do
+    local sort_group, group_name = get_sort_group(filepath)
+    local fname = vim.fn.fnamemodify(filepath, ":t:r")
+    local area = filepath:match("/Areas/([^/]+)/")
+    
+    -- Show area prefix for files inside Areas (especially for Inbox files)
+    local display_name
+    if area and fname == "Inbox" then
+      display_name = area .. "/Inbox"
+    elseif area then
+      display_name = fname
+    else
+      display_name = fname
+    end
+    
+    table.insert(items, {
+      file = filepath,
+      name = display_name,
+      sort_group = sort_group,
+      group_name = group_name,
+    })
+  end
+  
+  table.sort(items, function(a, b)
+    if a.sort_group ~= b.sort_group then return a.sort_group < b.sort_group end
+    if a.group_name ~= b.group_name then return a.group_name < b.group_name end
+    return a.name < b.name
+  end)
+  
+  -- Build display with group headers
+  local display_items = {}
+  local lookup = {}
+  local current_group = nil
+  
+  for _, item in ipairs(items) do
+    if item.group_name ~= current_group then
+      current_group = item.group_name
+      table.insert(display_items, string.format("━━━ %s ━━━", current_group))
+    end
+    
+    local icon = item.sort_group == 1 and "󰏫" or 
+                 item.sort_group == 2 and "󰉋" or 
+                 item.sort_group == 100 and "󰷐" or "󰈔"
+    local display = string.format("  %s %s", icon, item.name)
+    
+    table.insert(display_items, display)
+    lookup[display] = item
   end
 
-  fzf.fzf_exec(display, {
+  fzf.fzf_exec(display_items, {
     prompt = "Move to → ",
+    winopts = { height = 0.6, width = 0.5 },
     actions = {
       ["default"] = function(sel)
-        local choice = sel and sel[1]
-        if not choice then return end
-        local idx = vim.fn.index(display, choice) + 1
-        local dest = targets[idx]
-        if dest then move_subtree(bufnr, start, finish, dest) end
+        if not sel or not sel[1] or sel[1]:match("^━━━") then return end
+        
+        local item = lookup[sel[1]]
+        if item then
+          move_subtree(bufnr, start, finish, item.file)
+        end
       end
     }
   })
 end
 
 -- Public: Pick ANY task via fzf and then refile it
+-- DEPRECATED: Use refile_to_project() which now auto-detects context
 function M.refile_pick_any(opts)
-  opts = opts or {}
-  if not have_fzf() then
-    notify("fzf-lua required for refile_pick_any()", vim.log.levels.WARN)
-    return
-  end
-
-  local root = opts.root or shared.gtd_home()
-  local actionable_tasks = scan_actionable_tasks(root)
-
-  if #actionable_tasks == 0 then
-    notify("No actionable tasks found to refile", vim.log.levels.INFO)
-    return
-  end
-
-  local display = {}
-  for _, task in ipairs(actionable_tasks) do
-    local state_tag = task.state and ("[" .. task.state .. "] ") or "[NO STATE] "
-    local line = string.format("%s %s%s%s (%s)",
-      task.context,
-      state_tag,
-      task.title,
-      task.date_info or "",
-      task.filename
-    )
-    table.insert(display, line)
-  end
-
-  local fzf = require("fzf-lua")
-  fzf.fzf_exec(display, {
-    prompt = shared.colorize(g.phase.organize, "accent") .. " GTD Refile> ",
-    winopts = {
-      height = 0.80,
-      width = 0.95,
-      title = " " .. g.phase.organize .. " GTD Refile - Pick Task ",
-      title_pos = "center"
-    },
-    fzf_opts = {
-      ["--no-info"] = true,
-      ["--tiebreak"] = "index",
-      ["--ansi"] = true,
-    },
-    actions = {
-      ["default"] = function(sel)
-        local choice = sel and sel[1]; if not choice then return end
-        local idx = vim.fn.index(display, choice) + 1
-        local task = actionable_tasks[idx]; if not task then return end
-        vim.cmd("edit " .. task.path)
-        pcall(vim.api.nvim_win_set_cursor, 0, { task.lnum, 0 })
-        vim.schedule(function()
-          M.refile_to_project()
-        end)
-      end
-    }
-  })
+  -- Redirect to consolidated function
+  M._pick_task_then_refile()
 end
 
 -- ---------- Backward compatibility aliases ----------
